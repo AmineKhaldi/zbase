@@ -321,6 +321,7 @@ impl AppModels {
                 width_px: crate::views::SIDEBAR_WIDTH_PX,
             },
             conversation: ConversationModel {
+                participant_avatars: Vec::new(),
                 summary: general.clone(),
                 pinned_message: None,
                 details: None,
@@ -360,6 +361,7 @@ impl AppModels {
                 hovered_message_window_left: None,
                 hovered_message_window_top: None,
                 hovered_message_window_width: None,
+                hovered_message_viewport_size: None,
                 hover_toolbar_settled: false,
                 typing_text: Some("Sam is typing…".to_string()),
                 quick_react_recent: None,
@@ -493,6 +495,7 @@ impl AppModels {
                 };
 
                 self.conversation = ConversationModel {
+                    participant_avatars: Vec::new(),
                     summary: summary.clone(),
                     pinned_message: None,
                     details: None,
@@ -512,6 +515,7 @@ impl AppModels {
                     .cloned()
                     .expect("missing demo dm");
                 self.conversation = ConversationModel {
+                    participant_avatars: Vec::new(),
                     summary: summary.clone(),
                     pinned_message: None,
                     details: None,
@@ -905,6 +909,7 @@ fn general_timeline() -> TimelineModel {
         hovered_message_window_left: None,
         hovered_message_window_top: None,
         hovered_message_window_width: None,
+        hovered_message_viewport_size: None,
         hover_toolbar_settled: false,
         typing_text: Some("Sam is typing…".to_string()),
         quick_react_recent: None,
@@ -992,6 +997,7 @@ fn design_timeline() -> TimelineModel {
         hovered_message_window_left: None,
         hovered_message_window_top: None,
         hovered_message_window_width: None,
+        hovered_message_viewport_size: None,
         hover_toolbar_settled: false,
         typing_text: None,
         quick_react_recent: None,
@@ -1049,6 +1055,7 @@ fn dm_timeline() -> TimelineModel {
         hovered_message_window_left: None,
         hovered_message_window_top: None,
         hovered_message_window_width: None,
+        hovered_message_viewport_size: None,
         hover_toolbar_settled: false,
         typing_text: None,
         quick_react_recent: None,

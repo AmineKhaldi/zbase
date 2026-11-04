@@ -65,7 +65,15 @@ pub struct ConversationGroup {
 }
 
 impl ConversationSummary {
-    pub fn preserve_known_team_type(&mut self, previous: &Self) {
+    pub fn compare_recency(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .last_activity_ms
+            .cmp(&self.last_activity_ms)
+            .then_with(|| self.id.0.cmp(&other.id.0))
+    }
+
+    pub fn preserve_known_metadata(&mut self, previous: &Self) {
+        self.last_activity_ms = self.last_activity_ms.max(previous.last_activity_ms);
         if let (Some(group), Some(old)) = (&mut self.group, &previous.group)
             && group.id == old.id
             && group.team_type == ConversationTeamType::Unknown
@@ -94,7 +102,7 @@ impl ConversationSummary {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConversationSummary {
     pub id: ConversationId,
     pub title: String,

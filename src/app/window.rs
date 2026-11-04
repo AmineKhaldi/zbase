@@ -25,11 +25,17 @@ use gpui::{
 use std::env;
 use std::sync::Arc;
 
+const WINDOW_DEFAULT_HEIGHT_PX: f32 = 880.;
+
 const ENV_BENCH_USE_DEMO: &str = "ZBASE_BENCH_USE_DEMO";
 const ENV_BENCH_SKIP_BACKEND: &str = "ZBASE_BENCH_SKIP_BACKEND";
 
 pub fn open_main_window(cx: &mut App) {
-    let bounds = Bounds::centered(None, size(px(1440.), px(920.)), cx);
+    let bounds = Bounds::centered(
+        None,
+        size(px(WINDOW_MIN_WIDTH_PX), px(WINDOW_DEFAULT_HEIGHT_PX)),
+        cx,
+    );
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(size(px(WINDOW_MIN_WIDTH_PX), px(WINDOW_MIN_HEIGHT_PX))),

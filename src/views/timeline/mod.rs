@@ -1,3 +1,6 @@
+mod reply_context;
+use reply_context::cached_reply_context;
+use super::quick_react_placement::{BUTTON_SIZE, HoverGeometry, toolbar_size};
 use crate::{
     domain::{
         affinity::Affinity,
@@ -90,9 +93,11 @@ impl gpui::Element for HoveredMessageBoundsReporter {
         _inspector_id: Option<&gpui::InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut gpui::App,
     ) -> Self::PrepaintState {
+        let viewport = window.viewport_size();
+        let viewport_size = gpui::size(f32::from(viewport.width), f32::from(viewport.height));
         let owner = self.owner.clone();
         let message_id = self.message_id.clone();
         let is_thread = self.is_thread;
@@ -100,7 +105,15 @@ impl gpui::Element for HoveredMessageBoundsReporter {
         let top: f32 = bounds.origin.y.into();
         let width: f32 = bounds.size.width.into();
         let _ = owner.update(cx, |this, cx| {
-            this.record_hovered_message_layout(message_id, is_thread, left, top, width, cx);
+            this.record_hovered_message_layout(
+                message_id,
+                is_thread,
+                left,
+                top,
+                width,
+                viewport_size,
+                cx,
+            );
         });
     }
 
@@ -145,6 +158,7 @@ struct TimelineRowRenderCacheEntry {
 struct MessageRenderMemo {
     text_segments: Vec<Option<Vec<InlineTextSegment>>>,
     sorted_reactions: Vec<MessageReactionRender>,
+    reply_context: Option<String>,
 }
 
 impl TimelineRowRenderCache {
@@ -228,6 +242,7 @@ impl MessageRenderMemo {
         Self {
             text_segments,
             sorted_reactions,
+            reply_context: cached_reply_context(message, timeline),
         }
     }
 }
@@ -571,8 +586,8 @@ impl TimelineList {
         let hover_window_width = is_hovered
             .then_some(timeline.hovered_message_window_width)
             .flatten();
-        let is_thread_reply_stub = !is_thread && row.message.reply_to.is_some();
-        let show_header = row.show_header || is_thread_reply_stub || is_thread;
+        let is_main_thread_reply = !is_thread && row.message.reply_to.is_some();
+        let show_header = row.show_header || is_main_thread_reply || is_thread;
         let normalized_author_id = UserId::new(row.author.id.0.to_ascii_lowercase());
         let author_role = timeline
             .author_role_index
@@ -667,13 +682,22 @@ impl TimelineList {
                         .flex()
                         .items_center()
                         .gap_1()
-                        .flex_shrink_0()
+                        .min_w(px(0.))
                         .child(thread_icon(text_secondary()))
                         .child(
                             div()
                                 .text_xs()
+                                .min_w(px(0.))
+                                .text_ellipsis()
                                 .text_color(rgb(text_secondary()))
-                                .child("Replied in thread"),
+                                .child(
+                                    message_memo
+                                        .map(|memo| memo.reply_context.clone())
+                                        .unwrap_or_else(|| {
+                                            cached_reply_context(&row.message, timeline)
+                                        })
+                                        .unwrap_or_else(|| "Reply in thread".to_string()),
+                                ),
                         ),
                 );
 
@@ -682,49 +706,45 @@ impl TimelineList {
 
         let is_highlighted = timeline.highlighted_message_id.as_ref() == Some(&row.message.id)
             || timeline.editing_message_id.as_ref() == Some(&row.message.id);
-        if is_thread_reply_stub {
-            content = content.child(Self::render_send_state(
-                &row.message.id,
-                &row.message.send_state,
-                cx,
-            ));
-        } else {
-            let hover_anchor_y = is_hovered
-                .then_some(timeline.hovered_message_anchor_y)
-                .flatten();
-            let hover_window_top = is_hovered
-                .then_some(timeline.hovered_message_window_top)
-                .flatten();
-            let hover_toolbar_settled = is_hovered && timeline.hover_toolbar_settled;
-            content = content.child(Self::render_message(
-                &row.message,
-                is_hovered,
-                is_highlighted,
-                find_query,
-                &timeline.affinity_index,
-                timeline.current_user_id.as_ref(),
-                &timeline.emoji_index,
-                &timeline.emoji_source_index,
-                &timeline.reaction_index,
-                show_thread_reply_badge,
-                is_thread,
-                thread_media_max_width,
-                is_last_message,
-                hover_anchor_x,
-                hover_anchor_y,
-                hover_window_left,
-                hover_window_top,
-                hover_window_width,
-                hover_toolbar_settled,
-                row.message.edited.is_some(),
-                video_render_cache,
-                message_memo,
-                timeline.quick_react_recent.as_ref(),
-                code_highlight_cache,
-                selectable_texts,
-                cx,
-            ));
-        }
+        let hover_anchor_y = is_hovered
+            .then_some(timeline.hovered_message_anchor_y)
+            .flatten();
+        let hover_window_top = is_hovered
+            .then_some(timeline.hovered_message_window_top)
+            .flatten();
+        let hover_geometry = (|| {
+            if !is_hovered || !timeline.hover_toolbar_settled {
+                return None;
+            }
+            Some(HoverGeometry {
+                pointer: gpui::point(hover_anchor_x?, hover_anchor_y?),
+                container_origin: gpui::point(hover_window_left?, hover_window_top?),
+                container_width: hover_window_width?,
+                viewport: timeline.hovered_message_viewport_size?,
+            })
+        })();
+        content = content.child(Self::render_message(
+            &row.message,
+            is_highlighted,
+            find_query,
+            &timeline.affinity_index,
+            timeline.current_user_id.as_ref(),
+            &timeline.emoji_index,
+            &timeline.emoji_source_index,
+            &timeline.reaction_index,
+            show_thread_reply_badge,
+            is_thread,
+            thread_media_max_width,
+            is_last_message,
+            hover_geometry,
+            row.message.edited.is_some(),
+            video_render_cache,
+            message_memo,
+            timeline.quick_react_recent.as_ref(),
+            code_highlight_cache,
+            selectable_texts,
+            cx,
+        ));
 
         let hover_msg_id = row.message.id.clone();
         let row_wrapper = if show_header {
@@ -877,7 +897,6 @@ impl TimelineList {
 
     fn render_message(
         message: &crate::domain::message::MessageRecord,
-        is_hovered: bool,
         highlighted: bool,
         find_query: Option<&str>,
         affinity_index: &HashMap<UserId, Affinity>,
@@ -889,12 +908,7 @@ impl TimelineList {
         is_thread: bool,
         thread_media_max_width: Option<f32>,
         _is_last_message: bool,
-        hover_anchor_x: Option<f32>,
-        hover_anchor_y: Option<f32>,
-        hover_window_left: Option<f32>,
-        hover_window_top: Option<f32>,
-        hover_window_width: Option<f32>,
-        hover_toolbar_settled: bool,
+        hover_geometry: Option<HoverGeometry>,
         show_edited_badge: bool,
         video_render_cache: &HashMap<String, Arc<RenderImage>>,
         message_memo: Option<&MessageRenderMemo>,
@@ -1412,7 +1426,7 @@ impl TimelineList {
                     div().into_any_element()
                 }
             })
-            .child({
+            .when_some(hover_geometry, |container, geometry| container.child({
                 let quick_react_buttons: Vec<AnyElement> = QUICK_REACT_EMOJI
                     .iter()
                     .map(|(alias, unicode)| {
@@ -1427,8 +1441,8 @@ impl TimelineList {
                                 this.clear_hovered_message_immediate(cx);
                                 this.quick_react(msg_id.clone(), unicode_str.clone(), cx);
                             }))
-                            .w(px(26.))
-                            .h(px(26.))
+                            .w(px(BUTTON_SIZE))
+                            .h(px(BUTTON_SIZE))
                             .rounded_md()
                             .flex()
                             .items_center()
@@ -1456,8 +1470,8 @@ impl TimelineList {
                                         this.clear_hovered_message_immediate(cx);
                                         this.quick_react(msg_id.clone(), emoji_text.clone(), cx);
                                     }))
-                                    .w(px(26.))
-                                    .h(px(26.))
+                                    .w(px(BUTTON_SIZE))
+                                    .h(px(BUTTON_SIZE))
                                     .rounded_md()
                                     .flex()
                                     .items_center()
@@ -1481,8 +1495,8 @@ impl TimelineList {
                                         this.clear_hovered_message_immediate(cx);
                                         this.quick_react(msg_id.clone(), emoji_alias.clone(), cx);
                                     }))
-                                    .w(px(26.))
-                                    .h(px(26.))
+                                    .w(px(BUTTON_SIZE))
+                                    .h(px(BUTTON_SIZE))
                                     .rounded_md()
                                     .flex()
                                     .items_center()
@@ -1504,7 +1518,9 @@ impl TimelineList {
                 let message_id_for_delete_btn = message.id.clone();
                 let is_own_message = current_user_id
                     .is_some_and(|id| id.0.eq_ignore_ascii_case(&message.author_id.0));
+                let toolbar_size = toolbar_size(QUICK_REACT_EMOJI.len(), recent_react_button.is_some(), is_own_message);
                 let inline_toolbar = div()
+                    .w(px(toolbar_size.width)).h(px(toolbar_size.height))
                     .flex()
                     .items_center()
                     .rounded_md()
@@ -1580,57 +1596,23 @@ impl TimelineList {
                         ))
                     });
 
-                const TOOLBAR_W: f32 = 260.0;
-                const TOOLBAR_H: f32 = 30.0;
-                const TOOLBAR_X_GAP: f32 = 12.0;
-
-                let toolbar_left = hover_anchor_x
-                    .zip(hover_window_left)
-                    .zip(hover_window_width)
-                    .map(|((anchor_x, window_left), window_width)| {
-                        let local_x = anchor_x - window_left;
-                        let mut left = local_x + TOOLBAR_X_GAP;
-                        if window_width.is_finite() && window_width > 0.0 {
-                            let max_left = (window_width - TOOLBAR_W).max(0.0);
-                            left = left.clamp(0.0, max_left);
-                        } else if left < 0.0 {
-                            left = 0.0;
-                        }
-                        left
-                    });
-
-                let toolbar_top = hover_anchor_y
-                    .zip(hover_window_top)
-                    .map(|(anchor_y, window_top)| {
-                        (anchor_y - window_top - TOOLBAR_H / 2.0).max(0.0)
-                    });
-
-                let any_text_selected = selectable_texts
-                    .values()
-                    .any(|entity| entity.read(cx).has_selection());
-                let toolbar_visible = is_hovered
-                    && hover_toolbar_settled
-                    && !any_text_selected
-                    && toolbar_left.is_some();
-                let toolbar_wrapper = div()
-                    .absolute()
-                    .when_some(toolbar_left, |d, left| d.left(px(left)))
-                    .when(toolbar_left.is_none(), |d| d.right_0())
-                    .when_some(toolbar_top, |d, top| d.top(px(top)))
-                    .when(toolbar_top.is_none(), |d| d.top(px(-14.)))
-                    .when(toolbar_visible, |d| d.block_mouse_except_scroll())
-                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| {
-                        this.cancel_hover_clear();
-                        cx.stop_propagation();
-                    }))
-                    .on_mouse_move(cx.listener(move |this, _, _, cx| {
-                        this.cancel_hover_clear();
-                        cx.stop_propagation();
-                    }))
-                    .when(!toolbar_visible, |d| d.opacity(0.))
-                    .child(inline_toolbar);
-                deferred(toolbar_wrapper).priority(10).into_any_element()
-            })
+                let any_text_selected = selectable_texts.values().any(|entity| entity.read(cx).has_selection());
+                let placement = (!any_text_selected).then(|| geometry.local_placement(toolbar_size)).flatten();
+                if let Some(position) = placement {
+                    let toolbar_wrapper = div().absolute().left(px(position.x)).top(px(position.y))
+                        .block_mouse_except_scroll()
+                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| {
+                            this.cancel_hover_clear(); cx.stop_propagation();
+                        }))
+                        .on_mouse_move(cx.listener(|this, _, _, cx| {
+                            this.cancel_hover_clear(); cx.stop_propagation();
+                        }))
+                        .child(inline_toolbar);
+                    deferred(toolbar_wrapper).priority(10).into_any_element()
+                } else {
+                    div().into_any_element()
+                }
+            }))
             .when(
                 show_thread_reply_badge && message.thread_reply_count > 0,
                 |container| {
@@ -1665,7 +1647,15 @@ impl TimelineList {
                                     .gap_1()
                                     .flex_shrink_0()
                                     .child(thread_icon(accent()))
-                                    .child("View thread"),
+                                    .child(format!(
+                                        "{} {} · View thread",
+                                        message.thread_reply_count,
+                                        if message.thread_reply_count == 1 {
+                                            "reply"
+                                        } else {
+                                            "replies"
+                                        }
+                                    )),
                             ),
                     )
                 },
@@ -2112,8 +2102,8 @@ impl TimelineList {
         div()
             .id(SharedString::from(format!("{prefix}-{message_key}")))
             .on_click(listener)
-            .w(px(26.))
-            .h(px(26.))
+            .w(px(BUTTON_SIZE))
+            .h(px(BUTTON_SIZE))
             .rounded_md()
             .flex()
             .items_center()

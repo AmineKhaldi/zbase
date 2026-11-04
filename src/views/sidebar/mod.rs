@@ -1,3 +1,4 @@
+use crate::models::conversation_model::AvatarParticipant;
 use crate::{
     domain::{ids::SidebarSectionId, route::Route},
     models::{
@@ -5,11 +6,9 @@ use crate::{
         sidebar_model::{SidebarModel, SidebarRow, SidebarSection},
     },
     views::{
-        accent,
-        avatar::{Avatar, default_avatar_background},
-        chevron_down_icon, chevron_right_icon, glass_surface_dark, hash_icon, is_dark_theme,
-        plus_icon, search_icon, sidebar_bg, subtle_surface, success, success_soft, text_primary,
-        text_secondary, tint, unread_indicator,
+        accent, avatar::Avatar, chevron_down_icon, chevron_right_icon, glass_surface_dark,
+        hash_icon, is_dark_theme, plus_icon, search_icon, sidebar_bg, subtle_surface, success,
+        success_soft, text_primary, text_secondary, tint, unread_indicator,
     },
 };
 use gpui::prelude::FluentBuilder;
@@ -75,7 +74,7 @@ impl Sidebar {
         connectivity: &Connectivity,
         current_user_display_name: &str,
         current_user_avatar_asset: Option<&str>,
-        dm_avatar_assets: &HashMap<String, String>,
+        dm_avatar_assets: &HashMap<String, Vec<AvatarParticipant>>,
         current_route: &Route,
         hovered_row: Option<&str>,
         scroll_handle: &ScrollHandle,
@@ -282,7 +281,7 @@ impl Sidebar {
     fn render_section<H: SidebarHost>(
         section: &SidebarSection,
         visible_rows: &[SidebarRow],
-        dm_avatar_assets: &HashMap<String, String>,
+        dm_avatar_assets: &HashMap<String, Vec<AvatarParticipant>>,
         current_route: &Route,
         hovered_row: Option<&str>,
         cx: &mut Context<H>,
@@ -357,7 +356,7 @@ impl Sidebar {
     fn render_row<H: SidebarHost>(
         section_id: &SidebarSectionId,
         row: &SidebarRow,
-        dm_avatar_assets: &HashMap<String, String>,
+        dm_avatar_assets: &HashMap<String, Vec<AvatarParticipant>>,
         current_route: &Route,
         hovered_row: Option<&str>,
         cx: &mut Context<H>,
@@ -430,7 +429,7 @@ impl Sidebar {
     fn leading_element(
         row: &SidebarRow,
         route_label: &str,
-        dm_avatar_assets: &HashMap<String, String>,
+        dm_avatar_assets: &HashMap<String, Vec<AvatarParticipant>>,
         selected: bool,
     ) -> AnyElement {
         match &row.route {
@@ -445,17 +444,14 @@ impl Sidebar {
                     text_secondary()
                 }))
                 .into_any_element(),
-            Route::DirectMessage { .. } => {
-                let live_asset = dm_avatar_assets.get(route_label).map(String::as_str);
-                let asset = live_asset;
-                Avatar::render(
-                    &row.label,
-                    asset,
-                    20.,
-                    default_avatar_background(&row.label),
-                    text_primary(),
-                )
-            }
+            Route::DirectMessage { .. } => Avatar::render_participants(
+                dm_avatar_assets
+                    .get(route_label)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+                &row.label,
+                20.,
+            ),
             _ => div()
                 .w(px(16.))
                 .flex()

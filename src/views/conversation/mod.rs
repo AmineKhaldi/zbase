@@ -6,17 +6,10 @@ use crate::{
         timeline_model::TimelineModel,
     },
     views::{
-        accent, accent_soft,
-        app_window::AppWindow,
-        avatar::{Avatar, default_avatar_background},
-        chevron_down_icon, close_icon,
-        composer::ComposerPanel,
-        glass_surface_dark, hash_icon,
-        input::TextField,
-        is_dark_theme, pin_icon, search_icon, shell_border, subtle_surface, text_primary,
-        text_secondary,
-        timeline::TimelineList,
-        tint,
+        accent, accent_soft, app_window::AppWindow, avatar::Avatar, chevron_down_icon, close_icon,
+        composer::ComposerPanel, glass_surface_dark, hash_icon, input::TextField, is_dark_theme,
+        pin_icon, search_icon, shell_border, subtle_surface, text_primary, text_secondary,
+        timeline::TimelineList, tint,
     },
 };
 use gpui::prelude::FluentBuilder;
@@ -431,26 +424,14 @@ impl ConversationHeader {
                         .into_any_element()
                 }
             }
-            crate::domain::conversation::ConversationKind::DirectMessage => div()
-                .child(Avatar::render(
+            crate::domain::conversation::ConversationKind::DirectMessage
+            | crate::domain::conversation::ConversationKind::GroupDirectMessage => {
+                Avatar::render_participants(
+                    &conversation.participant_avatars,
                     &conversation.summary.title,
-                    conversation.avatar_asset.as_deref(),
                     28.,
-                    default_avatar_background(&conversation.summary.title),
-                    text_primary(),
-                ))
-                .into_any_element(),
-            crate::domain::conversation::ConversationKind::GroupDirectMessage => div()
-                .w(px(28.))
-                .h(px(28.))
-                .rounded_md()
-                .bg(rgb(accent_soft()))
-                .text_color(rgb(accent()))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(hash_icon(accent()))
-                .into_any_element(),
+                )
+            }
         }
     }
 }

@@ -1,3 +1,5 @@
+mod pane_window;
+mod quick_react_placement;
 pub mod app_window;
 pub mod avatar;
 pub mod calls;

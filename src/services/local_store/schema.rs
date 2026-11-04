@@ -36,6 +36,9 @@ pub struct CachedConversationSummary {
     pub mention_count: u32,
     pub muted: bool,
     pub last_activity_time: i64,
+    // Older builds persisted startup ordering as if it were server activity.
+    #[serde(default)]
+    pub canonical_activity: bool,
 }
 
 impl CachedConversationSummary {
@@ -58,6 +61,7 @@ impl CachedConversationSummary {
             mention_count: summary.mention_count,
             muted: summary.muted,
             last_activity_time,
+            canonical_activity: true,
         }
     }
 
@@ -79,7 +83,11 @@ impl CachedConversationSummary {
             unread_count: self.unread_count,
             mention_count: self.mention_count,
             muted: self.muted,
-            last_activity_ms: self.last_activity_time,
+            last_activity_ms: if self.canonical_activity {
+                self.last_activity_time
+            } else {
+                0
+            },
         }
     }
 }

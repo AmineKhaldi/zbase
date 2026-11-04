@@ -7,6 +7,12 @@ pub enum SocialGraphListType {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SocialListLoadState {
+    Loading,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProofState {
     Verified,
     Broken,

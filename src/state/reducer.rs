@@ -9,7 +9,10 @@ use crate::domain::{
     ids::{ChannelId, ConversationId, DmId, MessageId, SidebarSectionId, UserId, WorkspaceId},
     message::{MessageFragment, MessageRecord, MessageSendState},
     presence::Presence,
-    profile::{ProfileSection, SocialGraph, SocialGraphEntry, SocialGraphListType, UserProfile},
+    profile::{
+        ProfileSection, SocialGraph, SocialGraphEntry, SocialGraphListType, SocialListLoadState,
+        UserProfile,
+    },
     route::Route,
 };
 use crate::util::formatting::now_unix_ms;
@@ -59,6 +62,7 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             }
         }
         UiAction::Navigate(route) => {
+            track_unread_visit(state, &route);
             state.navigation.current_route = Some(route.clone());
             state.sidebar.highlighted_route = Some(route.clone());
 
@@ -99,6 +103,7 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             ReducerOutput { effects }
         }
         UiAction::NavigateQuiet(route) => {
+            track_unread_visit(state, &route);
             state.navigation.current_route = Some(route.clone());
             state.sidebar.highlighted_route = Some(route.clone());
 
@@ -631,8 +636,8 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             state
                 .backend
                 .profile_panel
-                .loading_social_list
-                .insert(user_id.clone());
+                .social_lists
+                .insert((user_id.clone(), list_type), SocialListLoadState::Loading);
             ReducerOutput {
                 effects: vec![Effect::Backend(BackendCommand::LoadSocialGraphList {
                     user_id,
@@ -760,6 +765,7 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 &state.workspace.direct_messages,
                 &workspace_id,
                 &state.backend.user_profiles,
+                state.sidebar.retained_unread_conversation.as_ref(),
             );
 
             if initialize_selection {
@@ -826,6 +832,7 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 &state.workspace.direct_messages,
                 &sidebar_workspace_id,
                 &state.backend.user_profiles,
+                state.sidebar.retained_unread_conversation.as_ref(),
             );
         }
         BackendEvent::WorkspaceConversationsExcluded {
@@ -842,6 +849,7 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 &state.workspace.direct_messages,
                 &workspace_id,
                 &state.backend.user_profiles,
+                state.sidebar.retained_unread_conversation.as_ref(),
             );
             if state
                 .timeline
@@ -1095,6 +1103,23 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             avatar_asset,
             updated_ms,
         } => {
+            let previous = state.backend.user_profiles.get(&user_id);
+            let stale = previous.is_some_and(|old| old.updated_ms > updated_ms);
+            let display_name = previous
+                .filter(|_| stale)
+                .map(|old| old.display_name.clone())
+                .unwrap_or(display_name);
+            let avatar_asset = if stale {
+                previous
+                    .and_then(|old| old.avatar_asset.clone())
+                    .or(avatar_asset)
+            } else {
+                avatar_asset.or_else(|| previous.and_then(|old| old.avatar_asset.clone()))
+            };
+            let updated_ms = previous.map_or(updated_ms, |old| old.updated_ms.max(updated_ms));
+            if let Some(profile) = state.backend.profile_panel.profiles.get_mut(&user_id) {
+                profile.avatar_asset = avatar_asset.clone();
+            }
             state.backend.user_profiles.insert(
                 user_id.clone(),
                 super::state::UserProfileState {
@@ -1115,6 +1140,13 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
         } => {
             let user_id = profile.user_id.clone();
             let mut profile = profile;
+            profile.avatar_asset = profile.avatar_asset.or_else(|| {
+                state
+                    .backend
+                    .user_profiles
+                    .get(&user_id)
+                    .and_then(|old| old.avatar_asset.clone())
+            });
             if let Some(presence) = presence_for_user(&state.backend.user_presences, &user_id) {
                 profile.presence = presence;
             }
@@ -1153,14 +1185,14 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 && !state
                     .backend
                     .profile_panel
-                    .loading_social_list
-                    .contains(&user_id)
+                    .social_lists
+                    .get(&(user_id.clone(), SocialGraphListType::Followers))
+                    .is_some_and(|status| *status == SocialListLoadState::Loading)
             {
-                state
-                    .backend
-                    .profile_panel
-                    .loading_social_list
-                    .insert(user_id.clone());
+                state.backend.profile_panel.social_lists.insert(
+                    (user_id.clone(), SocialGraphListType::Followers),
+                    SocialListLoadState::Loading,
+                );
                 return ReducerOutput {
                     effects: vec![Effect::Backend(BackendCommand::LoadSocialGraphList {
                         user_id,
@@ -1177,8 +1209,8 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             state
                 .backend
                 .profile_panel
-                .loading_social_list
-                .remove(&user_id);
+                .social_lists
+                .remove(&(user_id.clone(), list_type));
             if let Some(profile) = state.backend.profile_panel.profiles.get_mut(&user_id) {
                 merge_social_graph_entries(profile, list_type, entries);
             }
@@ -1473,6 +1505,7 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 &state.workspace.direct_messages,
                 &workspace_id,
                 &state.backend.user_profiles,
+                state.sidebar.retained_unread_conversation.as_ref(),
             );
         }
         BackendEvent::ConversationUnreadChanged {
@@ -1515,6 +1548,7 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                     &state.workspace.direct_messages,
                     &workspace_id,
                     &state.backend.user_profiles,
+                    state.sidebar.retained_unread_conversation.as_ref(),
                 );
             }
         }
@@ -1585,6 +1619,7 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 &state.workspace.direct_messages,
                 &sidebar_workspace_id,
                 &state.backend.user_profiles,
+                state.sidebar.retained_unread_conversation.as_ref(),
             );
             let route = route_for_summary(&conversation, &workspace_id);
             state.navigation.current_route = Some(route.clone());
@@ -1697,12 +1732,12 @@ fn reduce_command_failure(
         BackendCommand::LoadUserProfile { user_id } => {
             state.backend.profile_panel.loading.remove(&user_id);
         }
-        BackendCommand::LoadSocialGraphList { user_id, .. } => {
+        BackendCommand::LoadSocialGraphList { user_id, list_type } => {
             state
                 .backend
                 .profile_panel
-                .loading_social_list
-                .remove(&user_id);
+                .social_lists
+                .insert((user_id, list_type), SocialListLoadState::Failed);
         }
         BackendCommand::FollowUser { user_id } | BackendCommand::UnfollowUser { user_id } => {
             // Reconcile with the backend instead of leaving an optimistic follow stuck.
@@ -1970,6 +2005,23 @@ fn upsert_message_in_state(state: &mut UiState, mut message: MessageRecord) {
         .contains(&(message.conversation_id.clone(), message.id.clone()))
     {
         return;
+    }
+    if let Some(activity) = message.timestamp_ms {
+        let mut changed = false;
+        for summary in state
+            .workspace
+            .channels
+            .iter_mut()
+            .chain(&mut state.workspace.direct_messages)
+        {
+            if summary.id == message.conversation_id && activity > summary.last_activity_ms {
+                summary.last_activity_ms = activity;
+                changed = true;
+            }
+        }
+        if changed {
+            refresh_sidebar(state);
+        }
     }
     if let Some(existing) = state
         .timeline
@@ -2412,7 +2464,7 @@ fn merge_workspace_conversations(
             continue;
         }
         if let Some(index) = index_by_id.get(&summary.id).copied() {
-            summary.preserve_known_team_type(&summaries[index]);
+            summary.preserve_known_metadata(&summaries[index]);
             summaries[index] = summary;
         } else {
             index_by_id.insert(summary.id.clone(), summaries.len());
@@ -2424,11 +2476,46 @@ fn merge_workspace_conversations(
         .partition(|summary| matches!(summary.kind, ConversationKind::Channel));
 }
 
+fn refresh_sidebar(state: &mut UiState) {
+    let workspace_id = state
+        .workspace
+        .active_workspace_id
+        .clone()
+        .unwrap_or_else(|| WorkspaceId::new("ws_primary"));
+    state.sidebar.sections = build_sidebar_sections(
+        &state.workspace.channels,
+        &state.workspace.direct_messages,
+        &workspace_id,
+        &state.backend.user_profiles,
+        state.sidebar.retained_unread_conversation.as_ref(),
+    );
+}
+
+fn track_unread_visit(state: &mut UiState, route: &Route) {
+    let target = conversation_id_from_route(route);
+    let retained = target.filter(|id| {
+        state.sidebar.retained_unread_conversation.as_ref() == Some(id)
+            || state
+                .workspace
+                .channels
+                .iter()
+                .chain(&state.workspace.direct_messages)
+                .any(|summary| {
+                    &summary.id == id && (summary.unread_count > 0 || summary.mention_count > 0)
+                })
+    });
+    if state.sidebar.retained_unread_conversation != retained {
+        state.sidebar.retained_unread_conversation = retained;
+        refresh_sidebar(state);
+    }
+}
+
 fn build_sidebar_sections(
     channels: &[ConversationSummary],
     direct_messages: &[ConversationSummary],
     workspace_id: &WorkspaceId,
     user_profiles: &HashMap<UserId, UserProfileState>,
+    retained_unread: Option<&ConversationId>,
 ) -> Vec<UiSidebarSectionState> {
     let mut sections = Vec::new();
     let mut unread_rows = Vec::new();
@@ -2441,7 +2528,9 @@ fn build_sidebar_sections(
             summary.kind,
             ConversationKind::DirectMessage | ConversationKind::GroupDirectMessage
         );
-        let include_in_unread = summary.unread_count > 0 || summary.mention_count > 0;
+        let include_in_unread = summary.unread_count > 0
+            || summary.mention_count > 0
+            || retained_unread == Some(&summary.id);
         if !include_in_unread {
             continue;
         }
@@ -2516,12 +2605,7 @@ fn build_sidebar_sections(
 
     // Simple teams share the recent-conversation list with DMs, but retain
     // Channel routes and team metadata for permissions, navigation and identity.
-    flat_conversations.sort_by(|left, right| {
-        right
-            .last_activity_ms
-            .cmp(&left.last_activity_ms)
-            .then_with(|| left.id.0.cmp(&right.id.0))
-    });
+    flat_conversations.sort_by(|left, right| left.compare_recency(right));
     let conversation_rows = flat_conversations
         .iter()
         .map(|summary| UiSidebarRowState {
@@ -3345,6 +3429,202 @@ mod tests {
     }
 
     #[test]
+    fn active_unread_row_survives_read_acknowledgement_until_navigation_away() {
+        let mut state = UiState::default();
+        let workspace = WorkspaceId::new("ws");
+        state.workspace.active_workspace_id = Some(workspace.clone());
+        let mut unread = dm_summary("unread", "alice");
+        unread.unread_count = 2;
+        state.workspace.direct_messages = vec![unread, dm_summary("other", "bob")];
+        refresh_sidebar(&mut state);
+        let route = Route::DirectMessage {
+            workspace_id: workspace.clone(),
+            dm_id: DmId::new("unread"),
+        };
+        reduce_ui_action(&mut state, UiAction::Navigate(route.clone()));
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::ConversationUnreadChanged {
+                conversation_id: ConversationId::new("unread"),
+                unread_count: 0,
+                mention_count: 0,
+                read_upto: None,
+            },
+        );
+        assert_eq!(state.workspace.direct_messages[0].unread_count, 0);
+        let row = &state
+            .sidebar
+            .sections
+            .iter()
+            .find(|s| s.title == "Unread")
+            .unwrap()
+            .rows[0];
+        assert_eq!(
+            row.unread_count, 0,
+            "retaining the row must not invent unread state"
+        );
+        reduce_ui_action(&mut state, UiAction::Navigate(route));
+        assert!(state.sidebar.sections.iter().any(|s| s.title == "Unread"));
+        reduce_ui_action(
+            &mut state,
+            UiAction::Navigate(Route::DirectMessage {
+                workspace_id: workspace,
+                dm_id: DmId::new("other"),
+            }),
+        );
+        assert!(state.sidebar.sections.iter().all(|s| s.title != "Unread"));
+    }
+
+    #[test]
+    fn recent_activity_reorders_inactive_chats_and_late_metadata_cannot_undo_it() {
+        let mut state = UiState::default();
+        state.workspace.active_workspace_id = Some(WorkspaceId::new("ws"));
+        let mut first = dm_summary("first", "alice");
+        first.last_activity_ms = 200;
+        let mut second = dm_summary("second", "bob");
+        second.last_activity_ms = 100;
+        state.workspace.direct_messages = vec![first, second.clone()];
+        refresh_sidebar(&mut state);
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessageUpserted(message(&ConversationId::new("second"), "10", 300)),
+        );
+        assert_eq!(
+            state.timeline.conversation_id, None,
+            "activity must not force navigation"
+        );
+        let flat = state
+            .sidebar
+            .sections
+            .iter()
+            .find(|s| s.title == "Conversations")
+            .unwrap();
+        assert_eq!(flat.rows[0].label, "bob");
+        second.last_activity_ms = 50;
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::WorkspaceConversationsExtended {
+                workspace_id: WorkspaceId::new("ws"),
+                channels: vec![],
+                direct_messages: vec![second],
+                conversation_bindings: vec![],
+            },
+        );
+        let flat = state
+            .sidebar
+            .sections
+            .iter()
+            .find(|s| s.title == "Conversations")
+            .unwrap();
+        assert_eq!(flat.rows[0].label, "bob");
+        assert_eq!(state.workspace.direct_messages[1].last_activity_ms, 300);
+    }
+
+    #[test]
+    fn incomplete_or_stale_profile_updates_preserve_known_avatars() {
+        let mut state = UiState::default();
+        let user = UserId::new("bot");
+        for (avatar, updated_ms) in [
+            (Some("/cache/bot.png".to_string()), 100),
+            (None, 200),
+            (Some("/cache/obsolete.png".to_string()), 50),
+        ] {
+            reduce_backend_event(
+                &mut state,
+                BackendEvent::UserProfileUpserted {
+                    user_id: user.clone(),
+                    display_name: "bot".into(),
+                    avatar_asset: avatar,
+                    updated_ms,
+                },
+            );
+        }
+        assert_eq!(
+            state.backend.user_profiles[&user].avatar_asset.as_deref(),
+            Some("/cache/bot.png")
+        );
+        // A delayed cached avatar may enrich a newer response that had no image.
+        let other = UserId::new("other");
+        for (avatar, updated_ms) in [(None, 200), (Some("/cache/other.png".to_string()), 100)] {
+            reduce_backend_event(
+                &mut state,
+                BackendEvent::UserProfileUpserted {
+                    user_id: other.clone(),
+                    display_name: "other".into(),
+                    avatar_asset: avatar,
+                    updated_ms,
+                },
+            );
+        }
+        assert_eq!(
+            state.backend.user_profiles[&other].avatar_asset.as_deref(),
+            Some("/cache/other.png")
+        );
+    }
+
+    #[test]
+    fn social_list_failures_are_per_tab_and_retryable() {
+        let mut state = UiState::default();
+        let user = UserId::new("alice");
+        for list_type in [
+            SocialGraphListType::Followers,
+            SocialGraphListType::Following,
+        ] {
+            reduce_ui_action(
+                &mut state,
+                UiAction::LoadSocialGraphList {
+                    user_id: user.clone(),
+                    list_type,
+                },
+            );
+        }
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::CommandFailed {
+                command: Box::new(BackendCommand::LoadSocialGraphList {
+                    user_id: user.clone(),
+                    list_type: SocialGraphListType::Followers,
+                }),
+                error: "Keybase unavailable".into(),
+            },
+        );
+        assert_eq!(
+            state.backend.profile_panel.social_lists
+                [&(user.clone(), SocialGraphListType::Followers)],
+            SocialListLoadState::Failed
+        );
+        assert_eq!(
+            state.backend.profile_panel.social_lists
+                [&(user.clone(), SocialGraphListType::Following)],
+            SocialListLoadState::Loading
+        );
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::SocialGraphListLoaded {
+                user_id: user.clone(),
+                list_type: SocialGraphListType::Following,
+                entries: vec![],
+            },
+        );
+        assert_eq!(
+            state.backend.profile_panel.social_lists
+                [&(user.clone(), SocialGraphListType::Followers)],
+            SocialListLoadState::Failed
+        );
+        reduce_ui_action(
+            &mut state,
+            UiAction::LoadSocialGraphList {
+                user_id: user.clone(),
+                list_type: SocialGraphListType::Followers,
+            },
+        );
+        assert_eq!(
+            state.backend.profile_panel.social_lists[&(user, SocialGraphListType::Followers)],
+            SocialListLoadState::Loading
+        );
+    }
+
+    #[test]
     fn simple_teams_share_the_conversation_list_and_promote_to_groups() {
         use crate::domain::conversation::{ConversationGroup, ConversationTeamType};
         let workspace_id = WorkspaceId::new("ws");
@@ -3369,6 +3649,7 @@ mod tests {
             &[dm.clone()],
             &workspace_id,
             &HashMap::new(),
+            None,
         );
         let flat = sections
             .iter()
@@ -3453,7 +3734,8 @@ mod tests {
         dm.unread_count = 1;
         dm.last_activity_ms = 1_000;
 
-        let sections = build_sidebar_sections(&[channel], &[dm], &workspace_id, &HashMap::new());
+        let sections =
+            build_sidebar_sections(&[channel], &[dm], &workspace_id, &HashMap::new(), None);
         let unread = sections
             .iter()
             .find(|section| section.id.as_ref().is_some_and(|id| id.0 == "unread"))

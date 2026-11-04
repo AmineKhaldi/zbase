@@ -215,6 +215,7 @@ impl AppModels {
                 width_px: crate::views::SIDEBAR_WIDTH_PX,
             },
             conversation: ConversationModel {
+                participant_avatars: Vec::new(),
                 summary: ConversationSummary {
                     id: conversation_id.clone(),
                     title: "No conversation selected".into(),
@@ -339,6 +340,7 @@ impl AppModels {
                     ..TimelineModel::default()
                 };
                 self.conversation = ConversationModel {
+                    participant_avatars: Vec::new(),
                     summary: summary.clone(),
                     pinned_message: None,
                     details: None,

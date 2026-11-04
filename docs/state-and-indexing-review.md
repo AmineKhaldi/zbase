@@ -20,11 +20,17 @@ RocksDB bootstrap persistence also merges conversation pages instead of deleting
 
 ### Unread state and conversation identity
 
-Keybase badge snapshots are authoritative, including conversations absent from a sparse full snapshot. Badge subscription and startup/reconnect reconciliation update both the reducer and cache; stale inbox summaries cannot restore old counts. Confirmed local reads are partial updates.
+Keybase badge snapshots are authoritative, including conversations absent from a sparse full snapshot. Badge subscription and startup/reconnect reconciliation update both the reducer and cache; stale inbox summaries cannot restore old counts. Confirmed local reads are partial updates. An active conversation opened while unread remains in the Unread section until navigation away, even after its authoritative counts reach zero; this display-only retention never inflates badges.
 
-Team metadata distinguishes simple teams from complex teams. Simple teams join DMs in the recent Conversations section while retaining channel identity and permissions. Complex teams remain grouped. Conversation merges reconcile IDs across both buckets and preserve known team classifications when older payloads omit them.
+Team metadata distinguishes simple teams from complex teams. Simple teams join DMs in the recent Conversations section while retaining channel identity and permissions. Complex teams remain grouped. The recent list uses monotonic server activity with conversation ID as a stable tie breaker; live notifications refresh existing conversations too. Cached startup no longer fabricates activity timestamps. A backward-compatible cache marker treats legacy synthetic timestamps as unknown until real inbox metadata replaces them, and cache ordering derives from canonical summaries rather than stale secondary index keys. Conversation merges reconcile IDs across both buckets and preserve known team classifications when older payloads omit them.
 
 Internal Keybase topics, including EMOJI and EMOJICROSS, are excluded from normal conversation ingestion. A metadata-only cache repair records older entries' topic types, hides internal entries without deleting their messages, and prevents late cache snapshots from restoring them. This fixes hidden emoji-support conversations appearing as duplicate DMs.
+
+### Profile refresh and social lists
+
+Cached avatars are published even for accounts whose display name is their username. Missing refresh fields preserve known cached images, stale results cannot replace newer images, and a changed avatar URL invalidates the old local image. Profile summaries and the open profile share avatar enrichment.
+
+Social-list loading and failure states are keyed by user and list type. A Followers failure cannot clear Following's loading state or masquerade as an empty result; the profile displays a retry action. A real Keybase daemon restart cleared a latched LevelDB disk-full error, after which the Followers endpoint returned the expected 198 entries.
 
 ### Production model isolation and theme consistency
 
@@ -62,9 +68,17 @@ For existing installations, the new position initially starts at zero. Establish
 
 Canonical cache writes use direct key lookups rather than scanning a conversation on every new message, and root messages avoid unnecessary ancestor lookups.
 
+### Compact windows and message context
+
+New windows start at a compact 780-point width and a taller 880-point height; the minimum remains 780 × 680. Opening a thread/profile pane expands a narrow window and remembers its previous width; closing it restores that width. Already-wide windows use existing space, manual resizing is respected, and switching pane content does not repeatedly expand the window. A requested pane stays accessible as an overlay while native resizing is pending or screen/fullscreen constraints prevent enough expansion.
+
+The reaction strip shares one placement policy across timeline messages, thread replies, and right-click activation. Its measured footprint includes recent-reaction and delete buttons. Placement tries the right, above, then below with a pointer gap; it never clamps a right-hand candidate underneath the pointer. Hidden strips are absent from the element tree and cannot intercept clicks.
+
+Thread replies retain their message text and link interactions in the main chat. A cached parent-author/text preview gives context without extra history or file reads, and thread actions show reply counts. Group DMs use the same participant-avatar projection and overlapping-avatar component in the sidebar and conversation header; missing photos use individual initials rather than a channel hash icon.
+
 ## Validation
 
-The latest full run passed all 221 tests: 219 app tests and 2 protocol inventory tests. One opt-in live test is ignored by default. The suite runs with:
+The latest full run passed all 239 tests: 237 app tests and 2 protocol inventory tests. One opt-in live test is ignored by default. The suite runs with:
 
 ```sh
 cargo test --all-targets --features gpui/runtime_shaders
@@ -76,7 +90,7 @@ Tests cover reconnect/resubscription against a mock Unix-socket daemon, rejected
 
 ## Verification limits and follow-up work
 
-- Live read-only benchmarks and native UI checks used disposable copies of the local cache. They verified navigation, Quick Switcher, search, fixture isolation, theme rendering, and hidden-topic cache repair. Real daemon restart, interrupted catch-up, long memory soaks, and large-history disk-usage tests remain unverified; mock daemon tests cover transport recovery.
+- Live read-only benchmarks and native UI checks used disposable copies of the local cache. They verified navigation, Quick Switcher, search, fixture isolation, theme rendering, and hidden-topic cache repair. A real daemon restart was exercised while recovering a latched database error. Interrupted catch-up, long memory soaks, and large-history disk-usage tests remain unverified; mock daemon tests also cover transport recovery.
 - Existing downloaded Keybase files are not removed. Live attachments and loaded conversation pages still automatically download media, including full videos and generic files. An explicit-download UX and cache budget remain separate work.
 - Search replays local message metadata in the background on every launch for crash recovery. It can show partial results while rebuilding; a durable index journal could reduce startup indexing work for very large text histories.
 - Attachment matching uses the identity available in the current domain model: name, kind, and byte size. Carrying the backend asset ID would distinguish replacement files with identical metadata.

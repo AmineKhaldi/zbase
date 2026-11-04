@@ -7039,17 +7039,15 @@ fn prefetch_user_profiles(
                 .as_ref()
                 .filter(|path| avatar_asset_path_usable(path))
                 .cloned();
-            let has_real_display_name = !cached_display_name.is_empty()
-                && !cached_display_name.eq_ignore_ascii_case(username);
-            if fresh && cached_avatar_asset.is_some() && has_real_display_name {
-                should_fetch = false;
+            if cached_avatar_asset.is_some() {
+                should_fetch = !fresh;
                 let _ = sender.send(BackendEvent::UserProfileUpserted {
                     user_id,
                     display_name: cached_display_name,
                     avatar_asset: validated_avatar_asset(cached_avatar_asset),
                     updated_ms: profile.updated_ms,
                 });
-            } else if fresh && has_real_display_name {
+            } else if profile.avatar_url.is_some() {
                 let _ = sender.send(BackendEvent::UserProfileUpserted {
                     user_id,
                     display_name: cached_display_name,
@@ -7178,10 +7176,11 @@ fn prefetch_user_profiles(
                 avatar_path.clone(),
                 updated_ms,
             );
+            let (_, cached_avatar) = load_cached_profile_summary(&local_store, &user_id, &username);
             let _ = sender.send(BackendEvent::UserProfileUpserted {
                 user_id,
                 display_name,
-                avatar_asset: validated_avatar_asset(avatar_asset),
+                avatar_asset: validated_avatar_asset(cached_avatar.or(avatar_asset)),
                 updated_ms,
             });
         }
@@ -7898,7 +7897,7 @@ fn maybe_handle_new_conversation_notify(
         return;
     };
     let self_username = local_store.load_account_display_name();
-    let Some(parsed) = parse_inbox_ui_item(conv_value, self_username.as_deref()) else {
+    let Some(mut parsed) = parse_inbox_ui_item(conv_value, self_username.as_deref()) else {
         return;
     };
     let conversation_id = parsed.summary.id.clone();
@@ -7921,13 +7920,18 @@ fn maybe_handle_new_conversation_notify(
                 group.team_type.clone(),
             );
         }
-        return;
+        parsed.summary.preserve_known_metadata(&existing);
+        parsed.summary.unread_count = existing.unread_count;
+        parsed.summary.mention_count = existing.mention_count;
+        if parsed.summary == existing {
+            return;
+        }
     }
-    tracing::info!(
+    tracing::debug!(
         conversation_id = %conversation_id.0,
         title = %parsed.summary.title,
         kind = ?parsed.summary.kind,
-        "discovered new conversation from notification"
+        "updated conversation metadata from notification"
     );
     let workspace_id = WorkspaceId::new(WORKSPACE_ID);
     let provider_ref = parsed.provider_ref.clone();
@@ -10941,7 +10945,6 @@ fn refresh_inbox_unread_state(sender: &Sender<BackendEvent>, local_store: &Local
             .ok()
             .flatten();
         let is_new = previous.is_none();
-        let group_changed = previous.as_ref().is_some_and(|old| old.group != conversation.summary.group);
         let _ = local_store.persist_conversation(&conversation.summary, conversation.activity_time);
         if is_new {
             let _ = local_store.persist_conversation_binding(
@@ -10955,11 +10958,16 @@ fn refresh_inbox_unread_state(sender: &Sender<BackendEvent>, local_store: &Local
                 provider_conversation_ref: conversation.provider_ref.clone(),
             });
         }
-        if is_new || group_changed {
-            if matches!(conversation.summary.kind, ConversationKind::Channel) {
-                new_channels.push(conversation.summary.clone());
+        let canonical = local_store
+            .get_conversation(&conversation_id)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| conversation.summary.clone());
+        if previous.as_ref() != Some(&canonical) {
+            if matches!(canonical.kind, ConversationKind::Channel) {
+                new_channels.push(canonical);
             } else {
-                new_direct_messages.push(conversation.summary.clone());
+                new_direct_messages.push(canonical);
             }
         }
         if sender
@@ -16696,6 +16704,34 @@ mod tests {
             )]),
             &ConversationId::new("conversation"),
         )
+    }
+
+    #[test]
+    fn fresh_username_only_profiles_publish_cached_avatar_without_network_refresh() {
+        let path = temp_emoji_asset_dir("bot-avatar-cache");
+        let store = Arc::new(LocalStore::open_at(path.clone()).unwrap());
+        let file = path.join("avatar.png");
+        std::fs::write(&file, b"avatar").unwrap();
+        store
+            .upsert_user_profile(
+                &UserId::new("bot"),
+                "bot".into(),
+                None,
+                Some(file.to_string_lossy().into_owned()),
+                now_unix_ms(),
+            )
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        prefetch_user_profiles(&sender, &["bot".into()], &store);
+        assert!(
+            matches!(receiver.try_recv().unwrap(), BackendEvent::UserProfileUpserted { avatar_asset: Some(asset), .. } if asset == file.to_string_lossy())
+        );
+        assert!(
+            receiver.try_recv().is_err(),
+            "fresh cache should not trigger more RPC events"
+        );
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

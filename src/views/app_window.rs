@@ -1,3 +1,5 @@
+use crate::models::conversation_model::AvatarParticipant;
+use super::pane_window::PaneWindowSizing;
 use crate::services::og_service::{OgFetchResult, OgService};
 use crate::state::state::{BootPhase, TimelineKey};
 use crate::{
@@ -214,6 +216,7 @@ fn unique_copy_destination(downloads_dir: &PathBuf, preferred_name: &str) -> Pat
 
 pub struct AppWindow {
     models: AppModels,
+    pane_window_sizing: PaneWindowSizing,
     app_store: AppStore,
     backend_router: BackendRouter,
     focus_handle: FocusHandle,
@@ -251,7 +254,7 @@ pub struct AppWindow {
     jump_to_message_active: bool,
     last_thread_reply_count: usize,
     pending_thread_scroll_to_bottom: bool,
-    sidebar_dm_avatar_assets: HashMap<String, String>,
+    sidebar_dm_avatar_assets: HashMap<String, Vec<AvatarParticipant>>,
     sidebar_view: Option<Entity<CachedSidebarView>>,
     keybase_inspector: KeybaseInspectorState,
     perf_harness: PerfHarness,
@@ -344,6 +347,7 @@ struct SidebarResizeState {
 
 struct ShellLayout {
     show_right_pane: bool,
+    overlay_right_pane: bool,
     min_shell_width: f32,
 }
 
@@ -367,7 +371,7 @@ struct SidebarViewState {
     connectivity: Connectivity,
     current_user_display_name: String,
     current_user_avatar_asset: Option<String>,
-    dm_avatar_assets: HashMap<String, String>,
+    dm_avatar_assets: HashMap<String, Vec<AvatarParticipant>>,
     current_route: Route,
     theme: crate::app::theme::ThemeVariant,
 }
@@ -683,6 +687,7 @@ impl AppWindow {
 
         Self {
             models,
+            pane_window_sizing: PaneWindowSizing::default(),
             app_store,
             backend_router,
             focus_handle,
@@ -3160,15 +3165,19 @@ impl AppWindow {
                 .cloned();
             self.models.profile_panel.loading =
                 snapshot.backend.profile_panel.loading.contains(&user_id);
-            self.models.profile_panel.loading_social_list = snapshot
+            self.models.profile_panel.social_list_status = snapshot
                 .backend
                 .profile_panel
-                .loading_social_list
-                .contains(&user_id);
+                .social_lists
+                .get(&(
+                    user_id.clone(),
+                    self.models.profile_panel.active_social_tab.as_list_type(),
+                ))
+                .copied();
         } else {
             self.models.profile_panel.profile = None;
             self.models.profile_panel.loading = false;
-            self.models.profile_panel.loading_social_list = false;
+            self.models.profile_panel.social_list_status = None;
         }
 
         let sidebar_sections_sig = sidebar_sections_state_signature(&snapshot.sidebar.sections);
@@ -3222,21 +3231,11 @@ impl AppWindow {
                 .workspace
                 .direct_messages
                 .iter()
-                .filter_map(|summary| {
-                    if !matches!(
-                        summary.kind,
-                        crate::domain::conversation::ConversationKind::DirectMessage
-                    ) {
-                        return None;
-                    }
-
-                    let username = first_dm_username(&summary.title)?;
-                    let avatar_asset = snapshot
-                        .backend
-                        .user_profiles
-                        .get(&UserId::new(username.to_string()))
-                        .and_then(|profile| profile.avatar_asset.clone())?;
-                    Some((summary.id.0.clone(), avatar_asset))
+                .map(|summary| {
+                    (
+                        summary.id.0.clone(),
+                        dm_participant_avatars(summary, &snapshot.backend.user_profiles),
+                    )
                 })
                 .collect::<HashMap<_, _>>();
 
@@ -3257,6 +3256,12 @@ impl AppWindow {
             self.sidebar_dm_avatar_assets = dm_avatar_assets;
             self.sync_cache.dm_avatar_sig = Some(dm_avatar_sig);
         }
+
+        self.models.conversation.participant_avatars = self
+            .sidebar_dm_avatar_assets
+            .get(&next_route.label())
+            .cloned()
+            .unwrap_or_default();
 
         // Compare with the last store projection, not a view model that navigation
         // may already have reset to the destination conversation.
@@ -4572,6 +4577,31 @@ impl AppWindow {
             self.sync_inputs_from_models(cx);
             self.restore_chat_focus(window, cx);
             self.refresh(cx);
+        }
+    }
+
+    fn sync_pane_window_size(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let viewport = window.viewport_size();
+        let pane_width = (!matches!(self.models.navigation.right_pane, RightPaneMode::Hidden))
+            .then_some(self.models.thread_pane.width_px);
+        let layout = shell_layout(
+            &self.models.navigation.right_pane,
+            self.models.thread_pane.width_px,
+            self.models.sidebar.width_px,
+            f32::from(viewport.width),
+        );
+        let maximum = window
+            .display(cx)
+            .map(|display| f32::from(display.bounds().size.width))
+            .unwrap_or(f32::from(viewport.width) + pane_width.unwrap_or(0.));
+        if let Some(width) = self.pane_window_sizing.sync(
+            f32::from(viewport.width),
+            pane_width,
+            layout.min_shell_width,
+            maximum,
+            !window.is_fullscreen() && !window.is_maximized(),
+        ) {
+            window.resize(gpui::size(px(width), viewport.height));
         }
     }
 
@@ -6264,6 +6294,7 @@ impl AppWindow {
             self.models.timeline.hovered_message_window_left = None;
             self.models.timeline.hovered_message_window_top = None;
             self.models.timeline.hovered_message_window_width = None;
+            self.models.timeline.hovered_message_viewport_size = None;
             self.models.timeline.hover_toolbar_settled = false;
             needs_refresh = true;
         }
@@ -6305,6 +6336,7 @@ impl AppWindow {
             self.models.timeline.hovered_message_window_left = None;
             self.models.timeline.hovered_message_window_top = None;
             self.models.timeline.hovered_message_window_width = None;
+            self.models.timeline.hovered_message_viewport_size = None;
             needs_refresh = true;
             // Require a new hover-settle delay when switching rows.
             self.models.timeline.hover_toolbar_settled = false;
@@ -6343,6 +6375,7 @@ impl AppWindow {
         self.models.timeline.hovered_message_window_left = None;
         self.models.timeline.hovered_message_window_top = None;
         self.models.timeline.hovered_message_window_width = None;
+        self.models.timeline.hovered_message_viewport_size = None;
         self.models.timeline.hover_toolbar_settled = true;
         self.refresh(cx);
     }
@@ -6373,6 +6406,7 @@ impl AppWindow {
         window_left: f32,
         window_top: f32,
         window_width: f32,
+        viewport_size: gpui::Size<f32>,
         cx: &mut Context<Self>,
     ) {
         if self.models.timeline.hovered_message_id.as_ref() != Some(&message_id)
@@ -6380,11 +6414,13 @@ impl AppWindow {
         {
             return;
         }
-        let needs_refresh = self
-            .models
-            .timeline
-            .hovered_message_window_left
-            .is_none_or(|x| (x - window_left).abs() > 0.5)
+        let needs_refresh = self.models.timeline.hovered_message_viewport_size
+            != Some(viewport_size)
+            || self
+                .models
+                .timeline
+                .hovered_message_window_left
+                .is_none_or(|x| (x - window_left).abs() > 0.5)
             || self
                 .models
                 .timeline
@@ -6401,6 +6437,7 @@ impl AppWindow {
         self.models.timeline.hovered_message_window_left = Some(window_left);
         self.models.timeline.hovered_message_window_top = Some(window_top);
         self.models.timeline.hovered_message_window_width = Some(window_width);
+        self.models.timeline.hovered_message_viewport_size = Some(viewport_size);
         cx.notify();
     }
 
@@ -6468,6 +6505,7 @@ impl AppWindow {
             self.models.timeline.hovered_message_window_left = None;
             self.models.timeline.hovered_message_window_top = None;
             self.models.timeline.hovered_message_window_width = None;
+            self.models.timeline.hovered_message_viewport_size = None;
             self.models.timeline.hover_toolbar_settled = false;
             self.hover_settle_seq = self.hover_settle_seq.wrapping_add(1);
             needs_refresh = true;
@@ -8180,6 +8218,7 @@ impl AppWindow {
 impl Render for AppWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let render_t0 = Instant::now();
+        self.sync_pane_window_size(window, cx);
         if self.pending_file_upload_caption_focus {
             self.pending_file_upload_caption_focus = false;
             window.focus(&self.file_upload_caption_input.focus_handle(cx));
@@ -8205,7 +8244,7 @@ impl Render for AppWindow {
 
             let t_right = Instant::now();
             let right_pane = shell_layout.show_right_pane.then(|| {
-                RightPaneHost.render(
+                let pane = RightPaneHost.render(
                     &self.models.navigation,
                     &self.models.thread_pane,
                     &self.models.conversation,
@@ -8222,7 +8261,20 @@ impl Render for AppWindow {
                     self.thread_unseen_count,
                     &capabilities,
                     cx,
-                )
+                );
+                div()
+                    .h_full()
+                    .w(px(self.models.thread_pane.width_px))
+                    .flex_shrink_0()
+                    .when(shell_layout.overlay_right_pane, |pane| {
+                        pane.absolute()
+                            .right_0()
+                            .top_0()
+                            .bottom_0()
+                            .block_mouse_except_scroll()
+                    })
+                    .child(pane)
+                    .into_any_element()
             });
             let right_elapsed = t_right.elapsed();
             self.perf_harness
@@ -8237,6 +8289,7 @@ impl Render for AppWindow {
 
             div()
                 .size_full()
+                .relative()
                 .flex()
                 .bg(app_backdrop())
                 .overflow_hidden()
@@ -8606,8 +8659,11 @@ fn shell_layout(
     sidebar_width_px: f32,
     viewport_width_px: f32,
 ) -> ShellLayout {
-    let base_shell_width =
-        SHELL_HORIZONTAL_PADDING_PX + sidebar_width_px + MAIN_PANEL_MIN_WIDTH_PX + SHELL_GAP_PX;
+    let base_shell_width = SHELL_HORIZONTAL_PADDING_PX
+        + sidebar_width_px
+        + RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX
+        + MAIN_PANEL_MIN_WIDTH_PX
+        + SHELL_GAP_PX;
 
     let right_pane_width = match right_pane_mode {
         RightPaneMode::Hidden => 0.0,
@@ -8622,16 +8678,11 @@ fn shell_layout(
         base_shell_width
     };
 
-    let show_right_pane =
-        !matches!(right_pane_mode, RightPaneMode::Hidden) && viewport_width_px >= full_shell_width;
-
+    let show_right_pane = !matches!(right_pane_mode, RightPaneMode::Hidden);
     ShellLayout {
         show_right_pane,
-        min_shell_width: if show_right_pane {
-            full_shell_width
-        } else {
-            base_shell_width
-        },
+        overlay_right_pane: show_right_pane && viewport_width_px < full_shell_width,
+        min_shell_width: full_shell_width,
     }
 }
 
@@ -9005,6 +9056,35 @@ fn first_dm_username(title: &str) -> Option<&str> {
         .find(|value| !value.is_empty())
 }
 
+fn dm_participant_avatars(
+    summary: &crate::domain::conversation::ConversationSummary,
+    profiles: &HashMap<UserId, crate::state::state::UserProfileState>,
+) -> Vec<AvatarParticipant> {
+    let mut usernames = summary
+        .title
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    usernames.sort();
+    usernames.dedup();
+    usernames
+        .into_iter()
+        .take(2)
+        .map(|username| {
+            let profile = profiles.get(&UserId::new(username.clone()));
+            AvatarParticipant {
+                display_name: profile
+                    .map(|profile| profile.display_name.clone())
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or(username),
+                asset: profile.and_then(|profile| profile.avatar_asset.clone()),
+            }
+        })
+        .collect()
+}
+
 fn dm_avatar_inputs_signature(
     sections: &[crate::models::sidebar_model::SidebarSection],
     direct_messages: &[crate::domain::conversation::ConversationSummary],
@@ -9019,31 +9099,20 @@ fn dm_avatar_inputs_signature(
     }
 
     for summary in direct_messages {
-        if !matches!(
-            summary.kind,
-            crate::domain::conversation::ConversationKind::DirectMessage
-        ) {
-            continue;
-        }
         mix_sig_str(&mut sig, &summary.id.0);
         mix_sig_str(&mut sig, &summary.title);
-        if let Some(username) = first_dm_username(&summary.title) {
-            mix_sig_str(&mut sig, username);
+        for username in summary
+            .title
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
             let user_id = UserId::new(username.to_ascii_lowercase());
-            if let Some(profile) = user_profiles.get(&user_id).or_else(|| {
-                if user_id.0 == username {
-                    None
-                } else {
-                    user_profiles.get(&UserId::new(username.to_string()))
-                }
-            }) {
+            if let Some(profile) = user_profiles.get(&user_id) {
                 mix_sig_str(&mut sig, &profile.display_name);
                 if let Some(asset) = profile.avatar_asset.as_deref() {
                     mix_sig_str(&mut sig, asset);
-                } else {
-                    mix_sig(&mut sig, 0);
                 }
-                mix_sig(&mut sig, profile.updated_ms as u64);
             }
         }
     }
@@ -10096,6 +10165,69 @@ mod tests {
         message::{ChatEvent, MessageFragment, MessageRecord, MessageSendState},
     };
     use crate::models::overlay_model::OverlayModel;
+
+    #[test]
+    fn group_dm_avatar_projection_is_stable_and_tracks_every_peers_image() {
+        use crate::domain::conversation::{ConversationKind, ConversationSummary};
+        use crate::state::state::UserProfileState;
+        let summary = ConversationSummary {
+            id: ConversationId::new("group"),
+            title: "bob, alice, bob".into(),
+            kind: ConversationKind::GroupDirectMessage,
+            topic: String::new(),
+            group: None,
+            unread_count: 0,
+            mention_count: 0,
+            muted: false,
+            last_activity_ms: 0,
+        };
+        let mut profiles = std::collections::HashMap::from([
+            (
+                UserId::new("alice"),
+                UserProfileState {
+                    display_name: "Alice".into(),
+                    avatar_asset: Some("/cache/alice.png".into()),
+                    updated_ms: 1,
+                },
+            ),
+            (
+                UserId::new("bob"),
+                UserProfileState {
+                    display_name: "Robert".into(),
+                    avatar_asset: Some("/cache/bob.png".into()),
+                    updated_ms: 1,
+                },
+            ),
+        ]);
+        let avatars = super::dm_participant_avatars(&summary, &profiles);
+        assert_eq!(avatars.len(), 2);
+        assert_eq!(avatars[0].display_name, "Alice");
+        assert_eq!(avatars[1].asset.as_deref(), Some("/cache/bob.png"));
+        let before = super::dm_avatar_inputs_signature(&[], &[summary.clone()], &profiles);
+        profiles.get_mut(&UserId::new("bob")).unwrap().avatar_asset =
+            Some("/cache/bob-new.png".into());
+        assert_ne!(
+            before,
+            super::dm_avatar_inputs_signature(&[], &[summary], &profiles)
+        );
+    }
+
+    #[test]
+    fn requested_panes_stay_visible_while_waiting_for_expansion_or_when_space_is_limited() {
+        use crate::models::navigation_model::RightPaneMode;
+        for mode in [
+            RightPaneMode::Thread,
+            RightPaneMode::Profile(UserId::new("alice")),
+        ] {
+            let small = super::shell_layout(&mode, 360., 200., 780.);
+            assert!(small.show_right_pane && small.overlay_right_pane);
+            assert_eq!(small.min_shell_width, 1124.);
+            let wide = super::shell_layout(&mode, 360., 200., 1400.);
+            assert!(wide.show_right_pane && !wide.overlay_right_pane);
+        }
+        let closed = super::shell_layout(&RightPaneMode::Hidden, 360., 200., 780.);
+        assert!(!closed.show_right_pane && !closed.overlay_right_pane);
+    }
 
     fn test_message(id: &str, event: Option<ChatEvent>) -> MessageRecord {
         MessageRecord {

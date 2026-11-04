@@ -9,7 +9,7 @@ use crate::domain::{
     message::{EmojiSourceRef, MessageRecord},
     pins::PinnedState,
     presence::Presence,
-    profile::UserProfile,
+    profile::{UserProfile, SocialGraphListType, SocialListLoadState},
     route::Route,
     search::{SearchFilter, SearchResult},
     user::UserSummary,
@@ -93,6 +93,7 @@ pub struct UiSidebarSectionState {
 
 #[derive(Clone, Debug, Default)]
 pub struct UiSidebarState {
+    pub retained_unread_conversation: Option<ConversationId>,
     pub sections: Vec<UiSidebarSectionState>,
     pub filter: String,
     pub highlighted_route: Option<Route>,
@@ -216,7 +217,7 @@ pub struct UserProfileState {
 pub struct UserProfilePanelState {
     pub profiles: HashMap<UserId, UserProfile>,
     pub loading: HashSet<UserId>,
-    pub loading_social_list: HashSet<UserId>,
+    pub social_lists: HashMap<(UserId, SocialGraphListType), SocialListLoadState>,
 }
 
 #[derive(Clone, Debug)]

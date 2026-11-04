@@ -1,3 +1,4 @@
+use crate::models::conversation_model::AvatarParticipant;
 use crate::views::{accent, panel_alt_bg, panel_surface};
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -31,6 +32,35 @@ impl Avatar {
         Self::render_shaped(name, asset, size, background, foreground, false)
     }
 
+    pub fn render_participants(
+        participants: &[AvatarParticipant],
+        fallback_name: &str,
+        size: f32,
+    ) -> AnyElement {
+        if participants.is_empty() {
+            return Self::render(
+                fallback_name,
+                None,
+                size,
+                default_avatar_background(fallback_name),
+                crate::views::text_primary(),
+            );
+        }
+        let avatars = participants
+            .iter()
+            .take(2)
+            .map(|participant| {
+                (
+                    participant.display_name.as_str(),
+                    participant.asset.as_deref(),
+                    default_avatar_background(&participant.display_name),
+                    crate::views::text_primary(),
+                )
+            })
+            .collect::<Vec<_>>();
+        Self::render_group(&avatars, size)
+    }
+
     pub fn render_group(names: &[(&str, Option<&str>, u32, u32)], size: f32) -> AnyElement {
         if names.len() < 2 {
             if let Some((name, asset, bg, fg)) = names.first() {
@@ -62,7 +92,20 @@ impl Avatar {
                     .absolute()
                     .top(px(offset))
                     .left(px(offset))
-                    .child(Self::render_shaped(name2, *asset2, mini, *bg2, *fg2, true)),
+                    .w(px(mini))
+                    .h(px(mini))
+                    .rounded_full()
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(rgb(crate::views::panel_bg()))
+                    .child(Self::render_shaped(
+                        name2,
+                        *asset2,
+                        mini - 2.,
+                        *bg2,
+                        *fg2,
+                        true,
+                    )),
             )
             .into_any_element()
     }
@@ -102,7 +145,7 @@ impl Avatar {
             .flex()
             .items_center()
             .justify_center()
-            .text_sm()
+            .text_size(px((size * 0.42).clamp(7., 14.)))
             .child(initials)
             .into_any_element()
     }
