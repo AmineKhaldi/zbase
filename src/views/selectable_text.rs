@@ -1,7 +1,7 @@
 use crate::{
     app::commands,
     views::{
-        accent,
+        link,
         app_window::AppWindow,
         input::{
             Copy, Down, End, Home, Left, Right, SelectAll, SelectDown, SelectLeft, SelectRight,
@@ -58,6 +58,24 @@ pub struct SelectableText {
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
     hovering_link: bool,
+    colors: SelectableTextColors,
+}
+
+/// Capture colors while the parent theme is active. GPUI lays out and paints
+/// this child later, outside that temporary theme scope.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SelectableTextColors {
+    link: u32,
+    selection: u32,
+}
+
+impl SelectableTextColors {
+    fn current() -> Self {
+        Self {
+            link: link(),
+            selection: selection(),
+        }
+    }
 }
 
 impl SelectableText {
@@ -76,6 +94,7 @@ impl SelectableText {
             last_bounds: None,
             is_selecting: false,
             hovering_link: false,
+            colors: SelectableTextColors::current(),
         }
     }
 
@@ -124,6 +143,12 @@ impl SelectableText {
         cx: &mut Context<Self>,
     ) {
         let text = text.into();
+        let colors = SelectableTextColors::current();
+        if self.colors != colors {
+            self.colors = colors;
+            self.clear_layout_cache();
+            cx.notify();
+        }
         if self.content == text
             && self.link_ranges == link_ranges
             && self.styled_ranges == styled_ranges
@@ -459,6 +484,7 @@ impl SelectableText {
             &self.styled_ranges,
             base_color,
             font,
+            self.colors.link,
         )
     }
 }
@@ -469,6 +495,7 @@ fn build_text_runs_for_content(
     styled_ranges: &[StyledRange],
     base_color: Hsla,
     font: gpui::Font,
+    link_foreground: u32,
 ) -> Vec<TextRun> {
     let text_len = content.len();
     if text_len == 0 {
@@ -493,7 +520,7 @@ fn build_text_runs_for_content(
         }];
     }
 
-    let link_color: Hsla = rgb(accent()).into();
+    let link_color: Hsla = rgb(link_foreground).into();
     let range_covers_span = |range: &Range<usize>, span_start: usize, span_end: usize| {
         let start = range.start.min(text_len);
         let end = range.end.min(text_len);
@@ -843,7 +870,11 @@ impl Element for SelectableTextElement {
         let selection = if !is_focused || view.selected_range.is_empty() {
             Vec::new()
         } else {
-            layout.selection_quads(view.selected_range.clone(), bounds.origin)
+            layout.selection_quads(
+                view.selected_range.clone(),
+                bounds.origin,
+                view.colors.selection,
+            )
         };
         let attachments = view
             .inline_attachments
@@ -1174,7 +1205,12 @@ impl TextLayoutSnapshot {
         Some(Point::default())
     }
 
-    fn selection_quads(&self, range: Range<usize>, origin: Point<Pixels>) -> Vec<PaintQuad> {
+    fn selection_quads(
+        &self,
+        range: Range<usize>,
+        origin: Point<Pixels>,
+        selection_color: u32,
+    ) -> Vec<PaintQuad> {
         if range.is_empty() {
             return Vec::new();
         }
@@ -1216,7 +1252,7 @@ impl TextLayoutSnapshot {
                         point(origin.x + start_x, origin.y + line_origin_y + segment.top),
                         size(end_x - start_x, self.line_height),
                     ),
-                    rgba(selection()),
+                    rgba(selection_color),
                 ));
             }
 
@@ -1423,6 +1459,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn deferred_text_layout_uses_captured_colors_after_parent_theme_ends() {
+        use crate::{app::theme::ThemeVariant, views::with_theme};
+        let dark = with_theme(ThemeVariant::Dark, SelectableTextColors::current);
+        let light = with_theme(ThemeVariant::Light, SelectableTextColors::current);
+        assert_ne!(dark.link, light.link);
+        for (captured, ambient) in [(dark, ThemeVariant::Light), (light, ThemeVariant::Dark)] {
+            let runs = with_theme(ambient, || {
+                build_text_runs_for_content(
+                    "link",
+                    &[LinkRange {
+                        byte_range: 0..4,
+                        url: "https://example.com".into(),
+                    }],
+                    &[],
+                    rgb(0xd9d9d9).into(),
+                    gpui::font(".SystemUIFont"),
+                    captured.link,
+                )
+            });
+            assert_eq!(runs[0].color, rgb(captured.link).into());
+            assert_eq!(
+                runs[0].underline.as_ref().unwrap().color,
+                Some(rgb(captured.link).into())
+            );
+        }
+        assert_eq!(dark.link, 0x3663ea);
+        assert_eq!(dark.selection, 0x4c8eff4d);
+    }
+
+    #[test]
     fn build_text_runs_merges_bold_italic_and_strike_styles() {
         let runs = build_text_runs_for_content(
             "abc",
@@ -1455,6 +1521,7 @@ mod tests {
             ],
             rgb(0x223344).into(),
             gpui::font(".SystemUIFont"),
+            link(),
         );
 
         assert_eq!(runs.len(), 1);
@@ -1481,10 +1548,11 @@ mod tests {
             }],
             rgb(0x223344).into(),
             gpui::font(".SystemUIFont"),
+            link(),
         );
 
         assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].color, rgb(accent()).into());
+        assert_eq!(runs[0].color, rgb(link()).into());
         assert_eq!(runs[0].background_color, Some(rgb(0x112233).into()));
         assert!(runs[0].underline.is_some());
     }
@@ -1507,6 +1575,7 @@ mod tests {
             }],
             rgb(0x223344).into(),
             gpui::font(".SystemUIFont"),
+            link(),
         );
 
         assert_eq!(runs.len(), 1);
@@ -1540,6 +1609,7 @@ mod tests {
             ],
             rgb(0x223344).into(),
             gpui::font(".SystemUIFont"),
+            link(),
         );
 
         assert_eq!(runs.len(), 1);

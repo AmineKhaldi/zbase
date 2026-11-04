@@ -80,7 +80,7 @@ pub enum TimelineRow {
     LoadingIndicator(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct TimelineModel {
     pub conversation_id: ConversationId,
     pub current_user_id: Option<UserId>,

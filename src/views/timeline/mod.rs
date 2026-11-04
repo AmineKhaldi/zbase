@@ -860,6 +860,7 @@ impl TimelineList {
             return text_primary();
         }
         match affinity {
+            Affinity::None if super::is_dark_theme() => super::link(),
             Affinity::None => text_primary(),
             Affinity::Positive => affinity_positive(),
             Affinity::Broken => affinity_broken(),
@@ -2040,7 +2041,7 @@ impl TimelineList {
                                 container.child(
                                     div()
                                         .text_xs()
-                                        .text_color(rgb(accent()))
+                                        .text_color(rgb(super::link()))
                                         .child(preview.url.clone()),
                                 )
                             })

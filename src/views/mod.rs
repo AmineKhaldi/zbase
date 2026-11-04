@@ -53,6 +53,8 @@ struct Palette {
     text_inverted: u32,
     text_muted_inverted: u32,
     accent: u32,
+    link: u32,
+    unread_indicator: u32,
     accent_soft: u32,
     success: u32,
     success_soft: u32,
@@ -87,6 +89,8 @@ const LIGHT_PALETTE: Palette = Palette {
     text_inverted: 0xf7fbff,
     text_muted_inverted: 0x93a4b8,
     accent: 0x6f87ad,
+    link: 0x6f87ad,
+    unread_indicator: 0x6588a7,
     accent_soft: 0xebf0f6,
     success: 0x5e8f88,
     success_soft: 0xe9f3f1,
@@ -105,38 +109,43 @@ const LIGHT_PALETTE: Palette = Palette {
     selection: 0x6f87ad26,
 };
 
+// Keybase desktop dark colors (shared/styles/colors.tsx): white, blueGrey,
+// grey, black_on_white, blue, blueDark, greenDark and semantic status colors.
+// Soft fills composite those accents over the neutral chat background.
 const DARK_PALETTE: Palette = Palette {
-    app_bg: 0x0e1419,
-    titlebar_bg: 0x131b22,
-    titlebar_surface: 0x1a242d,
-    rail_bg: 0x10171d,
-    rail_surface: 0x18222b,
-    sidebar_bg: 0x111920,
-    main_bg: 0x0f161d,
-    panel_bg: 0x141d25,
-    panel_alt_bg: 0x1a242e,
-    border: 0x283543,
-    text_primary: 0xe4ebf3,
-    text_secondary: 0x93a3b5,
-    text_inverted: 0x081018,
-    text_muted_inverted: 0x5d7086,
-    accent: 0x8aa4c7,
-    accent_soft: 0x243242,
-    success: 0x79b2a7,
-    success_soft: 0x1e302f,
-    warning: 0xc9a978,
-    warning_soft: 0x352b1d,
-    danger: 0xc6918c,
-    danger_soft: 0x362220,
-    affinity_positive: 0x79b2a7,
-    affinity_positive_soft: 0x1e302f,
-    affinity_broken: 0xc6918c,
-    affinity_broken_soft: 0x362220,
-    mention: 0x8eb4d2,
-    mention_soft: 0x1f3140,
-    mention_you: 0xc9a978,
-    mention_you_soft: 0x352b1d,
-    selection: 0x8aa4c733,
+    app_bg: 0x191919,
+    titlebar_bg: 0x191919,
+    titlebar_surface: 0x333333,
+    rail_bg: 0x2d2d2d,
+    rail_surface: 0x3f3f3f,
+    sidebar_bg: 0x202020,
+    main_bg: 0x191919,
+    panel_bg: 0x202020,
+    panel_alt_bg: 0x2d2d2d,
+    border: 0x3b3b3b,
+    text_primary: 0xd9d9d9,
+    text_secondary: 0x8c8c8c,
+    text_inverted: 0xffffff,
+    text_muted_inverted: 0xcccccc,
+    accent: 0x4c8eff,
+    link: 0x3663ea,
+    unread_indicator: 0xff6f21,
+    accent_soft: 0x192344,
+    success: 0x37bd99,
+    success_soft: 0x1f3a33,
+    warning: 0xffb800,
+    warning_soft: 0x3b3115,
+    danger: 0xff4d61,
+    danger_soft: 0x3b2124,
+    affinity_positive: 0x189e7a,
+    affinity_positive_soft: 0x193b32,
+    affinity_broken: 0xeb253b,
+    affinity_broken_soft: 0x3b1b20,
+    mention: 0x3663ea,
+    mention_soft: 0x192344,
+    mention_you: 0x3663ea,
+    mention_you_soft: 0x192344,
+    selection: 0x4c8eff4d,
 };
 
 fn palette() -> Palette {
@@ -243,6 +252,14 @@ pub fn text_muted_inverted() -> u32 {
 
 pub fn accent() -> u32 {
     palette().accent
+}
+
+pub fn link() -> u32 {
+    palette().link
+}
+
+pub fn unread_indicator() -> u32 {
+    palette().unread_indicator
 }
 
 pub fn accent_soft() -> u32 {
@@ -370,8 +387,8 @@ pub fn app_backdrop() -> Background {
     if is_dark_theme() {
         linear_gradient(
             135.,
-            linear_color_stop(tint(0x11181f, 0.72), 0.0),
-            linear_color_stop(tint(0x17212a, 0.78), 1.0),
+            linear_color_stop(tint(app_bg(), 1.0), 0.0),
+            linear_color_stop(tint(main_bg(), 1.0), 1.0),
         )
     } else {
         linear_gradient(
@@ -384,7 +401,7 @@ pub fn app_backdrop() -> Background {
 
 pub fn glass_surface() -> Hsla {
     if is_dark_theme() {
-        tint(0x121b22, 0.55)
+        tint(panel_bg(), 0.98)
     } else {
         tint(0xffffff, 0.45)
     }
@@ -392,7 +409,7 @@ pub fn glass_surface() -> Hsla {
 
 pub fn glass_surface_strong() -> Hsla {
     if is_dark_theme() {
-        tint(0x212f3e, 0.46)
+        tint(panel_alt_bg(), 0.98)
     } else {
         tint(0xffffff, 0.88)
     }
@@ -400,7 +417,7 @@ pub fn glass_surface_strong() -> Hsla {
 
 pub fn glass_surface_dark() -> Hsla {
     if is_dark_theme() {
-        tint(0x111920, 0.92)
+        tint(sidebar_bg(), 0.98)
     } else {
         tint(0xffffff, 0.76)
     }
@@ -408,7 +425,7 @@ pub fn glass_surface_dark() -> Hsla {
 
 pub fn modal_surface() -> Hsla {
     if is_dark_theme() {
-        tint(0x131a22, 0.99)
+        tint(panel_bg(), 0.99)
     } else {
         tint(0xf8f9fa, 0.99)
     }
@@ -416,7 +433,7 @@ pub fn modal_surface() -> Hsla {
 
 pub fn content_surface() -> Hsla {
     if is_dark_theme() {
-        tint(0x182330, 0.65)
+        tint(main_bg(), 0.98)
     } else {
         tint(0xffffff, 0.82)
     }
@@ -428,7 +445,7 @@ pub fn subtle_surface() -> Hsla {
 
 pub fn shell_border() -> Hsla {
     if is_dark_theme() {
-        tint(0x8ea3b7, 0.22)
+        tint(0xffffff, 0.10)
     } else {
         tint(0x8ea3b7, 0.28)
     }
@@ -436,7 +453,7 @@ pub fn shell_border() -> Hsla {
 
 pub fn shell_border_strong() -> Hsla {
     if is_dark_theme() {
-        tint(0x8ea3b7, 0.34)
+        tint(0xffffff, 0.20)
     } else {
         tint(0x8ea3b7, 0.44)
     }

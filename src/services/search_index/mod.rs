@@ -1,8 +1,13 @@
 use std::{
     io,
     path::Path,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, SyncSender},
+    },
     thread,
+    time::{Duration, Instant},
 };
 
 use tantivy::{
@@ -16,8 +21,11 @@ use tantivy::{
 };
 
 use crate::{
-    domain::ids::{ConversationId, MessageId},
-    services::local_store::paths,
+    domain::{
+        ids::{ConversationId, MessageId},
+        message::{BroadcastKind, MessageFragment, MessageRecord},
+    },
+    services::local_store::{LocalStore, MessageChange, paths},
     util::interactive_qos::search_index_commit_interval,
 };
 
@@ -30,6 +38,43 @@ pub struct SearchDocument {
     pub body: String,
     pub filename_tokens: String,
     pub timestamp: i64,
+}
+
+impl SearchDocument {
+    pub fn from_message(workspace_id: &str, message: &MessageRecord) -> Self {
+        let body = message
+            .fragments
+            .iter()
+            .map(|fragment| match fragment {
+                MessageFragment::Text(text)
+                | MessageFragment::Code { text, .. }
+                | MessageFragment::Quote(text) => text.clone(),
+                MessageFragment::InlineCode(text) => format!("`{text}`"),
+                MessageFragment::Emoji { alias, .. } => format!(":{alias}:"),
+                MessageFragment::Mention(user_id) => format!("@{}", user_id.0),
+                MessageFragment::ChannelMention { name } => format!("#{name}"),
+                MessageFragment::BroadcastMention(BroadcastKind::Here) => "@here".into(),
+                MessageFragment::BroadcastMention(BroadcastKind::All) => "@channel".into(),
+                MessageFragment::Link { display, .. } => display.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        Self {
+            workspace_id: workspace_id.into(),
+            conversation_id: message.conversation_id.0.clone(),
+            message_id: message.id.0.clone(),
+            author: message.author_id.0.clone(),
+            body,
+            filename_tokens: message
+                .attachments
+                .iter()
+                .map(|a| a.name.trim())
+                .filter(|name| !name.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "),
+            timestamp: message.id.0.parse().unwrap_or(0),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -54,6 +99,9 @@ struct SearchFields {
 
 enum IndexCommand {
     Upsert(SearchDocument),
+    Delete(String),
+    Reset,
+    Flush(SyncSender<Result<(), String>>),
     Shutdown,
 }
 
@@ -61,7 +109,8 @@ pub struct SearchIndex {
     index: Index,
     reader: IndexReader,
     fields: SearchFields,
-    sender: Sender<IndexCommand>,
+    sender: SyncSender<IndexCommand>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl SearchIndex {
@@ -109,7 +158,7 @@ impl SearchIndex {
             .map_err(io::Error::other)?;
         let writer = index.writer(50_000_000).map_err(io::Error::other)?;
 
-        let (sender, receiver) = mpsc::channel::<IndexCommand>();
+        let (sender, receiver) = mpsc::sync_channel::<IndexCommand>(1024);
         let writer_reader = reader.clone();
         thread::spawn(move || run_writer_loop(writer, writer_reader, fields, receiver));
 
@@ -118,6 +167,7 @@ impl SearchIndex {
             reader,
             fields,
             sender,
+            shutdown: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -125,6 +175,78 @@ impl SearchIndex {
         self.sender
             .send(IndexCommand::Upsert(document))
             .map_err(io::Error::other)
+    }
+
+    pub fn enqueue_delete(
+        &self,
+        workspace_id: &str,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+    ) -> io::Result<()> {
+        self.sender
+            .send(IndexCommand::Delete(format!(
+                "{workspace_id}|{}|{}",
+                conversation_id.0, message_id.0
+            )))
+            .map_err(io::Error::other)
+    }
+
+    pub fn flush(&self) -> io::Result<()> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(IndexCommand::Flush(sender))
+            .map_err(io::Error::other)?;
+        receiver
+            .recv()
+            .map_err(io::Error::other)?
+            .map_err(io::Error::other)
+    }
+
+    /// RocksDB owns message truth. Replaying its snapshot also repairs crashes,
+    /// schema rebuilds, and missed commits without any Keybase or media reads.
+    pub fn sync_from_store(&self, store: Arc<LocalStore>, workspace_id: String) {
+        let sender = self.sender.clone();
+        let shutdown = Arc::clone(&self.shutdown);
+        thread::spawn(move || {
+            let sync = || -> io::Result<()> {
+                sender.send(IndexCommand::Reset).map_err(io::Error::other)?;
+                let changes = store.replay_messages_and_subscribe(|message| {
+                    if shutdown.load(Ordering::Relaxed) {
+                        return Err(io::Error::other("search closed"));
+                    }
+                    sender
+                        .send(IndexCommand::Upsert(SearchDocument::from_message(
+                            &workspace_id,
+                            &message,
+                        )))
+                        .map_err(io::Error::other)
+                })?;
+                while !shutdown.load(Ordering::Relaxed) {
+                    let command = match changes.recv_timeout(Duration::from_millis(250)) {
+                        Ok(MessageChange::Upsert(message)) => IndexCommand::Upsert(
+                            SearchDocument::from_message(&workspace_id, &message),
+                        ),
+                        Ok(MessageChange::Reset) => IndexCommand::Reset,
+                        Ok(MessageChange::Deleted {
+                            conversation_id,
+                            message_id,
+                        }) => IndexCommand::Delete(format!(
+                            "{workspace_id}|{}|{}",
+                            conversation_id.0, message_id.0
+                        )),
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+                    sender.send(command).map_err(io::Error::other)?;
+                }
+                Ok(())
+            };
+            if let Err(error) = sync() {
+                if !shutdown.load(Ordering::Relaxed) {
+                    tracing::error!(%error, "search cache synchronization failed");
+                }
+            }
+        });
     }
 
     pub fn search_workspace(
@@ -267,6 +389,7 @@ impl SearchIndex {
 
 impl Drop for SearchIndex {
     fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
         let _ = self.sender.send(IndexCommand::Shutdown);
     }
 }
@@ -323,6 +446,7 @@ fn run_writer_loop(
     receiver: Receiver<IndexCommand>,
 ) {
     let mut dirty = false;
+    let mut last_commit = Instant::now();
     loop {
         match receiver.recv_timeout(search_index_commit_interval()) {
             Ok(IndexCommand::Upsert(document)) => {
@@ -331,7 +455,7 @@ fn run_writer_loop(
                     document.workspace_id, document.conversation_id, document.message_id
                 );
                 writer.delete_term(Term::from_field_text(fields.doc_id, &doc_id));
-                let _ = writer.add_document(doc!(
+                if let Err(error) = writer.add_document(doc!(
                     fields.doc_id => doc_id,
                     fields.workspace_id => document.workspace_id,
                     fields.conversation_id => document.conversation_id,
@@ -340,8 +464,29 @@ fn run_writer_loop(
                     fields.body => document.body,
                     fields.filenames => document.filename_tokens,
                     fields.timestamp => document.timestamp,
-                ));
+                )) {
+                    tracing::error!(%error, "could not index message");
+                }
                 dirty = true;
+            }
+            Ok(IndexCommand::Delete(doc_id)) => {
+                writer.delete_term(Term::from_field_text(fields.doc_id, &doc_id));
+                dirty = true;
+            }
+            Ok(IndexCommand::Reset) => {
+                if let Err(error) = writer.delete_all_documents() {
+                    tracing::error!(%error, "could not reset search cache");
+                }
+                dirty = true;
+            }
+            Ok(IndexCommand::Flush(ack)) => {
+                let result = writer
+                    .commit()
+                    .map_err(|error| error.to_string())
+                    .and_then(|_| reader.reload().map_err(|error| error.to_string()));
+                dirty = result.is_err();
+                last_commit = Instant::now();
+                let _ = ack.send(result);
             }
             Ok(IndexCommand::Shutdown) => {
                 if dirty {
@@ -350,14 +495,18 @@ fn run_writer_loop(
                 }
                 break;
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if dirty {
-                    let _ = writer.commit();
-                    let _ = reader.reload();
-                    dirty = false;
-                }
-            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        // A continuous crawl must not postpone commits until the queue is idle.
+        if dirty && last_commit.elapsed() >= search_index_commit_interval() {
+            match writer.commit().and_then(|_| reader.reload().map(|_| 0)) {
+                Ok(_) => {
+                    dirty = false;
+                    last_commit = Instant::now();
+                }
+                Err(error) => tracing::error!(%error, "search commit failed"),
+            }
         }
     }
 }
@@ -389,6 +538,107 @@ mod tests {
         );
         path.push(unique);
         path
+    }
+
+    fn wait_for_index(index: &SearchIndex, mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            index.flush().unwrap();
+            if condition() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "search did not synchronize in time"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn rebuild_from_store_tracks_edits_and_removes_deleted_hits() {
+        use crate::domain::{
+            ids::UserId,
+            message::{EditMeta, MessageFragment, MessageSendState},
+        };
+        let path = temp_index_path("store-recovery");
+        let store = Arc::new(LocalStore::open_at(path.join("store")).unwrap());
+        let conversation = ConversationId::new("conversation");
+        let mut message = MessageRecord {
+            id: MessageId::new("1"),
+            conversation_id: conversation.clone(),
+            author_id: UserId::new("alice"),
+            reply_to: None,
+            thread_root_id: None,
+            timestamp_ms: Some(1),
+            event: None,
+            link_previews: Vec::new(),
+            permalink: String::new(),
+            fragments: vec![MessageFragment::Text("originalterm".into())],
+            source_text: None,
+            attachments: Vec::new(),
+            reactions: Vec::new(),
+            thread_reply_count: 0,
+            send_state: MessageSendState::Sent,
+            edited: None,
+        };
+        store.persist_message(&message).unwrap();
+        let index = SearchIndex::open_at(path.join("search")).unwrap();
+        // Simulate stale persisted index entries left by a crash before deletion was committed.
+        let mut stale = SearchDocument::from_message("ws_primary", &message);
+        stale.message_id = "99".into();
+        stale.body = "staleterm".into();
+        index.enqueue_upsert(stale).unwrap();
+        index.flush().unwrap();
+        index.sync_from_store(Arc::clone(&store), "ws_primary".into());
+        wait_for_index(&index, || {
+            index
+                .search_workspace("ws_primary", "originalterm", 10)
+                .unwrap()
+                .len()
+                == 1
+                && index
+                    .search_workspace("ws_primary", "staleterm", 10)
+                    .unwrap()
+                    .is_empty()
+        });
+        message.fragments = vec![MessageFragment::Text("editedterm".into())];
+        message.edited = Some(EditMeta {
+            edit_id: MessageId::new("2"),
+            edited_at_ms: Some(2),
+        });
+        store.persist_message(&message).unwrap();
+        wait_for_index(&index, || {
+            index
+                .search_workspace("ws_primary", "editedterm", 10)
+                .unwrap()
+                .len()
+                == 1
+        });
+        assert!(
+            index
+                .search_workspace("ws_primary", "originalterm", 10)
+                .unwrap()
+                .is_empty()
+        );
+        store.delete_message(&conversation, &message.id).unwrap();
+        wait_for_index(&index, || {
+            index
+                .search_workspace("ws_primary", "editedterm", 10)
+                .unwrap()
+                .is_empty()
+        });
+        drop(index);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Arc::strong_count(&store) > 1 {
+            assert!(
+                Instant::now() < deadline,
+                "search observer did not shut down"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

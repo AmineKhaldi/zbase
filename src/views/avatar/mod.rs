@@ -140,19 +140,8 @@ impl Avatar {
     }
 }
 
-pub fn demo_avatar_asset(name: &str) -> Option<&'static str> {
-    match name {
-        "Alice Johnson" => Some("assets/avatars/alice.svg"),
-        "Sam Rivera" => Some("assets/avatars/sam.svg"),
-        "You" => Some(ME_AVATAR_ASSET),
-        _ => None,
-    }
-}
-
 pub fn default_avatar_background(name: &str) -> u32 {
     match name {
-        "Alice Johnson" => 0xe7eef7,
-        "Sam Rivera" => 0xe7f2ee,
         "You" => accent(),
         _ => panel_alt_bg(),
     }

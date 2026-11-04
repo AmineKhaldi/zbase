@@ -12,7 +12,7 @@ const ENV_BENCH_LABEL: &str = "ZBASE_BENCH_LABEL";
 const ENV_BENCH_SCENARIO: &str = "ZBASE_BENCH_SCENARIO";
 const ENV_BENCH_OUTPUT: &str = "ZBASE_BENCH_OUTPUT";
 
-const PERF_TIMER_COUNT: usize = 8;
+const PERF_TIMER_COUNT: usize = 12;
 
 #[derive(Clone, Copy, Debug)]
 pub enum PerfTimer {
@@ -24,6 +24,10 @@ pub enum PerfTimer {
     DispatchUiAction,
     SyncModelsFromStore,
     DrainBackendEvents,
+    ScenarioStep,
+    UiLoopDelay,
+    BackendDeliveryDelay,
+    FrameBuild,
 }
 
 impl PerfTimer {
@@ -36,6 +40,10 @@ impl PerfTimer {
         Self::DispatchUiAction,
         Self::SyncModelsFromStore,
         Self::DrainBackendEvents,
+        Self::ScenarioStep,
+        Self::UiLoopDelay,
+        Self::BackendDeliveryDelay,
+        Self::FrameBuild,
     ];
 
     fn index(self) -> usize {
@@ -48,6 +56,10 @@ impl PerfTimer {
             Self::DispatchUiAction => 5,
             Self::SyncModelsFromStore => 6,
             Self::DrainBackendEvents => 7,
+            Self::ScenarioStep => 8,
+            Self::UiLoopDelay => 9,
+            Self::BackendDeliveryDelay => 10,
+            Self::FrameBuild => 11,
         }
     }
 
@@ -61,6 +73,10 @@ impl PerfTimer {
             Self::DispatchUiAction => "dispatch_ui_action",
             Self::SyncModelsFromStore => "sync_models_from_store",
             Self::DrainBackendEvents => "drain_backend_events",
+            Self::ScenarioStep => "scenario_step",
+            Self::UiLoopDelay => "ui_loop_delay",
+            Self::BackendDeliveryDelay => "backend_delivery_delay",
+            Self::FrameBuild => "frame_build",
         }
     }
 }

@@ -198,7 +198,7 @@ impl ThreadPane {
             .drag_over::<ExternalPaths>(|style, _, _, _| {
                 style
                     .bg(if is_dark_theme() {
-                        tint(0x0b1117, 0.72)
+                        tint(crate::views::main_bg(), 0.72)
                     } else {
                         tint(0xe8eef5, 0.70)
                     })
@@ -974,7 +974,7 @@ fn render_link_previews(
                     container.child(
                         div()
                             .text_xs()
-                            .text_color(rgb(accent()))
+                            .text_color(rgb(crate::views::link()))
                             .child(preview.url.clone()),
                     )
                 })
@@ -1631,11 +1631,8 @@ fn render_search_panel(
         .iter()
         .enumerate()
         .filter(|(_, result)| match &result.route {
-            Route::Channel { channel_id, .. } => {
-                (conversation.summary.title == "general" && channel_id.0 == "general")
-                    || (conversation.summary.title == "design" && channel_id.0 == "design")
-            }
-            Route::DirectMessage { .. } => conversation.summary.title == "Alice Johnson",
+            Route::Channel { channel_id, .. } => channel_id.0 == conversation.summary.id.0,
+            Route::DirectMessage { dm_id, .. } => dm_id.0 == conversation.summary.id.0,
             _ => false,
         })
         .collect::<Vec<_>>();

@@ -18,11 +18,35 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub enum BackendError {
+    OperationFailed(String),
     MissingAccount(AccountId),
     MissingWorkspaceBinding(String),
     MissingConversationBinding(String),
     MissingMessageBinding(String),
     MissingBackend(BackendId),
+}
+
+impl std::fmt::Display for BackendError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OperationFailed(message) => formatter.write_str(message),
+            Self::MissingAccount(_) | Self::MissingBackend(_) => {
+                formatter.write_str("The chat account is unavailable. Reconnect and try again.")
+            }
+            Self::MissingWorkspaceBinding(_) | Self::MissingConversationBinding(_) => {
+                formatter.write_str("This conversation is not ready yet. Please try again.")
+            }
+            Self::MissingMessageBinding(_) => {
+                formatter.write_str("This message is not available yet. Please try again.")
+            }
+        }
+    }
+}
+
+impl From<std::io::Error> for BackendError {
+    fn from(error: std::io::Error) -> Self {
+        Self::OperationFailed(error.to_string())
+    }
 }
 
 #[derive(Clone, Debug)]

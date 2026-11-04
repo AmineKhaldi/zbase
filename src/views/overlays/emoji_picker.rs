@@ -10,7 +10,7 @@ use crate::{
     },
     state::state::EmojiRenderState,
     views::{
-        accent, accent_soft, app_window::AppWindow, badge, panel_alt_bg, panel_surface,
+        accent, accent_soft, app_window::AppWindow, badge, panel_alt_bg, panel_bg, panel_surface,
         search_icon, shell_border, shell_border_strong, text_primary, text_secondary, tint,
     },
 };
@@ -59,7 +59,7 @@ pub(crate) fn render_emoji_picker(
         .rounded_xl()
         .border_1()
         .border_color(shell_border_strong())
-        .bg(panel_surface())
+        .bg(rgb(panel_bg()))
         .w(px(PANEL_WIDTH_PX))
         .h(px(PANEL_HEIGHT_PX))
         .flex()
@@ -263,7 +263,12 @@ fn render_sections(
         let section = format!("g{gi}");
         content = content
             .child(section_title(group_label(*group)))
-            .child(render_grid(&section, &stock_items, picker.selected_skin_tone, cx));
+            .child(render_grid(
+                &section,
+                &stock_items,
+                picker.selected_skin_tone,
+                cx,
+            ));
     }
 
     if !custom_items.is_empty() {
@@ -305,7 +310,7 @@ fn render_search_results(
         content = content.child(
             div()
                 .rounded_md()
-                .bg(panel_surface())
+                .bg(rgb(panel_bg()))
                 .px_3()
                 .py_2()
                 .text_sm()
@@ -313,7 +318,12 @@ fn render_search_results(
                 .child("No emoji matches"),
         );
     } else {
-        content = content.child(render_grid("search", results, picker.selected_skin_tone, cx));
+        content = content.child(render_grid(
+            "search",
+            results,
+            picker.selected_skin_tone,
+            cx,
+        ));
     }
 
     div()

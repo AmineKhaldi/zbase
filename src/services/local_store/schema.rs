@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     domain::{
         attachment::{AttachmentKind, AttachmentPreview, AttachmentSource, AttachmentSummary},
-        conversation::{ConversationGroup, ConversationKind, ConversationSummary},
+        conversation::{
+            ConversationGroup, ConversationKind, ConversationSummary, ConversationTeamType,
+        },
         ids::{ConversationId, MessageId, UserId, WorkspaceId},
         message::{
             BroadcastKind, ChatEvent, EditMeta, LinkPreview, MessageFragment, MessageRecord,
@@ -19,6 +21,8 @@ pub const SCHEMA_VERSION: u32 = 4;
 pub struct CachedConversationGroup {
     pub id: String,
     pub display_name: String,
+    #[serde(default)]
+    pub team_type: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -44,6 +48,11 @@ impl CachedConversationSummary {
             group: summary.group.as_ref().map(|group| CachedConversationGroup {
                 id: group.id.clone(),
                 display_name: group.display_name.clone(),
+                team_type: match group.team_type {
+                    ConversationTeamType::Simple => Some(1),
+                    ConversationTeamType::Complex => Some(2),
+                    ConversationTeamType::Unknown => None,
+                },
             }),
             unread_count: summary.unread_count,
             mention_count: summary.mention_count,
@@ -61,6 +70,11 @@ impl CachedConversationSummary {
             group: self.group.as_ref().map(|group| ConversationGroup {
                 id: group.id.clone(),
                 display_name: group.display_name.clone(),
+                team_type: match group.team_type {
+                    Some(1) => ConversationTeamType::Simple,
+                    Some(2) => ConversationTeamType::Complex,
+                    _ => ConversationTeamType::Unknown,
+                },
             }),
             unread_count: self.unread_count,
             mention_count: self.mention_count,
@@ -780,6 +794,51 @@ fn parse_cached_broadcast_kind(label: &str) -> Option<BroadcastKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conversation_team_type_is_backward_compatible_in_the_cache() {
+        #[derive(Serialize)]
+        struct LegacyGroup {
+            id: String,
+            display_name: String,
+        }
+        let legacy = LegacyGroup {
+            id: "team".into(),
+            display_name: "Team".into(),
+        };
+        for bytes in [
+            rmp_serde::to_vec(&legacy).unwrap(),
+            rmp_serde::to_vec_named(&legacy).unwrap(),
+        ] {
+            let group: CachedConversationGroup = rmp_serde::from_slice(&bytes).unwrap();
+            assert_eq!(group.team_type, None);
+        }
+        for team_type in [
+            ConversationTeamType::Simple,
+            ConversationTeamType::Complex,
+            ConversationTeamType::Unknown,
+        ] {
+            let summary = ConversationSummary {
+                id: ConversationId::new("conversation"),
+                title: "general".into(),
+                kind: ConversationKind::Channel,
+                topic: "general".into(),
+                group: Some(ConversationGroup {
+                    id: "team".into(),
+                    display_name: "Team".into(),
+                    team_type: team_type.clone(),
+                }),
+                unread_count: 0,
+                mention_count: 0,
+                muted: false,
+                last_activity_ms: 100,
+            };
+            let bytes =
+                rmp_serde::to_vec(&CachedConversationSummary::from_domain(&summary, 100)).unwrap();
+            let cached: CachedConversationSummary = rmp_serde::from_slice(&bytes).unwrap();
+            assert_eq!(cached.to_domain().group.unwrap().team_type, team_type);
+        }
+    }
 
     fn sample_message_with_fragments() -> MessageRecord {
         MessageRecord {

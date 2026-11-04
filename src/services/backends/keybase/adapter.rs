@@ -6,7 +6,10 @@ use crate::{
             AccountId, BackendCapabilities, BackendId, ProviderConversationRef, ProviderMessageRef,
             ProviderWorkspaceRef,
         },
-        conversation::{ConversationGroup, ConversationKind, ConversationSummary},
+        conversation::{
+            ConversationBadgeCounts, ConversationGroup, ConversationKind, ConversationSummary,
+            ConversationTeamType,
+        },
         ids::{ChannelId, ConversationId, DmId, MessageId, UserId, WorkspaceId},
         message::{
             BroadcastKind, ChatEvent, EditMeta, EmojiSourceRef, LinkPreview, MessageFragment,
@@ -26,12 +29,14 @@ use crate::{
         backends::traits::{BackendError, ChatBackend, RoutedBackendCommand},
         local_store::{
             CachedBootstrapSeed, CachedConversationEmoji, CachedMessageReaction, CachedTeamRoleMap,
-            CrawlCheckpoint, LocalStore,
+            LocalStore,
         },
-        search_index::{SearchDocument, SearchIndex},
+        search_index::SearchIndex,
+        sync_service::SyncService,
     },
     state::{
         bindings::{ConversationBinding, MessageBinding, WorkspaceBinding},
+        effect::BackendCommand,
         event::{
             BackendEvent, BootstrapPayload, ConversationEmojiEntry, MessageReactionEntry,
             MessageReactionsForMessage, PresencePatch, TeamRoleEntry, TeamRoleKind,
@@ -50,7 +55,10 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -70,6 +78,12 @@ use super::{
 use crate::services::local_store::paths as store_paths;
 use crate::util::video_decoder::extract_video_thumbnail_to_file;
 
+fn benchmark_read_only() -> bool {
+    std::env::var("ZBASE_BENCH_READ_ONLY").is_ok_and(|value| value == "1")
+        && (std::env::var("ZBASE_BENCH_AUTOSTART").is_ok()
+            || std::env::var("ZBASE_BENCH_SCRIPT").is_ok())
+}
+
 pub struct KeybaseBackend {
     backend_id: BackendId,
     local_store: Arc<LocalStore>,
@@ -78,6 +92,9 @@ pub struct KeybaseBackend {
     inbound_events: Option<Receiver<BackendEvent>>,
     inbound_sender: Option<Sender<BackendEvent>>,
     listener_handle: Option<JoinHandle<()>>,
+    listener_shutdown: Arc<AtomicBool>,
+    account_id: AccountId,
+    sync: Arc<SyncService>,
 }
 
 #[derive(Clone, Debug)]
@@ -87,12 +104,41 @@ struct PendingSendMeta {
     local_attachment_path: Option<String>,
 }
 
+struct BackendTaskOutcome {
+    sender: Sender<BackendEvent>,
+    command: Option<BackendCommand>,
+}
+
+impl BackendTaskOutcome {
+    fn new(sender: &Sender<BackendEvent>, command: BackendCommand) -> Self {
+        Self {
+            sender: sender.clone(),
+            command: Some(command),
+        }
+    }
+    fn complete(&mut self) {
+        self.command = None;
+    }
+}
+
+impl Drop for BackendTaskOutcome {
+    fn drop(&mut self) {
+        if let Some(command) = self.command.take() {
+            let _ = self.sender.send(BackendEvent::CommandFailed {
+                command: Box::new(command),
+                error: "Could not complete the request. Please try again.".into(),
+            });
+        }
+    }
+}
+
 impl KeybaseBackend {
     pub fn new(local_store: Arc<LocalStore>) -> Self {
         let search_index =
             Arc::new(SearchIndex::open().unwrap_or_else(|error| {
                 panic!("failed to initialize local Tantivy index: {error}")
             }));
+        search_index.sync_from_store(Arc::clone(&local_store), WORKSPACE_ID.into());
         Self {
             backend_id: BackendId::new(KEYBASE_BACKEND_ID),
             local_store,
@@ -101,23 +147,161 @@ impl KeybaseBackend {
             inbound_events: None,
             inbound_sender: None,
             listener_handle: None,
+            listener_shutdown: Arc::new(AtomicBool::new(false)),
+            account_id: AccountId::new(DEFAULT_ACCOUNT_ID),
+            sync: Arc::new(SyncService::default()),
         }
     }
 
     fn ensure_listener_started(&mut self) {
-        if self.listener_handle.is_some() {
+        if self
+            .listener_handle
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
+        {
             return;
         }
 
         let (sender, receiver) = mpsc::channel();
         self.inbound_events = Some(receiver);
         self.inbound_sender = Some(sender.clone());
+        if benchmark_read_only() {
+            let pulse_sender = sender.clone();
+            let cancelled = Arc::clone(&self.listener_shutdown);
+            thread::spawn(move || {
+                while !cancelled.load(Ordering::Relaxed) {
+                    thread::sleep(Duration::from_millis(73));
+                    if pulse_sender
+                        .send(BackendEvent::BenchmarkPulse(Instant::now()))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
         let local_store = Arc::clone(&self.local_store);
         let search_index = Arc::clone(&self.search_index);
         let pending_outbox_sends = Arc::clone(&self.pending_outbox_sends);
+        let shutdown = Arc::clone(&self.listener_shutdown);
+        let account_id = self.account_id.clone();
         self.listener_handle = Some(thread::spawn(move || {
-            run_listener(sender, local_store, search_index, pending_outbox_sends)
+            run_listener(
+                sender,
+                local_store,
+                search_index,
+                pending_outbox_sends,
+                account_id,
+                shutdown,
+            )
         }));
+    }
+
+    fn start_message_mutation(
+        &self,
+        op_id: OpId,
+        conversation: ProviderConversationRef,
+        message: ProviderMessageRef,
+        text: Option<String>,
+    ) -> Result<Vec<BackendEvent>, BackendError> {
+        let sender = self
+            .inbound_sender
+            .clone()
+            .ok_or_else(|| BackendError::OperationFailed("Keybase listener unavailable".into()))?;
+        let conversation_id = canonical_conversation_id_from_provider_ref(&conversation);
+        let message_id = provider_message_ref_to_message_id(&message)
+            .ok_or_else(|| BackendError::OperationFailed("Invalid message ID".into()))?;
+        let command = match text.as_ref() {
+            Some(text) => BackendCommand::EditMessage {
+                op_id: op_id.clone(),
+                conversation_id: conversation_id.clone(),
+                message_id: message_id.clone(),
+                text: text.clone(),
+            },
+            None => BackendCommand::DeleteMessage {
+                op_id: op_id.clone(),
+                conversation_id: conversation_id.clone(),
+                message_id: message_id.clone(),
+            },
+        };
+        let store = Arc::clone(&self.local_store);
+        let scheduled = task_runtime::spawn_task(
+            TaskPriority::High,
+            Some(format!("mutation:{}", op_id.0)),
+            move || {
+                let result = (|| -> io::Result<()> {
+                    let path = socket_path()
+                        .ok_or_else(|| io::Error::other("Keybase socket unavailable"))?;
+                    let raw = provider_ref_to_conversation_id_bytes(&conversation)
+                        .ok_or_else(|| io::Error::other("Invalid conversation ID"))?;
+                    let target = message_id.0.parse::<i64>().map_err(io::Error::other)?;
+                    let previous = store
+                        .load_recent_messages_for_conversation(&conversation_id, 1)?
+                        .last()
+                        .and_then(|message| message.id.0.parse::<i64>().ok())
+                        .unwrap_or(0);
+                    let runtime = Builder::new_current_thread().enable_all().build()?;
+                    runtime.block_on(async {
+                        tokio::time::timeout(Duration::from_secs(30), async {
+                            let transport = FramedMsgpackTransport::connect(&path).await?;
+                            let mut client = KeybaseRpcClient::new(transport);
+                            let inbox = fetch_inbox_for_conversation_id(&mut client, &raw).await?;
+                            let (tlf_name, _, public) =
+                                extract_team_lookup_params_from_inbox_response(&inbox).ok_or_else(
+                                    || io::Error::other("Missing conversation metadata"),
+                                )?;
+                            if let Some(text) = text.as_ref() {
+                                call_post_edit_nonblock(
+                                    &mut client,
+                                    &raw,
+                                    &tlf_name,
+                                    public,
+                                    target,
+                                    text,
+                                    previous,
+                                )
+                                .await?;
+                            } else {
+                                call_post_delete_nonblock(
+                                    &mut client,
+                                    &raw,
+                                    &tlf_name,
+                                    public,
+                                    target,
+                                    previous,
+                                )
+                                .await?;
+                            }
+                            Ok::<_, io::Error>(())
+                        })
+                        .await
+                        .map_err(|_| {
+                            io::Error::new(io::ErrorKind::TimedOut, "Message operation timed out")
+                        })?
+                    })?;
+                    if text.is_none() {
+                        store.delete_message(&conversation_id, &message_id)?;
+                        let _ = sender.send(BackendEvent::MessageDeleted {
+                            conversation_id,
+                            message_id,
+                        });
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    let _ = sender.send(BackendEvent::CommandFailed {
+                        command: Box::new(command),
+                        error: error.to_string(),
+                    });
+                }
+            },
+        );
+        if !scheduled {
+            return Err(BackendError::OperationFailed(
+                "Message operation could not be scheduled".into(),
+            ));
+        }
+        Ok(Vec::new())
     }
 
     fn map_notify_event(event: KeybaseNotifyEvent) -> Option<BackendEvent> {
@@ -148,13 +332,33 @@ impl ChatBackend for KeybaseBackend {
         &mut self,
         account_id: &AccountId,
     ) -> Result<Vec<BackendEvent>, BackendError> {
+        self.account_id = account_id.clone();
         self.ensure_listener_started();
-        Ok(vec![BackendEvent::AccountConnected {
-            account_id: account_id.clone(),
-        }])
+        Ok(Vec::new())
     }
 
     fn execute(&mut self, cmd: RoutedBackendCommand) -> Result<Vec<BackendEvent>, BackendError> {
+        if benchmark_read_only() {
+            match &cmd {
+                RoutedBackendCommand::MarkRead { .. } => return Ok(Vec::new()),
+                RoutedBackendCommand::SendMessage { .. }
+                | RoutedBackendCommand::SendAttachment { .. }
+                | RoutedBackendCommand::EditMessage { .. }
+                | RoutedBackendCommand::DeleteMessage { .. }
+                | RoutedBackendCommand::ReactToMessage { .. }
+                | RoutedBackendCommand::PinMessage { .. }
+                | RoutedBackendCommand::UnpinMessage { .. }
+                | RoutedBackendCommand::CreateConversation { .. }
+                | RoutedBackendCommand::JoinChannel { .. }
+                | RoutedBackendCommand::FollowUser { .. }
+                | RoutedBackendCommand::UnfollowUser { .. } => {
+                    return Err(BackendError::OperationFailed(
+                        "Server mutation blocked in read-only benchmark mode".into(),
+                    ));
+                }
+                _ => {}
+            }
+        }
         match cmd {
             RoutedBackendCommand::LoadBootstrap { account_id } => {
                 self.ensure_listener_started();
@@ -163,19 +367,13 @@ impl ChatBackend for KeybaseBackend {
                 };
                 let backend_id = self.backend_id.clone();
                 let local_store = Arc::clone(&self.local_store);
-                let search_index = Arc::clone(&self.search_index);
+                let sync = Arc::clone(&self.sync);
                 let sender_for_task = sender.clone();
                 let scheduled = task_runtime::spawn_task(
                     TaskPriority::High,
                     Some("bootstrap".to_string()),
                     move || {
-                        run_bootstrap(
-                            sender_for_task,
-                            backend_id,
-                            account_id,
-                            local_store,
-                            search_index,
-                        )
+                        run_bootstrap(sender_for_task, backend_id, account_id, local_store, sync)
                     },
                 );
                 if !scheduled {
@@ -505,6 +703,7 @@ impl ChatBackend for KeybaseBackend {
                     key: crate::state::state::TimelineKey::Thread {
                         conversation_id,
                         root_id: effective_root,
+                        requested_root_id: requested_root,
                     },
                     messages,
                     cursor: None,
@@ -993,158 +1192,18 @@ impl ChatBackend for KeybaseBackend {
                 Ok(emitted)
             }
             RoutedBackendCommand::EditMessage {
-                op_id: _,
-                account_id: _,
+                op_id,
                 conversation,
                 message,
                 text,
-            } => {
-                let Some(raw_conversation_id) =
-                    provider_ref_to_conversation_id_bytes(&conversation)
-                else {
-                    return Ok(Vec::new());
-                };
-                let Some(target_message_id) = provider_message_ref_to_message_id(&message)
-                    .and_then(|message_id| message_id.0.parse::<i64>().ok())
-                else {
-                    return Ok(Vec::new());
-                };
-                let conversation_id = canonical_conversation_id_from_provider_ref(&conversation);
-                let client_prev = self
-                    .local_store
-                    .load_recent_messages_for_conversation(&conversation_id, 1)
-                    .ok()
-                    .and_then(|messages| {
-                        messages
-                            .last()
-                            .and_then(|message| message.id.0.parse::<i64>().ok())
-                    })
-                    .unwrap_or(0);
-                let text = text.trim().to_string();
-                if text.is_empty() {
-                    return Ok(Vec::new());
-                }
-                if let Some(path) = socket_path()
-                    && let Ok(runtime) = Builder::new_current_thread().enable_all().build()
-                {
-                    let raw_for_call = raw_conversation_id.clone();
-                    let text_for_call = text.clone();
-                    let edit_result = runtime.block_on(async move {
-                        let transport = FramedMsgpackTransport::connect(&path).await?;
-                        let mut client = KeybaseRpcClient::new(transport);
-                        let inbox =
-                            fetch_inbox_for_conversation_id(&mut client, &raw_for_call).await?;
-                        let Some((tlf_name, _, tlf_public)) =
-                            extract_team_lookup_params_from_inbox_response(&inbox)
-                        else {
-                            return Err(io::Error::other("missing tlf metadata"));
-                        };
-                        call_post_edit_nonblock(
-                            &mut client,
-                            &raw_for_call,
-                            &tlf_name,
-                            tlf_public,
-                            target_message_id,
-                            &text_for_call,
-                            client_prev,
-                        )
-                        .await
-                    });
-                    if let Err(error) = edit_result {
-                        warn!(
-                            target: "zbase.keybase.send_edit",
-                            conversation_id = %conversation_id.0,
-                            message_id = target_message_id,
-                            %error,
-                            "failed to post edited message"
-                        );
-                    }
-                } else {
-                    warn!(
-                        target: "zbase.keybase.send_edit",
-                        conversation_id = %conversation_id.0,
-                        message_id = target_message_id,
-                        "skipping edit publish because keybase socket is unavailable"
-                    );
-                }
-                Ok(Vec::new())
-            }
+                ..
+            } => self.start_message_mutation(op_id, conversation, message, Some(text)),
             RoutedBackendCommand::DeleteMessage {
-                op_id: _,
-                account_id: _,
+                op_id,
                 conversation,
                 message,
-            } => {
-                let Some(raw_conversation_id) =
-                    provider_ref_to_conversation_id_bytes(&conversation)
-                else {
-                    return Ok(Vec::new());
-                };
-                let Some(target_message_id) = provider_message_ref_to_message_id(&message)
-                    .and_then(|message_id| message_id.0.parse::<i64>().ok())
-                else {
-                    return Ok(Vec::new());
-                };
-                let conversation_id = canonical_conversation_id_from_provider_ref(&conversation);
-                let client_prev = self
-                    .local_store
-                    .load_recent_messages_for_conversation(&conversation_id, 1)
-                    .ok()
-                    .and_then(|messages| {
-                        messages
-                            .last()
-                            .and_then(|message| message.id.0.parse::<i64>().ok())
-                    })
-                    .unwrap_or(0);
-                if let Some(path) = socket_path()
-                    && let Ok(runtime) = Builder::new_current_thread().enable_all().build()
-                {
-                    let raw_for_call = raw_conversation_id.clone();
-                    let delete_result = runtime.block_on(async move {
-                        let transport = FramedMsgpackTransport::connect(&path).await?;
-                        let mut client = KeybaseRpcClient::new(transport);
-                        let inbox =
-                            fetch_inbox_for_conversation_id(&mut client, &raw_for_call).await?;
-                        let Some((tlf_name, _, tlf_public)) =
-                            extract_team_lookup_params_from_inbox_response(&inbox)
-                        else {
-                            return Err(io::Error::other("missing tlf metadata"));
-                        };
-                        call_post_delete_nonblock(
-                            &mut client,
-                            &raw_for_call,
-                            &tlf_name,
-                            tlf_public,
-                            target_message_id,
-                            client_prev,
-                        )
-                        .await
-                    });
-                    match delete_result {
-                        Ok(_) => {
-                            let msg_id = MessageId::new(target_message_id.to_string());
-                            let _ = self.local_store.delete_message(&conversation_id, &msg_id);
-                        }
-                        Err(error) => {
-                            warn!(
-                                target: "zbase.keybase.delete_message",
-                                conversation_id = %conversation_id.0,
-                                message_id = target_message_id,
-                                %error,
-                                "failed to delete message"
-                            );
-                        }
-                    }
-                } else {
-                    warn!(
-                        target: "zbase.keybase.delete_message",
-                        conversation_id = %conversation_id.0,
-                        message_id = target_message_id,
-                        "skipping message delete because keybase socket is unavailable"
-                    );
-                }
-                Ok(Vec::new())
-            }
+                ..
+            } => self.start_message_mutation(op_id, conversation, message, None),
             RoutedBackendCommand::ReactToMessage {
                 op_id,
                 account_id: _,
@@ -1206,11 +1265,12 @@ impl ChatBackend for KeybaseBackend {
                         )
                         .await
                     });
-                    if let Err(error) = react_result {
-                        emitted.push(BackendEvent::ReactionFailed {
+                    match react_result {
+                        Ok(_) => emitted.push(BackendEvent::ReactionConfirmed { op_id }),
+                        Err(error) => emitted.push(BackendEvent::ReactionFailed {
                             op_id,
                             error: error.to_string(),
-                        });
+                        }),
                     }
                 } else {
                     emitted.push(BackendEvent::ReactionFailed {
@@ -1366,6 +1426,18 @@ impl ChatBackend for KeybaseBackend {
                 }
 
                 if mark_read_succeeded {
+                    let counts = HashMap::from([(
+                        conversation_id.clone(),
+                        ConversationBadgeCounts::default(),
+                    )]);
+                    self.local_store
+                        .update_conversation_badges(counts.clone(), false)
+                        .map_err(|error| BackendError::OperationFailed(error.to_string()))?;
+                    emitted.push(BackendEvent::ConversationBadgesUpdated {
+                        backend_id: self.backend_id.clone(),
+                        counts,
+                        complete: false,
+                    });
                     emitted.push(BackendEvent::ReadMarkerUpdated {
                         conversation_id: conversation_id.clone(),
                         read_upto: read_upto.clone(),
@@ -1405,17 +1477,17 @@ impl ChatBackend for KeybaseBackend {
                     100
                 };
                 let hits = if let Some(conversation_id) = conversation_id {
-                    self.search_index
-                        .search_conversation(&conversation_id.0, &query, search_limit)
-                        .unwrap_or_default()
+                    self.search_index.search_conversation(
+                        &conversation_id.0,
+                        &query,
+                        search_limit,
+                    )?
                 } else if let Some(workspace_id) = workspace_id {
                     self.search_index
-                        .search_workspace(&workspace_id.0, &query, search_limit)
-                        .unwrap_or_default()
+                        .search_workspace(&workspace_id.0, &query, search_limit)?
                 } else {
                     self.search_index
-                        .search_workspace(WORKSPACE_ID, &query, search_limit)
-                        .unwrap_or_default()
+                        .search_workspace(WORKSPACE_ID, &query, search_limit)?
                 };
                 let mut results = Vec::new();
                 let mut conversation_cache: HashMap<ConversationId, Option<ConversationSummary>> =
@@ -1464,7 +1536,7 @@ impl ChatBackend for KeybaseBackend {
                         results: Vec::new(),
                     }]);
                 }
-                let mut results = Vec::new();
+                let results;
                 if let Some(path) = socket_path()
                     && let Ok(runtime) = Builder::new_current_thread().enable_all().build()
                 {
@@ -1478,16 +1550,12 @@ impl ChatBackend for KeybaseBackend {
                         Ok(response) => {
                             results = parse_user_search_results(&response);
                         }
-                        Err(error) => {
-                            if let Some(sender) = self.inbound_sender.clone() {
-                                send_internal(
-                                    &sender,
-                                    "zbase.internal.user_search_failed",
-                                    Value::from(error.to_string()),
-                                );
-                            }
-                        }
+                        Err(error) => return Err(error.into()),
                     }
+                } else {
+                    return Err(BackendError::OperationFailed(
+                        "Keybase is unavailable. Please try again.".into(),
+                    ));
                 }
                 Ok(vec![BackendEvent::UserSearchResults { query_id, results }])
             }
@@ -1575,16 +1643,12 @@ impl ChatBackend for KeybaseBackend {
                                 conversation_binding,
                             });
                         }
-                        Err(error) => {
-                            if let Some(sender) = self.inbound_sender.clone() {
-                                send_internal(
-                                    &sender,
-                                    "zbase.internal.create_conversation_failed",
-                                    Value::from(error.to_string()),
-                                );
-                            }
-                        }
+                        Err(error) => return Err(error.into()),
                     }
+                } else {
+                    return Err(BackendError::OperationFailed(
+                        "Keybase is unavailable. Please try again.".into(),
+                    ));
                 }
                 Ok(emitted)
             }
@@ -1880,279 +1944,361 @@ impl ChatBackend for KeybaseBackend {
     }
 }
 
+impl Drop for KeybaseBackend {
+    fn drop(&mut self) {
+        self.listener_shutdown.store(true, Ordering::Relaxed);
+        self.sync.cancel();
+    }
+}
+
+fn reconnect_delay(attempt: u32) -> Duration {
+    Duration::from_millis(500u64.saturating_mul(1u64 << attempt.min(6)))
+        .min(Duration::from_secs(30))
+}
+
 fn run_listener(
-    sender: mpsc::Sender<BackendEvent>,
+    sender: Sender<BackendEvent>,
     local_store: Arc<LocalStore>,
     search_index: Arc<SearchIndex>,
     pending_outbox_sends: Arc<Mutex<HashMap<String, PendingSendMeta>>>,
+    account_id: AccountId,
+    shutdown: Arc<AtomicBool>,
 ) {
-    send_internal(&sender, "zbase.internal.listener_starting", Value::Nil);
-
     ensure_service_running();
-
-    let Some(path) = socket_path() else {
-        send_internal(&sender, "zbase.internal.socket_path_missing", Value::Nil);
-        return;
-    };
-
     let runtime = match Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(error) => {
-            send_internal(
-                &sender,
-                "zbase.internal.runtime_init_failed",
-                Value::from(error.to_string()),
-            );
+            let _ = sender.send(BackendEvent::AccountDisconnected {
+                account_id,
+                reason: error.to_string(),
+            });
             return;
         }
     };
+    runtime.block_on(listen_with_reconnect(
+        &sender,
+        &local_store,
+        &search_index,
+        &pending_outbox_sends,
+        &account_id,
+        &shutdown,
+        socket_path,
+    ));
+}
 
-    runtime.block_on(async move {
-        match FramedMsgpackTransport::connect(&path).await {
-            Ok(transport) => {
-                send_internal(
-                    &sender,
-                    "zbase.internal.socket_connected",
-                    Value::from(path.display().to_string()),
-                );
-                let mut client = KeybaseRpcClient::new(transport);
-                if let Err(error) = client
-                    .set_notifications(NotificationChannels::all_enabled())
-                    .await
-                {
-                    send_internal(
-                        &sender,
-                        "zbase.internal.set_notifications_failed",
-                        Value::from(error.to_string()),
-                    );
-                    return;
-                }
-                send_internal(
-                    &sender,
-                    "zbase.internal.notifications_subscribed",
-                    Value::Nil,
-                );
-
-                let (tx, mut rx) = tokio::sync::mpsc::channel::<RpcNotification>(512);
-                let sender_for_error = sender.clone();
-                tokio::spawn(async move {
-                    if let Err(error) = client.run_notification_loop(tx).await {
-                        send_internal(
-                            &sender_for_error,
-                            "zbase.internal.notification_loop_error",
-                            Value::from(error.to_string()),
-                        );
-                    }
-                });
-
-                while let Some(message) = rx.recv().await {
-                    let event = KeybaseNotifyEvent::from_method(&message.method, message.params);
-                    maybe_handle_tracking_notify(&event, &sender);
-                    maybe_handle_presence_notify(&event, &sender);
-                    maybe_handle_profile_notify(&event, &sender, &local_store);
-                    maybe_handle_emoji_notify(&event, &sender, &local_store);
-                    maybe_handle_team_role_notify(&event, &sender, &local_store);
-                    maybe_handle_new_conversation_notify(&event, &sender, &local_store);
-                    let mut should_refresh_inbox = notify_should_refresh_inbox(&event);
-                    let mut emitted_unread_for_conversation: Option<ConversationId> = None;
-                    if let Some(read_update) = parse_read_marker_update_from_notify(&event) {
-                        if sender
-                            .send(BackendEvent::ReadMarkerUpdated {
-                                conversation_id: read_update.conversation_id.clone(),
-                                read_upto: Some(read_update.read_upto.clone()),
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                        if let Some(snapshot) = read_update.snapshot {
-                            if !emit_unread_snapshot_event(&sender, &local_store, &snapshot) {
-                                break;
-                            }
-                            emitted_unread_for_conversation =
-                                Some(snapshot.conversation_id.clone());
-                        } else {
-                            should_refresh_inbox = true;
-                        }
-                    }
-                    if let Some(snapshot) = parse_conversation_unread_snapshot_from_notify(&event)
-                        && emitted_unread_for_conversation.as_ref()
-                            != Some(&snapshot.conversation_id)
-                        && !emit_unread_snapshot_event(&sender, &local_store, &snapshot)
-                    {
-                        break;
-                    }
-                    if should_refresh_inbox && try_mark_inbox_unread_refresh_in_flight() {
-                        let sender_for_refresh = sender.clone();
-                        let local_store_for_refresh = Arc::clone(&local_store);
-                        let _ = task_runtime::spawn_task(
-                            TaskPriority::Low,
-                            Some("refresh_inbox_unread".to_string()),
-                            move || {
-                                refresh_inbox_unread_state(
-                                    &sender_for_refresh,
-                                    &local_store_for_refresh,
-                                );
-                                clear_inbox_unread_refresh_in_flight();
-                            },
-                        );
-                    }
-                    for (conversation_id, users) in parse_typing_updates_from_notify(&event) {
-                        if sender
-                            .send(BackendEvent::TypingUpdated {
-                                conversation_id,
-                                users,
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    let mut handled_reaction = false;
-                    if let Some(reaction_delta) = parse_live_reaction_delta_from_notify(&event) {
-                        persist_reaction_deltas(
-                            Some(&sender),
-                            &local_store,
-                            std::slice::from_ref(&reaction_delta),
-                        );
-                        handled_reaction = true;
-                        let delete_events =
-                            reaction_op_delete_events(std::slice::from_ref(&reaction_delta));
-                        if sender
-                            .send(BackendEvent::MessageReactionApplied {
-                                conversation_id: reaction_delta.conversation_id.clone(),
-                                message_id: reaction_delta.target_message_id.clone(),
-                                emoji: reaction_delta.emoji.clone(),
-                                source_ref: reaction_delta.source_ref.clone(),
-                                actor_id: reaction_delta.actor_id.clone(),
-                                updated_ms: reaction_delta.updated_ms,
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                        for delete_event in delete_events {
-                            if sender.send(delete_event).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    if !handled_reaction
-                        && let Some(mut live_message) = parse_live_message_from_notify(&event)
-                    {
-                        if let Some(reaction_removed_event) =
-                            reaction_removed_event_for_live_delete(&local_store, &live_message)
-                        {
-                            if sender.send(reaction_removed_event).is_err() {
-                                break;
-                            }
-                        } else if let Some(delete_event) =
-                            regular_message_delete_event(&local_store, &live_message)
-                        {
-                            if sender.send(delete_event).is_err() {
-                                break;
-                            }
-                        } else {
-                            let pending_send_meta =
-                                extract_outbox_id_from_notify(&event).and_then(|outbox_id| {
-                                    pending_outbox_sends
-                                        .lock()
-                                        .ok()
-                                        .and_then(|mut pending| pending.remove(&outbox_id))
-                                });
-                            let live_reaction_map_deltas =
-                                parse_live_reaction_map_deltas_from_notify(
-                                    &event,
-                                    &live_message.conversation_id,
-                                    &live_message.id,
-                                );
-                            let username = live_message.author_id.0.clone();
-                            spawn_prefetch_user_profiles(&sender, &local_store, vec![username]);
-                            if message_contains_shortcode(&live_message) {
-                                spawn_sync_conversation_emojis(
-                                    &sender,
-                                    &local_store,
-                                    live_message.conversation_id.clone(),
-                                );
-                            }
-                            if let Some(ref meta) = pending_send_meta {
-                                if let Some(ref local_path) = meta.local_attachment_path {
-                                    stamp_local_attachment_path(&mut live_message, local_path);
-                                }
-                            }
-                            ingest_message_record(
-                                Some(&sender),
-                                &local_store,
-                                &search_index,
-                                &mut live_message,
-                            );
-                            let reaction_sync_event = if live_reaction_map_deltas.is_empty() {
-                                None
-                            } else {
-                                persist_reaction_deltas(
-                                    Some(&sender),
-                                    &local_store,
-                                    &live_reaction_map_deltas,
-                                );
-                                for delete_event in
-                                    reaction_op_delete_events(&live_reaction_map_deltas)
-                                {
-                                    if sender.send(delete_event).is_err() {
-                                        break;
-                                    }
-                                }
-                                message_reaction_sync_event(
-                                    &local_store,
-                                    &live_message.conversation_id,
-                                    std::slice::from_ref(&live_message),
-                                )
-                            };
-                            if let Some(pending_send) = pending_send_meta {
-                                if sender
-                                    .send(BackendEvent::MessageSendConfirmed {
-                                        op_id: pending_send.op_id,
-                                        client_message_id: pending_send.client_message_id,
-                                        server_message: live_message,
-                                    })
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            } else if sender
-                                .send(BackendEvent::MessageUpserted(live_message))
-                                .is_err()
-                            {
-                                break;
-                            }
-                            if let Some(sync_event) = reaction_sync_event
-                                && sender.send(sync_event).is_err()
-                            {
-                                break;
-                            }
-                        }
-                    }
-                    if let Some(stub_event) = KeybaseBackend::map_notify_event(event)
-                        && sender.send(stub_event).is_err()
-                    {
-                        break;
-                    }
-                }
-                send_internal(
-                    &sender,
-                    "zbase.internal.notification_loop_ended",
-                    Value::Nil,
-                );
+async fn listen_with_reconnect(
+    sender: &Sender<BackendEvent>,
+    local_store: &Arc<LocalStore>,
+    search_index: &Arc<SearchIndex>,
+    pending_outbox_sends: &Arc<Mutex<HashMap<String, PendingSendMeta>>>,
+    account_id: &AccountId,
+    shutdown: &AtomicBool,
+    resolve_socket: impl Fn() -> Option<PathBuf>,
+) {
+    let mut attempt = 0;
+    while !shutdown.load(Ordering::Relaxed) {
+        let started = Instant::now();
+        let result = match resolve_socket() {
+            Some(path) => {
+                run_listener_session(
+                    &path,
+                    sender,
+                    local_store,
+                    search_index,
+                    pending_outbox_sends,
+                    account_id,
+                    shutdown,
+                )
+                .await
             }
-            Err(error) => {
-                warn!("keybase socket connect failed: {error}");
-                send_internal(
-                    &sender,
-                    "zbase.internal.socket_connect_failed",
-                    Value::from(error.to_string()),
-                );
+            None => Err(io::Error::other("Keybase socket path missing")),
+        };
+        if shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+        if started.elapsed() >= Duration::from_secs(60) {
+            attempt = 0;
+        }
+        let reason = result
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "Keybase notification connection closed".into());
+        if sender
+            .send(BackendEvent::AccountDisconnected {
+                account_id: account_id.clone(),
+                reason,
+            })
+            .is_err()
+        {
+            break;
+        }
+        let delay = reconnect_delay(attempt);
+        attempt = attempt.saturating_add(1);
+        let deadline = tokio::time::Instant::now() + delay;
+        while tokio::time::Instant::now() < deadline && !shutdown.load(Ordering::Relaxed) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+async fn run_listener_session(
+    path: &Path,
+    sender: &Sender<BackendEvent>,
+    local_store: &Arc<LocalStore>,
+    search_index: &Arc<SearchIndex>,
+    pending_outbox_sends: &Arc<Mutex<HashMap<String, PendingSendMeta>>>,
+    account_id: &AccountId,
+    shutdown: &AtomicBool,
+) -> io::Result<()> {
+    let (client, badges, callbacks) = tokio::time::timeout(Duration::from_secs(15), async {
+        let transport = FramedMsgpackTransport::connect(&path).await?;
+        let mut client = KeybaseRpcClient::new(transport);
+        client
+            .set_notifications(NotificationChannels::all_enabled())
+            .await?;
+        // Request a full snapshot on every subscription, including reconnects.
+        // getBadgeState includes the daemon's locally applied read state.
+        let (badges, callbacks) = client
+            .call_collecting_callbacks_until_response("keybase.1.badger.getBadgeState", vec![])
+            .await?;
+        Ok::<_, io::Error>((client, badges, callbacks))
+    })
+    .await
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Keybase notification subscription timed out",
+        )
+    })??;
+    let counts = parse_badge_state(&badges)
+        .ok_or_else(|| io::Error::other("invalid Keybase badge snapshot"))?;
+    emit_badge_state(sender, local_store, counts, true)?;
+    sender
+        .send(BackendEvent::AccountConnected {
+            account_id: account_id.clone(),
+        })
+        .map_err(|_| io::Error::other("UI closed"))?;
+    // Badge callbacks preceding the snapshot response are superseded by it.
+    // Preserve other activity callbacks; their inferred counts cannot overwrite
+    // the authoritative snapshot.
+    let mut pending_callbacks = callbacks
+        .into_iter()
+        .filter(|callback| callback.method != "keybase.1.NotifyBadges.badgeState")
+        .collect::<std::collections::VecDeque<_>>();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<RpcNotification>(512);
+    let notification_task = tokio::spawn(async move { client.run_notification_loop(tx).await });
+    loop {
+        if shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+        // timeout preserves the ability to cancel an otherwise idle socket.
+        let message = if let Some(message) = pending_callbacks.pop_front() {
+            message
+        } else {
+            match tokio::time::timeout(Duration::from_millis(250), rx.recv()).await {
+                Ok(Some(message)) => message,
+                Ok(None) => break,
+                Err(_) => continue,
+            }
+        };
+        let event = KeybaseNotifyEvent::from_method(&message.method, message.params);
+        if event.method_name() == "keybase.1.NotifyBadges.badgeState" {
+            let params = match &event {
+                KeybaseNotifyEvent::Known { raw_params, .. }
+                | KeybaseNotifyEvent::Unknown { raw_params, .. } => raw_params,
+            };
+            if let Some(counts) =
+                find_value_for_keys(params, &["badgeState"], 0).and_then(parse_badge_state)
+            {
+                if let Err(error) = emit_badge_state(sender, local_store, counts, true) {
+                    notification_task.abort();
+                    return Err(error);
+                }
             }
         }
-    });
+        maybe_handle_tracking_notify(&event, &sender);
+        maybe_handle_presence_notify(&event, &sender);
+        maybe_handle_profile_notify(&event, &sender, &local_store);
+        maybe_handle_emoji_notify(&event, &sender, &local_store);
+        maybe_handle_team_role_notify(&event, &sender, &local_store);
+        maybe_handle_new_conversation_notify(&event, &sender, &local_store);
+        maybe_handle_team_type_notify(&event, &sender, &local_store);
+        let mut should_refresh_inbox = notify_should_refresh_inbox(&event);
+        let mut emitted_unread_for_conversation: Option<ConversationId> = None;
+        if let Some(read_update) = parse_read_marker_update_from_notify(&event) {
+            if sender
+                .send(BackendEvent::ReadMarkerUpdated {
+                    conversation_id: read_update.conversation_id.clone(),
+                    read_upto: Some(read_update.read_upto.clone()),
+                })
+                .is_err()
+            {
+                break;
+            }
+            if let Some(snapshot) = read_update.snapshot {
+                if !emit_unread_snapshot_event(&sender, &local_store, &snapshot) {
+                    break;
+                }
+                emitted_unread_for_conversation = Some(snapshot.conversation_id.clone());
+            } else {
+                should_refresh_inbox = true;
+            }
+        }
+        if let Some(snapshot) = parse_conversation_unread_snapshot_from_notify(&event)
+            && emitted_unread_for_conversation.as_ref() != Some(&snapshot.conversation_id)
+            && !emit_unread_snapshot_event(&sender, &local_store, &snapshot)
+        {
+            break;
+        }
+        if should_refresh_inbox && request_inbox_unread_refresh() {
+            let sender_for_refresh = sender.clone();
+            let local_store_for_refresh = Arc::clone(&local_store);
+            let _ = task_runtime::spawn_task(TaskPriority::Low, None, move || {
+                loop {
+                    refresh_inbox_unread_state(&sender_for_refresh, &local_store_for_refresh);
+                    if !finish_inbox_unread_refresh() {
+                        break;
+                    }
+                }
+            });
+        }
+        for (conversation_id, users) in parse_typing_updates_from_notify(&event) {
+            if sender
+                .send(BackendEvent::TypingUpdated {
+                    conversation_id,
+                    users,
+                })
+                .is_err()
+            {
+                break;
+            }
+        }
+        let mut handled_reaction = false;
+        if let Some(reaction_delta) = parse_live_reaction_delta_from_notify(&event) {
+            persist_reaction_deltas(
+                Some(&sender),
+                &local_store,
+                std::slice::from_ref(&reaction_delta),
+            );
+            handled_reaction = true;
+            let delete_events = reaction_op_delete_events(std::slice::from_ref(&reaction_delta));
+            if sender
+                .send(BackendEvent::MessageReactionApplied {
+                    conversation_id: reaction_delta.conversation_id.clone(),
+                    message_id: reaction_delta.target_message_id.clone(),
+                    emoji: reaction_delta.emoji.clone(),
+                    source_ref: reaction_delta.source_ref.clone(),
+                    actor_id: reaction_delta.actor_id.clone(),
+                    updated_ms: reaction_delta.updated_ms,
+                })
+                .is_err()
+            {
+                break;
+            }
+            for delete_event in delete_events {
+                if sender.send(delete_event).is_err() {
+                    break;
+                }
+            }
+        }
+        if !handled_reaction && let Some(mut live_message) = parse_live_message_from_notify(&event)
+        {
+            if let Some(reaction_removed_event) =
+                reaction_removed_event_for_live_delete(&local_store, &live_message)
+            {
+                if sender.send(reaction_removed_event).is_err() {
+                    break;
+                }
+            } else if let Some(delete_event) =
+                regular_message_delete_event(&local_store, &live_message)
+            {
+                if sender.send(delete_event).is_err() {
+                    break;
+                }
+            } else {
+                let pending_send_meta =
+                    extract_outbox_id_from_notify(&event).and_then(|outbox_id| {
+                        pending_outbox_sends
+                            .lock()
+                            .ok()
+                            .and_then(|mut pending| pending.remove(&outbox_id))
+                    });
+                let live_reaction_map_deltas = parse_live_reaction_map_deltas_from_notify(
+                    &event,
+                    &live_message.conversation_id,
+                    &live_message.id,
+                );
+                let username = live_message.author_id.0.clone();
+                spawn_prefetch_user_profiles(&sender, &local_store, vec![username]);
+                if message_contains_shortcode(&live_message) {
+                    spawn_sync_conversation_emojis(
+                        &sender,
+                        &local_store,
+                        live_message.conversation_id.clone(),
+                    );
+                }
+                if let Some(ref meta) = pending_send_meta {
+                    if let Some(ref local_path) = meta.local_attachment_path {
+                        stamp_local_attachment_path(&mut live_message, local_path);
+                    }
+                }
+                ingest_message_record(
+                    Some(&sender),
+                    &local_store,
+                    &search_index,
+                    &mut live_message,
+                );
+                spawn_live_attachment_hydration(&sender, &local_store, &live_message);
+                let reaction_sync_event = if live_reaction_map_deltas.is_empty() {
+                    None
+                } else {
+                    persist_reaction_deltas(Some(&sender), &local_store, &live_reaction_map_deltas);
+                    for delete_event in reaction_op_delete_events(&live_reaction_map_deltas) {
+                        if sender.send(delete_event).is_err() {
+                            break;
+                        }
+                    }
+                    message_reaction_sync_event(
+                        &local_store,
+                        &live_message.conversation_id,
+                        std::slice::from_ref(&live_message),
+                    )
+                };
+                if let Some(pending_send) = pending_send_meta {
+                    if sender
+                        .send(BackendEvent::MessageSendConfirmed {
+                            op_id: pending_send.op_id,
+                            client_message_id: pending_send.client_message_id,
+                            server_message: live_message,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                } else if sender
+                    .send(BackendEvent::MessageUpserted(live_message))
+                    .is_err()
+                {
+                    break;
+                }
+                if let Some(sync_event) = reaction_sync_event
+                    && sender.send(sync_event).is_err()
+                {
+                    break;
+                }
+            }
+        }
+        if let Some(stub_event) = KeybaseBackend::map_notify_event(event)
+            && sender.send(stub_event).is_err()
+        {
+            break;
+        }
+    }
+    notification_task.abort();
+    Err(io::Error::new(
+        io::ErrorKind::ConnectionReset,
+        "Keybase notification stream ended",
+    ))
 }
 
 const WORKSPACE_ID: &str = "ws_primary";
@@ -2287,7 +2433,34 @@ static EMOJI_SYNC_IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static EMOJI_SYNC_LAST_START_MS: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
 static EMOJI_SOURCE_SYNC_IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static EMOJI_SOURCE_SYNC_LAST_START_MS: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
-static INBOX_UNREAD_REFRESH_IN_FLIGHT: OnceLock<Mutex<bool>> = OnceLock::new();
+static INBOX_UNREAD_REFRESH: OnceLock<Mutex<InboxUnreadRefresh>> = OnceLock::new();
+
+#[derive(Default)]
+struct InboxUnreadRefresh {
+    running: bool,
+    pending: bool,
+}
+
+impl InboxUnreadRefresh {
+    fn request(&mut self) -> bool {
+        if self.running {
+            self.pending = true;
+            false
+        } else {
+            self.running = true;
+            true
+        }
+    }
+
+    fn finish(&mut self) -> bool {
+        if std::mem::take(&mut self.pending) {
+            true
+        } else {
+            self.running = false;
+            false
+        }
+    }
+}
 static NON_TEXT_PLACEHOLDER_LOGGED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 fn non_text_placeholder_key_preview(message_body: Option<&Value>) -> Vec<String> {
@@ -2355,19 +2528,23 @@ fn run_bootstrap(
     backend_id: BackendId,
     account_id: AccountId,
     local_store: Arc<LocalStore>,
-    search_index: Arc<SearchIndex>,
+    sync: Arc<SyncService>,
 ) {
+    let mut outcome = BackendTaskOutcome::new(
+        &sender,
+        BackendCommand::LoadBootstrap {
+            account_id: account_id.clone(),
+        },
+    );
     send_internal(&sender, "zbase.internal.bootstrap_starting", Value::Nil);
     let _ = sender.send(BackendEvent::BootStatus("Loading local data…".to_string()));
 
-    let mut sent_cached_payload = false;
     match local_store.load_bootstrap_seed(
         CACHED_BOOTSTRAP_INITIAL_CONVERSATION_LIMIT,
         CACHED_BOOTSTRAP_SELECTED_MESSAGE_LIMIT,
     ) {
         Ok(Some(seed)) => {
             let payload = bootstrap_payload_from_cache(seed, &backend_id, &account_id);
-            index_bootstrap_messages(&search_index, &payload);
             prefetch_user_profiles_from_payload(&sender, &payload, &local_store);
             prefetch_team_avatars_from_payload(&sender, &payload, &local_store);
             sync_selected_conversation_emojis_from_payload(&sender, &local_store, &payload);
@@ -2382,6 +2559,7 @@ fn run_bootstrap(
                 .map(|summary| summary.id.clone())
                 .collect::<HashSet<_>>();
             let _ = sender.send(BackendEvent::BootstrapLoaded {
+                source: crate::state::event::BootstrapSource::Cache,
                 account_id: account_id.clone(),
                 payload,
             });
@@ -2395,7 +2573,6 @@ fn run_bootstrap(
             );
             start_background_thread_edge_migration(&sender, &local_store);
             send_internal(&sender, "zbase.internal.bootstrap_cache_hit", Value::Nil);
-            sent_cached_payload = true;
         }
         Ok(None) => {
             send_internal(&sender, "zbase.internal.bootstrap_cache_miss", Value::Nil);
@@ -2418,12 +2595,6 @@ fn run_bootstrap(
     }
 
     let Some(path) = socket_path() else {
-        if !sent_cached_payload {
-            let _ = sender.send(BackendEvent::AccountDisconnected {
-                account_id,
-                reason: "keybase socket path missing".to_string(),
-            });
-        }
         return;
     };
 
@@ -2454,11 +2625,32 @@ fn run_bootstrap(
     let account_for_bootstrap = account_id.clone();
     let backend_for_bootstrap = backend_id.clone();
     let result = runtime.block_on(async move {
-        bootstrap_payload_from_service(&path, &backend_for_bootstrap, &account_for_bootstrap).await
+        let mut last_error = io::Error::other("Could not refresh conversations");
+        for attempt in 0..3 {
+            match tokio::time::timeout(
+                Duration::from_secs(30),
+                bootstrap_payload_from_service(
+                    &path,
+                    &backend_for_bootstrap,
+                    &account_for_bootstrap,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(payload)) => return Ok(payload),
+                Ok(Err(error)) => last_error = error,
+                Err(_) => {
+                    last_error =
+                        io::Error::new(io::ErrorKind::TimedOut, "Conversation refresh timed out")
+                }
+            }
+            tokio::time::sleep(reconnect_delay(attempt)).await;
+        }
+        Err(last_error)
     });
 
     match result {
-        Ok(payload) => {
+        Ok(mut payload) => {
             let crawl_refs = payload
                 .conversation_bindings
                 .iter()
@@ -2470,23 +2662,36 @@ fn run_bootstrap(
                     "zbase.internal.bootstrap_cache_persist_failed",
                     Value::from(error.to_string()),
                 );
+                return;
             }
-            index_bootstrap_messages(&search_index, &payload);
+            outcome.complete();
+            payload.selected_messages = payload
+                .selected_messages
+                .iter()
+                .filter_map(|message| {
+                    local_store
+                        .get_message(&message.conversation_id, &message.id)
+                        .ok()
+                        .flatten()
+                })
+                .collect();
             prefetch_user_profiles_from_payload(&sender, &payload, &local_store);
             prefetch_team_avatars_from_payload(&sender, &payload, &local_store);
             sync_selected_conversation_emojis_from_payload(&sender, &local_store, &payload);
             let account_display_name = payload.account_display_name.clone();
             let _ = sender.send(BackendEvent::BootstrapLoaded {
+                source: crate::state::event::BootstrapSource::Server,
                 account_id: account_id.clone(),
                 payload,
             });
-            start_background_full_history_crawl(&sender, &local_store, &search_index, &crawl_refs);
+            start_background_full_history_crawl(&sender, &local_store, &sync, &crawl_refs);
             start_background_inbox_conversation_cache_refresh(
                 &sender,
                 &local_store,
                 &backend_id,
                 &account_id,
                 account_display_name,
+                Arc::clone(&sync),
             );
             start_background_thread_edge_migration(&sender, &local_store);
             send_internal(&sender, "zbase.internal.bootstrap_loaded", Value::Nil);
@@ -2497,12 +2702,6 @@ fn run_bootstrap(
                 "zbase.internal.bootstrap_failed",
                 Value::from(error.to_string()),
             );
-            if !sent_cached_payload {
-                let _ = sender.send(BackendEvent::AccountDisconnected {
-                    account_id,
-                    reason: error.to_string(),
-                });
-            }
         }
     }
 }
@@ -2513,6 +2712,12 @@ fn run_load_user_profile(
     account_id: AccountId,
     user_id: UserId,
 ) {
+    let mut outcome = BackendTaskOutcome::new(
+        &sender,
+        BackendCommand::LoadUserProfile {
+            user_id: user_id.clone(),
+        },
+    );
     let Some(username) = profile_username_from_user_id(&user_id) else {
         return;
     };
@@ -2691,6 +2896,7 @@ fn run_load_user_profile(
                 avatar_asset: validated_avatar_asset(avatar_asset),
                 updated_ms,
             });
+            outcome.complete();
             let _ = sender.send(BackendEvent::UserProfileLoaded {
                 account_id,
                 profile,
@@ -2715,6 +2921,13 @@ fn run_load_social_graph_list(
     user_id: UserId,
     list_type: SocialGraphListType,
 ) {
+    let mut outcome = BackendTaskOutcome::new(
+        &sender,
+        BackendCommand::LoadSocialGraphList {
+            user_id: user_id.clone(),
+            list_type: list_type.clone(),
+        },
+    );
     let Some(username) = profile_username_from_user_id(&user_id) else {
         return;
     };
@@ -2811,6 +3024,7 @@ fn run_load_social_graph_list(
 
     match result {
         Ok(entries) => {
+            outcome.complete();
             let _ = sender.send(BackendEvent::SocialGraphListLoaded {
                 user_id,
                 list_type,
@@ -3738,6 +3952,7 @@ fn start_background_inbox_conversation_cache_refresh(
     backend_id: &BackendId,
     account_id: &AccountId,
     account_display_name: Option<String>,
+    sync: Arc<SyncService>,
 ) {
     let sender = sender.clone();
     let sender_for_stats = sender.clone();
@@ -3754,6 +3969,7 @@ fn start_background_inbox_conversation_cache_refresh(
                 backend_id,
                 account_id,
                 account_display_name,
+                sync,
             );
         },
     );
@@ -3776,6 +3992,7 @@ fn run_background_inbox_conversation_cache_refresh(
     backend_id: BackendId,
     account_id: AccountId,
     account_display_name: Option<String>,
+    sync: Arc<SyncService>,
 ) {
     send_internal(
         &sender,
@@ -3833,6 +4050,15 @@ fn run_background_inbox_conversation_cache_refresh(
                 }
             }
         }
+        if let Err(error) =
+            repair_cached_conversation_topics(&mut client, &local_store, &sender).await
+        {
+            send_internal(
+                &sender,
+                "zbase.internal.cache_topic_repair_failed",
+                Value::from(error.to_string()),
+            );
+        }
         let workspace_id = WorkspaceId::new(WORKSPACE_ID);
         let mut seen_conversation_ids = HashSet::new();
         let mut activity_sorted_limit = INBOX_CACHE_PAGE_SIZE;
@@ -3866,6 +4092,11 @@ fn run_background_inbox_conversation_cache_refresh(
                 .collect::<Vec<_>>();
             let fresh_count = fresh.len();
             if fresh_count > 0 {
+                let refs = fresh
+                    .iter()
+                    .map(|conversation| conversation.provider_ref.clone())
+                    .collect::<Vec<_>>();
+                start_background_full_history_crawl(&sender, &local_store, &sync, &refs);
                 upserted_total =
                     upserted_total.saturating_add(persist_and_emit_conversation_extension_batch(
                         &sender,
@@ -4039,292 +4270,248 @@ fn emit_workspace_conversations_extended_in_chunks(
 fn start_background_full_history_crawl(
     sender: &Sender<BackendEvent>,
     local_store: &Arc<LocalStore>,
-    search_index: &Arc<SearchIndex>,
+    sync: &Arc<SyncService>,
     conversation_refs: &[ProviderConversationRef],
 ) {
-    if conversation_refs.is_empty() {
+    if benchmark_read_only() || !sync.request(conversation_refs) {
         return;
     }
     let sender = sender.clone();
-    let sender_for_stats = sender.clone();
-    let local_store = Arc::clone(local_store);
-    let search_index = Arc::clone(search_index);
-    let mut conversation_refs = conversation_refs.to_vec();
-    conversation_refs.sort_by(|left, right| left.0.cmp(&right.0));
-    conversation_refs.dedup_by(|left, right| left.0 == right.0);
-    let scheduled = task_runtime::spawn_task(
-        TaskPriority::Low,
-        Some("full_history_crawl".to_string()),
-        move || {
-            run_background_full_history_crawl(sender, local_store, search_index, conversation_refs);
-        },
-    );
-    if !scheduled {
-        send_internal(
-            &sender_for_stats,
-            "zbase.internal.task_runtime.deduped",
-            Value::from("full_history_crawl"),
-        );
-    }
-    emit_task_runtime_stats(&sender_for_stats, "full_history_crawl.schedule");
+    let store = Arc::clone(local_store);
+    let sync = Arc::clone(sync);
+    task_runtime::spawn_task(TaskPriority::Low, None, move || {
+        let mut attempt = 0;
+        while let Some(refs) = sync.take_pending() {
+            let failed =
+                run_background_full_history_crawl(sender.clone(), Arc::clone(&store), &sync, refs);
+            if !failed.is_empty() {
+                sync.request(&failed);
+                let deadline = Instant::now() + reconnect_delay(attempt);
+                attempt = attempt.saturating_add(1);
+                while Instant::now() < deadline && !sync.is_cancelled() {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            } else {
+                attempt = 0;
+            }
+        }
+    });
 }
 
 fn run_background_full_history_crawl(
     sender: Sender<BackendEvent>,
     local_store: Arc<LocalStore>,
-    search_index: Arc<SearchIndex>,
+    service: &SyncService,
     conversation_refs: Vec<ProviderConversationRef>,
-) {
-    if conversation_refs.is_empty() {
-        return;
-    }
-
-    send_internal(
-        &sender,
-        "zbase.internal.crawl.start",
-        Value::Map(vec![(
-            Value::from("conversations"),
-            Value::from(conversation_refs.len() as i64),
-        )]),
-    );
-
-    let Some(path) = socket_path() else {
-        send_internal(
-            &sender,
-            "zbase.internal.crawl.socket_path_missing",
-            Value::Nil,
-        );
-        return;
-    };
-
-    let runtime = match Builder::new_current_thread().enable_all().build() {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            send_internal(
-                &sender,
-                "zbase.internal.crawl.runtime_init_failed",
-                Value::from(error.to_string()),
-            );
-            return;
-        }
-    };
-
-    runtime.block_on(async move {
-        let transport = match FramedMsgpackTransport::connect(&path).await {
-            Ok(transport) => transport,
-            Err(error) => {
-                send_internal(
-                    &sender,
-                    "zbase.internal.crawl.socket_connect_failed",
-                    Value::from(error.to_string()),
-                );
-                return;
-            }
-        };
-        let mut client = KeybaseRpcClient::new(transport);
-        let mut completed_conversations = 0u64;
-        let mut indexed_messages_total = 0u64;
-
-        for conversation_ref in conversation_refs {
-            let conversation_id = canonical_conversation_id_from_provider_ref(&conversation_ref);
-            let Some(raw_conversation_id) =
-                provider_ref_to_conversation_id_bytes(&conversation_ref)
-            else {
-                continue;
-            };
-
-            let checkpoint = local_store
-                .load_crawl_checkpoint(&conversation_id)
-                .ok()
-                .flatten()
-                .unwrap_or(CrawlCheckpoint {
-                    conversation_id: conversation_id.clone(),
-                    ..CrawlCheckpoint::default()
-                });
-            if checkpoint.completed {
-                completed_conversations = completed_conversations.saturating_add(1);
-                continue;
-            }
-
-            send_internal(
-                &sender,
-                "zbase.internal.crawl.conversation_start",
-                Value::Map(vec![
-                    (
-                        Value::from("conversation_id"),
-                        Value::from(conversation_id.0.clone()),
-                    ),
-                    (
-                        Value::from("pages_crawled"),
-                        Value::from(checkpoint.pages_crawled as i64),
-                    ),
-                    (
-                        Value::from("messages_indexed"),
-                        Value::from(checkpoint.messages_crawled as i64),
-                    ),
-                ]),
-            );
-
-            let mut next_cursor = checkpoint.next_cursor.clone();
-            let mut pages_crawled = checkpoint.pages_crawled;
-            let mut messages_indexed = checkpoint.messages_crawled;
-
-            loop {
-                let throttle_delay = crawl_throttle_delay();
-                if !throttle_delay.is_zero() {
-                    std::thread::sleep(throttle_delay);
+) -> Vec<ProviderConversationRef> {
+    let mut failed = Vec::new();
+    let retry_refs = conversation_refs.clone();
+    send_internal(&sender, "zbase.internal.crawl.start", Value::Nil);
+    let result = (|| -> io::Result<()> {
+        let path = socket_path().ok_or_else(|| io::Error::other("Keybase socket unavailable"))?;
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        runtime.block_on(async {
+            for reference in conversation_refs {
+                if service.is_cancelled() {
+                    break;
                 }
-                let page = match fetch_thread_page_with_attachment_hydration(
-                    &mut client,
-                    &conversation_id,
-                    &raw_conversation_id,
-                    next_cursor.as_deref(),
-                    CRAWL_PAGE_SIZE,
-                    false,
-                )
-                .await
-                {
-                    Ok(page) => page,
-                    Err(error) => {
-                        send_internal(
-                            &sender,
-                            "zbase.internal.crawl.page_fetch_failed",
-                            Value::Map(vec![
-                                (
-                                    Value::from("conversation_id"),
-                                    Value::from(conversation_id.0.clone()),
-                                ),
-                                (Value::from("error"), Value::from(error.to_string())),
-                            ]),
-                        );
-                        break;
-                    }
+                let conversation_id = canonical_conversation_id_from_provider_ref(&reference);
+                let Some(raw) = provider_ref_to_conversation_id_bytes(&reference) else {
+                    continue;
                 };
-
-                persist_reaction_deltas(Some(&sender), &local_store, &page.reaction_deltas);
-
-                if page.messages.is_empty() && page.reaction_deltas.is_empty() {
-                    let _ = local_store.upsert_crawl_checkpoint(&CrawlCheckpoint {
+                // Unlike the history-complete flag, this position is independent
+                // of Tantivy and advances only after a whole page is persisted.
+                let sync = async {
+                    let transport = FramedMsgpackTransport::connect(&path).await?;
+                    let mut client = KeybaseRpcClient::new(transport);
+                    let mut position = local_store.load_sync_position(&conversation_id)?;
+                    let mut pages = 0;
+                    loop {
+                        if service.is_cancelled() {
+                            return Ok(());
+                        }
+                        tokio::time::sleep(crawl_throttle_delay()).await;
+                        let page = tokio::time::timeout(
+                            Duration::from_secs(30),
+                            fetch_thread_messages_after_anchor_impl(
+                                &mut client,
+                                &conversation_id,
+                                &raw,
+                                &MessageId::new(position.to_string()),
+                                CRAWL_PAGE_SIZE,
+                                false,
+                            ),
+                        )
+                        .await
+                        .map_err(|_| {
+                            io::Error::new(io::ErrorKind::TimedOut, "History sync timed out")
+                        })??;
+                        if page.offline {
+                            return Err(io::Error::other(
+                                "Keybase is offline; history sync will resume later",
+                            ));
+                        }
+                        let next = page
+                            .raw_message_ids
+                            .iter()
+                            .copied()
+                            .max()
+                            .unwrap_or(position);
+                        if next <= position {
+                            break;
+                        }
+                        persist_sync_page(&sender, &local_store, &conversation_id, page)?;
+                        local_store.save_sync_position(&conversation_id, next)?;
+                        position = next;
+                        pages += 1;
+                        if pages % CRAWL_PROGRESS_EMIT_EVERY_PAGES == 0 {
+                            send_internal(
+                                &sender,
+                                "zbase.internal.crawl.conversation_progress",
+                                Value::from(conversation_id.0.clone()),
+                            );
+                        }
+                    }
+                    let _ = sender.send(BackendEvent::HistorySynced {
                         conversation_id: conversation_id.clone(),
-                        next_cursor: None,
-                        completed: true,
-                        pages_crawled,
-                        messages_crawled: messages_indexed,
-                        updated_ms: now_unix_ms(),
                     });
-                    completed_conversations = completed_conversations.saturating_add(1);
+                    Ok::<_, io::Error>(())
+                }
+                .await;
+                if let Err(error) = sync {
+                    failed.push(reference);
                     send_internal(
                         &sender,
-                        "zbase.internal.crawl.conversation_complete",
-                        Value::Map(vec![
-                            (
-                                Value::from("conversation_id"),
-                                Value::from(conversation_id.0.clone()),
-                            ),
-                            (
-                                Value::from("pages_crawled"),
-                                Value::from(pages_crawled as i64),
-                            ),
-                            (
-                                Value::from("messages_indexed"),
-                                Value::from(messages_indexed as i64),
-                            ),
-                        ]),
-                    );
-                    break;
-                }
-
-                for mut message in page.messages {
-                    ingest_message_record(Some(&sender), &local_store, &search_index, &mut message);
-                    indexed_messages_total = indexed_messages_total.saturating_add(1);
-                    messages_indexed = messages_indexed.saturating_add(1);
-                }
-                pages_crawled = pages_crawled.saturating_add(1);
-
-                let done = page.last || page.next_cursor.is_none();
-                let _ = local_store.upsert_crawl_checkpoint(&CrawlCheckpoint {
-                    conversation_id: conversation_id.clone(),
-                    next_cursor: if done { None } else { page.next_cursor.clone() },
-                    completed: done,
-                    pages_crawled,
-                    messages_crawled: messages_indexed,
-                    updated_ms: now_unix_ms(),
-                });
-
-                if pages_crawled.is_multiple_of(CRAWL_PROGRESS_EMIT_EVERY_PAGES) {
-                    send_internal(
-                        &sender,
-                        "zbase.internal.crawl.conversation_progress",
-                        Value::Map(vec![
-                            (
-                                Value::from("conversation_id"),
-                                Value::from(conversation_id.0.clone()),
-                            ),
-                            (
-                                Value::from("pages_crawled"),
-                                Value::from(pages_crawled as i64),
-                            ),
-                            (
-                                Value::from("messages_indexed"),
-                                Value::from(messages_indexed as i64),
-                            ),
-                        ]),
+                        "zbase.internal.crawl.page_fetch_failed",
+                        Value::from(format!("{}: {error}", conversation_id.0)),
                     );
                 }
-
-                if done {
-                    completed_conversations = completed_conversations.saturating_add(1);
-                    send_internal(
-                        &sender,
-                        "zbase.internal.crawl.conversation_complete",
-                        Value::Map(vec![
-                            (
-                                Value::from("conversation_id"),
-                                Value::from(conversation_id.0.clone()),
-                            ),
-                            (
-                                Value::from("pages_crawled"),
-                                Value::from(pages_crawled as i64),
-                            ),
-                            (
-                                Value::from("messages_indexed"),
-                                Value::from(messages_indexed as i64),
-                            ),
-                        ]),
-                    );
-                    break;
-                }
-
-                if page.next_cursor == next_cursor {
-                    send_internal(
-                        &sender,
-                        "zbase.internal.crawl.cursor_stalled",
-                        Value::Map(vec![(
-                            Value::from("conversation_id"),
-                            Value::from(conversation_id.0.clone()),
-                        )]),
-                    );
-                    break;
-                }
-                next_cursor = page.next_cursor;
             }
-        }
-
+            Ok::<_, io::Error>(())
+        })
+    })();
+    if let Err(error) = result {
+        failed = retry_refs;
         send_internal(
             &sender,
-            "zbase.internal.crawl.finished",
-            Value::Map(vec![
-                (
-                    Value::from("completed_conversations"),
-                    Value::from(completed_conversations as i64),
-                ),
-                (
-                    Value::from("indexed_messages"),
-                    Value::from(indexed_messages_total as i64),
-                ),
-            ]),
+            "zbase.internal.crawl.failed",
+            Value::from(error.to_string()),
         );
-    });
+    }
+    send_internal(&sender, "zbase.internal.crawl.finished", Value::Nil);
+    failed
+}
+
+fn persist_sync_page(
+    sender: &Sender<BackendEvent>,
+    store: &LocalStore,
+    conversation_id: &ConversationId,
+    page: ThreadPage,
+) -> io::Result<()> {
+    enum Operation {
+        Message(MessageRecord),
+        Reaction(MessageReactionDelta),
+        Delete(MessageRecord),
+    }
+    let mut operations = Vec::new();
+    for message in page.messages {
+        if matches!(message.event, Some(ChatEvent::MessageDeleted { .. })) {
+            continue;
+        }
+        let id = message
+            .edited
+            .as_ref()
+            .map(|edit| &edit.edit_id)
+            .unwrap_or(&message.id)
+            .0
+            .parse::<u64>()
+            .unwrap_or(0);
+        operations.push((id, Operation::Message(message)));
+    }
+    for delta in page.reaction_deltas {
+        let id = delta
+            .op_message_id
+            .as_ref()
+            .unwrap_or(&delta.target_message_id)
+            .0
+            .parse::<u64>()
+            .unwrap_or(0);
+        operations.push((id, Operation::Reaction(delta)));
+    }
+    for message in page.deletions {
+        operations.push((
+            message.id.0.parse::<u64>().unwrap_or(0),
+            Operation::Delete(message),
+        ));
+    }
+    operations.sort_by_key(|(id, _)| *id);
+    let mut reaction_targets = HashSet::new();
+    for (_, operation) in operations {
+        match operation {
+            Operation::Message(mut message) => {
+                hydrate_thread_metadata(store, &mut message);
+                if let Some(canonical) = store.upsert_message(&message)? {
+                    if canonical.edited.is_some() {
+                        let _ = sender.send(BackendEvent::MessageUpserted(canonical));
+                    }
+                }
+            }
+            Operation::Reaction(delta) => {
+                store.upsert_message_reaction(
+                    conversation_id,
+                    &delta.target_message_id,
+                    &delta.emoji,
+                    delta.source_ref.as_ref(),
+                    &delta.actor_id,
+                    delta.updated_ms,
+                )?;
+                if let Some(op_id) = delta.op_message_id.as_ref() {
+                    store.upsert_message_reaction_op(
+                        conversation_id,
+                        op_id,
+                        &delta.target_message_id,
+                        &delta.emoji,
+                        &delta.actor_id,
+                        delta.updated_ms,
+                    )?;
+                    store.delete_message(conversation_id, op_id)?;
+                }
+                remember_reaction_op(&delta);
+                reaction_targets.insert(delta.target_message_id);
+            }
+            Operation::Delete(message) => {
+                let Some(ChatEvent::MessageDeleted {
+                    target_message_id: Some(target),
+                }) = message.event
+                else {
+                    continue;
+                };
+                if let Some(reaction) = take_reaction_op(store, conversation_id, &target) {
+                    store.delete_message_reaction(
+                        conversation_id,
+                        &reaction.target_message_id,
+                        &reaction.emoji,
+                        &reaction.actor_id,
+                    )?;
+                    reaction_targets.insert(reaction.target_message_id);
+                } else {
+                    store.delete_message(conversation_id, &target)?;
+                    let _ = sender.send(BackendEvent::MessageDeleted {
+                        conversation_id: conversation_id.clone(),
+                        message_id: target,
+                    });
+                }
+            }
+        }
+    }
+    if let Some(event) = message_reaction_sync_event_for_message_ids(
+        store,
+        conversation_id,
+        &reaction_targets.into_iter().collect::<Vec<_>>(),
+    ) {
+        let _ = sender.send(event);
+    }
+    Ok(())
 }
 
 fn start_background_thread_edge_migration(
@@ -4428,6 +4615,12 @@ fn run_load_conversation(
     let queue_wait_ms = queued_at.elapsed().as_millis();
     let load_started = Instant::now();
     let conversation_id = canonical_conversation_id_from_provider_ref(&conversation_ref);
+    let mut outcome = BackendTaskOutcome::new(
+        &sender,
+        BackendCommand::LoadConversation {
+            conversation_id: conversation_id.clone(),
+        },
+    );
     send_internal(
         &sender,
         "zbase.internal.load_conversation_starting",
@@ -4528,6 +4721,7 @@ fn run_load_conversation(
 
     match result {
         Ok(loaded) => {
+            outcome.complete();
             let service_fetch_ms = service_fetch_started.elapsed().as_millis();
             let LoadedConversation {
                 page,
@@ -4855,10 +5049,7 @@ fn run_hydrate_timeline_attachments(
         if !updated_ids.contains(&message.id) {
             continue;
         }
-        let _ = local_store.persist_message(&message);
-        if sender.send(BackendEvent::MessageUpserted(message)).is_err() {
-            break;
-        }
+        publish_attachment_paths(&sender, &local_store, &message);
         updated_count = updated_count.saturating_add(1);
     }
     let elapsed_ms = hydration_started.elapsed().as_millis();
@@ -4892,18 +5083,20 @@ fn run_load_older_messages(
                 "zbase.internal.load_older_messages_runtime_init_failed",
                 Value::from(error.to_string()),
             );
-            let _ = sender.send(BackendEvent::MessagesPrepended {
-                key: crate::state::state::TimelineKey::Conversation(conversation_id),
-                messages: Vec::new(),
-                cursor: None,
+            let _ = sender.send(BackendEvent::CommandFailed {
+                command: Box::new(BackendCommand::LoadOlderMessages {
+                    key: crate::state::state::TimelineKey::Conversation(conversation_id),
+                    cursor: before_id.0,
+                }),
+                error: error.to_string(),
             });
             return;
         }
     };
 
-    let mut messages = Vec::new();
-    let mut reaction_delete_events = Vec::new();
-    let mut fetched_page_has_more = false;
+    let mut messages;
+    let reaction_delete_events;
+    let fetched_page_has_more;
 
     let conversation_id_for_fetch = conversation_id.clone();
     let before_id_for_fetch = before_id.clone();
@@ -4954,6 +5147,14 @@ fn run_load_older_messages(
                 "zbase.internal.load_older_messages_fetch_failed",
                 Value::from(error.to_string()),
             );
+            let _ = sender.send(BackendEvent::CommandFailed {
+                command: Box::new(BackendCommand::LoadOlderMessages {
+                    key: crate::state::state::TimelineKey::Conversation(conversation_id),
+                    cursor: before_id.0,
+                }),
+                error: error.to_string(),
+            });
+            return;
         }
     }
 
@@ -5188,6 +5389,7 @@ fn run_backfill_thread_history(
             key: crate::state::state::TimelineKey::Thread {
                 conversation_id,
                 root_id: canonical_root,
+                requested_root_id,
             },
             messages,
             cursor: None,
@@ -5696,28 +5898,20 @@ fn should_retry_load_conversation_error(error: &io::Error) -> bool {
     lower.contains("too many open files") || lower.contains("resource temporarily unavailable")
 }
 
-fn try_mark_inbox_unread_refresh_in_flight() -> bool {
-    let mutex = INBOX_UNREAD_REFRESH_IN_FLIGHT.get_or_init(|| Mutex::new(false));
-    let mut guard = match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if *guard {
-        return false;
-    }
-    *guard = true;
-    true
+fn request_inbox_unread_refresh() -> bool {
+    INBOX_UNREAD_REFRESH
+        .get_or_init(|| Mutex::new(InboxUnreadRefresh::default()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .request()
 }
 
-fn clear_inbox_unread_refresh_in_flight() {
-    let Some(mutex) = INBOX_UNREAD_REFRESH_IN_FLIGHT.get() else {
-        return;
-    };
-    let mut guard = match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    *guard = false;
+fn finish_inbox_unread_refresh() -> bool {
+    INBOX_UNREAD_REFRESH
+        .get_or_init(|| Mutex::new(InboxUnreadRefresh::default()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .finish()
 }
 
 fn reply_ancestor_chain_cached(
@@ -5980,27 +6174,18 @@ fn should_replace_duplicate_record(existing: &MessageRecord, incoming: &MessageR
     match (&existing.edited, &incoming.edited) {
         (None, Some(_)) => true,
         (Some(_), None) => false,
-        (Some(a), Some(b)) => b.edited_at_ms.unwrap_or(0) > a.edited_at_ms.unwrap_or(0),
+        (Some(_), Some(_)) => {
+            crate::domain::message::message_revision(incoming)
+                > crate::domain::message::message_revision(existing)
+        }
         (None, None) => incoming.timestamp_ms.unwrap_or(0) > existing.timestamp_ms.unwrap_or(0),
     }
-}
-
-fn enqueue_message_search_upsert(search_index: &Arc<SearchIndex>, message: &MessageRecord) {
-    let _ = search_index.enqueue_upsert(SearchDocument {
-        workspace_id: WORKSPACE_ID.to_string(),
-        conversation_id: message.conversation_id.0.clone(),
-        message_id: message.id.0.clone(),
-        author: message.author_id.0.clone(),
-        body: message_plain_text(message),
-        filename_tokens: message_attachment_filename_tokens(message),
-        timestamp: message.id.0.parse::<i64>().unwrap_or(0),
-    });
 }
 
 fn reconcile_descendant_thread_roots(
     sender: Option<&Sender<BackendEvent>>,
     local_store: &Arc<LocalStore>,
-    search_index: &Arc<SearchIndex>,
+    _search_index: &Arc<SearchIndex>,
     conversation_id: &ConversationId,
     ancestor_id: &MessageId,
 ) {
@@ -6027,7 +6212,6 @@ fn reconcile_descendant_thread_roots(
         }
         descendant.thread_root_id = Some(resolved_root);
         let _ = local_store.persist_message(&descendant);
-        enqueue_message_search_upsert(search_index, &descendant);
         if let Some(sender) = sender {
             let _ = sender.send(BackendEvent::MessageUpserted(descendant));
         }
@@ -6037,7 +6221,7 @@ fn reconcile_descendant_thread_roots(
 fn refresh_root_descendant_reply_count(
     sender: Option<&Sender<BackendEvent>>,
     local_store: &Arc<LocalStore>,
-    search_index: &Arc<SearchIndex>,
+    _search_index: &Arc<SearchIndex>,
     conversation_id: &ConversationId,
     root_id: &MessageId,
 ) {
@@ -6054,7 +6238,6 @@ fn refresh_root_descendant_reply_count(
     }
     root.thread_reply_count = descendant_count;
     let _ = local_store.persist_message(&root);
-    enqueue_message_search_upsert(search_index, &root);
     if let Some(sender) = sender {
         let _ = sender.send(BackendEvent::MessageUpserted(root));
     }
@@ -6063,6 +6246,28 @@ fn refresh_root_descendant_reply_count(
 /// Spawn a background thread to download attachments that need hydration for a
 /// live notification message. This ensures images are viewable immediately
 /// instead of requiring a conversation reload.
+fn publish_attachment_paths(
+    sender: &Sender<BackendEvent>,
+    local_store: &LocalStore,
+    downloaded: &MessageRecord,
+) {
+    match local_store.patch_attachment_paths(
+        &downloaded.conversation_id,
+        &downloaded.id,
+        &downloaded.attachments,
+    ) {
+        Ok(Some(latest)) => {
+            let _ = sender.send(BackendEvent::MessageAttachmentsUpdated {
+                conversation_id: latest.conversation_id,
+                message_id: latest.id,
+                attachments: latest.attachments,
+            });
+        }
+        Ok(None) => {} // The message was deleted while its download was running.
+        Err(error) => tracing::warn!(%error, "could not persist attachment paths"),
+    }
+}
+
 fn spawn_live_attachment_hydration(
     sender: &Sender<BackendEvent>,
     local_store: &Arc<LocalStore>,
@@ -6101,8 +6306,7 @@ fn spawn_live_attachment_hydration(
             )
             .await;
             if !updated_ids.is_empty() {
-                let _ = local_store.persist_message(&message);
-                let _ = sender.send(BackendEvent::MessageUpserted(message));
+                publish_attachment_paths(&sender, &local_store, &message);
             }
         });
     });
@@ -6143,6 +6347,32 @@ fn stamp_local_attachment_path(message: &mut MessageRecord, local_path: &str) {
     }
 }
 
+fn persist_canonical_message(
+    sender: Option<&Sender<BackendEvent>>,
+    local_store: &LocalStore,
+    message: &mut MessageRecord,
+) -> bool {
+    match local_store.upsert_message(message) {
+        Ok(Some(canonical)) => {
+            *message = canonical;
+            true
+        }
+        Ok(None) => {
+            if let Some(sender) = sender {
+                let _ = sender.send(BackendEvent::MessageDeleted {
+                    conversation_id: message.conversation_id.clone(),
+                    message_id: message.id.clone(),
+                });
+            }
+            false
+        }
+        Err(error) => {
+            tracing::error!(%error, "could not persist message");
+            false
+        }
+    }
+}
+
 fn ingest_message_record(
     sender: Option<&Sender<BackendEvent>>,
     local_store: &Arc<LocalStore>,
@@ -6154,17 +6384,17 @@ fn ingest_message_record(
     }
     hydrate_thread_metadata(local_store, message);
     merge_cached_attachment_paths(local_store, message);
-    let _ = local_store.persist_message(message);
-    if let Some(sender) = sender {
-        spawn_live_attachment_hydration(sender, local_store, message);
+    if !persist_canonical_message(sender, local_store, message) {
+        return;
     }
+    // History ingestion must remain metadata-only. Attachment downloads belong
+    // to live notifications and explicit timeline loads, never the index crawl.
     maybe_schedule_reply_ancestor_backfill(
         sender.cloned(),
         Arc::clone(local_store),
         Arc::clone(search_index),
         message,
     );
-    enqueue_message_search_upsert(search_index, message);
     reconcile_descendant_thread_roots(
         sender,
         local_store,
@@ -6188,7 +6418,7 @@ fn ingest_message_record(
 fn ingest_message_record_for_timeline_load(
     sender: Option<&Sender<BackendEvent>>,
     local_store: &Arc<LocalStore>,
-    search_index: &Arc<SearchIndex>,
+    _search_index: &Arc<SearchIndex>,
     message: &mut MessageRecord,
 ) {
     // Keep conversation-open latency low by deferring expensive reply-graph repair
@@ -6200,8 +6430,7 @@ fn ingest_message_record_for_timeline_load(
     }
     hydrate_thread_metadata(local_store, message);
     merge_cached_attachment_paths(local_store, message);
-    let _ = local_store.persist_message(message);
-    enqueue_message_search_upsert(search_index, message);
+    persist_canonical_message(sender, local_store, message);
 }
 
 /// Carry forward locally hydrated attachment paths from a previously cached
@@ -6283,6 +6512,12 @@ fn resolve_thread_root_for_message(
 }
 
 fn hydrate_thread_metadata(local_store: &LocalStore, message: &mut MessageRecord) {
+    if message.reply_to.is_none() {
+        message
+            .thread_root_id
+            .get_or_insert_with(|| message.id.clone());
+        return;
+    }
     let root = resolve_thread_root_for_message(
         local_store,
         &message.conversation_id,
@@ -6434,25 +6669,6 @@ fn bootstrap_payload_from_cache(
         selected_messages,
         unread_marker: seed.unread_marker,
         account_display_name: seed.account_display_name,
-    }
-}
-
-fn index_bootstrap_messages(search_index: &SearchIndex, payload: &BootstrapPayload) {
-    let workspace_id = payload
-        .active_workspace_id
-        .clone()
-        .unwrap_or_else(|| WorkspaceId::new(WORKSPACE_ID))
-        .0;
-    for message in &payload.selected_messages {
-        let _ = search_index.enqueue_upsert(SearchDocument {
-            workspace_id: workspace_id.clone(),
-            conversation_id: message.conversation_id.0.clone(),
-            message_id: message.id.0.clone(),
-            author: message.author_id.0.clone(),
-            body: message_plain_text(message),
-            filename_tokens: message_attachment_filename_tokens(message),
-            timestamp: message.id.0.parse::<i64>().unwrap_or(0),
-        });
     }
 }
 
@@ -7737,7 +7953,25 @@ fn maybe_handle_new_conversation_notify(
         return;
     };
     let conversation_id = parsed.summary.id.clone();
-    if local_store.get_conversation(&conversation_id).ok().flatten().is_some() {
+    if let Some(existing) = local_store
+        .get_conversation(&conversation_id)
+        .ok()
+        .flatten()
+    {
+        if let Some(group) = &parsed.summary.group
+            && group.team_type != ConversationTeamType::Unknown
+            && existing
+                .group
+                .as_ref()
+                .is_some_and(|old| old.id == group.id && old.team_type != group.team_type)
+        {
+            apply_team_type_change(
+                sender,
+                local_store,
+                &conversation_id,
+                group.team_type.clone(),
+            );
+        }
         return;
     }
     tracing::info!(
@@ -7750,8 +7984,7 @@ fn maybe_handle_new_conversation_notify(
     let provider_ref = parsed.provider_ref.clone();
     let _ = local_store.persist_conversation(&parsed.summary, parsed.activity_time);
     let _ = local_store.persist_conversation_binding(&conversation_id, &provider_ref);
-    let (channels, direct_messages) = if matches!(parsed.summary.kind, ConversationKind::Channel)
-    {
+    let (channels, direct_messages) = if matches!(parsed.summary.kind, ConversationKind::Channel) {
         (vec![parsed.summary], Vec::new())
     } else {
         (Vec::new(), vec![parsed.summary])
@@ -7768,6 +8001,95 @@ fn maybe_handle_new_conversation_notify(
         direct_messages,
         conversation_bindings: vec![binding],
     });
+}
+
+fn maybe_handle_team_type_notify(
+    event: &KeybaseNotifyEvent,
+    sender: &Sender<BackendEvent>,
+    local_store: &Arc<LocalStore>,
+) {
+    if event.method_name() != "chat.1.NotifyChat.NewChatActivity" {
+        return;
+    }
+    let params = match event {
+        KeybaseNotifyEvent::Known { raw_params, .. }
+        | KeybaseNotifyEvent::Unknown { raw_params, .. } => raw_params,
+    };
+    let Some(activity) = find_value_for_keys(params, &["activity", "a"], 0) else {
+        return;
+    };
+    if map_get_any(activity, &["activityType", "t"]).and_then(as_i64) != Some(8) {
+        return;
+    }
+    let Some(update) = map_get_any(activity, &["teamtype", "teamType"]) else {
+        return;
+    };
+    let team_type = parse_team_type(update);
+    if team_type == ConversationTeamType::Unknown {
+        return;
+    }
+    if let Some(raw_id) = map_get(update, "convID").and_then(value_to_conversation_id_bytes) {
+        apply_team_type_change(
+            sender,
+            local_store,
+            &ConversationId::new(format!("kb_conv:{}", hex_encode(&raw_id))),
+            team_type,
+        );
+    }
+}
+
+fn apply_team_type_change(
+    sender: &Sender<BackendEvent>,
+    local_store: &LocalStore,
+    conversation_id: &ConversationId,
+    team_type: ConversationTeamType,
+) {
+    let Some(team_id) = local_store
+        .get_conversation(conversation_id)
+        .ok()
+        .flatten()
+        .and_then(|summary| summary.group.map(|group| group.id))
+    else {
+        return;
+    };
+    let mut channels = Vec::new();
+    let mut bindings = Vec::new();
+    for id in local_store
+        .load_cached_conversation_ids(100_000)
+        .unwrap_or_default()
+    {
+        let Some(mut summary) = local_store.get_conversation(&id).ok().flatten() else {
+            continue;
+        };
+        let Some(group) = summary.group.as_mut().filter(|group| group.id == team_id) else {
+            continue;
+        };
+        if group.team_type == team_type {
+            continue;
+        }
+        group.team_type = team_type.clone();
+        if local_store
+            .persist_conversation(&summary, summary.last_activity_ms)
+            .is_err()
+        {
+            continue;
+        }
+        bindings.push(ConversationBinding {
+            conversation_id: id.clone(),
+            backend_id: BackendId::new(KEYBASE_BACKEND_ID),
+            account_id: AccountId::new(DEFAULT_ACCOUNT_ID),
+            provider_conversation_ref: ProviderConversationRef::new(id.0),
+        });
+        channels.push(summary);
+    }
+    if !channels.is_empty() {
+        let _ = sender.send(BackendEvent::WorkspaceConversationsExtended {
+            workspace_id: WorkspaceId::new(WORKSPACE_ID),
+            channels,
+            direct_messages: vec![],
+            conversation_bindings: bindings,
+        });
+    }
 }
 
 fn maybe_handle_emoji_notify(
@@ -10427,6 +10749,54 @@ fn notify_should_refresh_inbox(event: &KeybaseNotifyEvent) -> bool {
     )
 }
 
+fn parse_badge_state(value: &Value) -> Option<HashMap<ConversationId, ConversationBadgeCounts>> {
+    let conversations = map_get(value, "conversations").and_then(as_array)?;
+    conversations
+        .iter()
+        .map(|conversation| {
+            let id = map_get(conversation, "convID").and_then(value_to_conversation_id_bytes)?;
+            if id.is_empty() {
+                return None;
+            }
+            Some((
+                ConversationId::new(format!("kb_conv:{}", hex_encode(&id))),
+                ConversationBadgeCounts {
+                    unread_count: u32::try_from(
+                        map_get(conversation, "unreadMessages").and_then(as_i64)?,
+                    )
+                    .ok()?,
+                    badge_count: u32::try_from(
+                        map_get(conversation, "badgeCount").and_then(as_i64)?,
+                    )
+                    .ok()?,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn emit_badge_state(
+    sender: &Sender<BackendEvent>,
+    local_store: &LocalStore,
+    counts: HashMap<ConversationId, ConversationBadgeCounts>,
+    complete: bool,
+) -> io::Result<()> {
+    local_store.update_conversation_badges(counts.clone(), complete)?;
+    tracing::debug!(
+        conversations = counts.len(),
+        unread_conversations = counts.values().filter(|c| c.unread_count > 0).count(),
+        complete,
+        "keybase.badges.applied"
+    );
+    sender
+        .send(BackendEvent::ConversationBadgesUpdated {
+            backend_id: BackendId::new(KEYBASE_BACKEND_ID),
+            counts,
+            complete,
+        })
+        .map_err(|_| io::Error::other("UI closed"))
+}
+
 fn parse_read_marker_update_from_notify(
     event: &KeybaseNotifyEvent,
 ) -> Option<ReadMarkerNotifyUpdate> {
@@ -10564,7 +10934,7 @@ fn persist_unread_snapshot(local_store: &LocalStore, snapshot: &ConversationUnre
     };
     summary.unread_count = snapshot.unread_count;
     summary.mention_count = snapshot.mention_count;
-    let activity_time = snapshot.activity_time.unwrap_or_else(now_unix_ms);
+    let activity_time = snapshot.activity_time.unwrap_or(summary.last_activity_ms);
     let _ = local_store.persist_conversation(&summary, activity_time);
 }
 
@@ -10617,11 +10987,12 @@ fn refresh_inbox_unread_state(sender: &Sender<BackendEvent>, local_store: &Local
 
     for conversation in conversations {
         let conversation_id = conversation.summary.id.clone();
-        let is_new = local_store
+        let previous = local_store
             .get_conversation(&conversation_id)
             .ok()
-            .flatten()
-            .is_none();
+            .flatten();
+        let is_new = previous.is_none();
+        let group_changed = previous.as_ref().is_some_and(|old| old.group != conversation.summary.group);
         let _ = local_store.persist_conversation(&conversation.summary, conversation.activity_time);
         if is_new {
             let _ = local_store.persist_conversation_binding(
@@ -10634,6 +11005,8 @@ fn refresh_inbox_unread_state(sender: &Sender<BackendEvent>, local_store: &Local
                 account_id: AccountId::new(DEFAULT_ACCOUNT_ID),
                 provider_conversation_ref: conversation.provider_ref.clone(),
             });
+        }
+        if is_new || group_changed {
             if matches!(conversation.summary.kind, ConversationKind::Channel) {
                 new_channels.push(conversation.summary.clone());
             } else {
@@ -11503,6 +11876,9 @@ async fn fetch_thread_messages(
 #[derive(Clone, Debug, Default)]
 struct ThreadPage {
     messages: Vec<MessageRecord>,
+    deletions: Vec<MessageRecord>,
+    raw_message_ids: Vec<u64>,
+    offline: bool,
     reaction_deltas: Vec<MessageReactionDelta>,
     next_cursor: Option<Vec<u8>>,
     last: bool,
@@ -11731,20 +12107,27 @@ async fn fetch_thread_messages_after_anchor_impl(
     let Ok(pivot) = after_message_id.0.parse::<i64>() else {
         return Ok(ThreadPage::default());
     };
-    let query = Value::Map(vec![(
-        Value::from("messageIDControl"),
-        Value::Map(vec![
-            (Value::from("pivot"), Value::from(pivot)),
-            (
-                Value::from("mode"),
-                Value::from(MESSAGE_ID_CONTROL_MODE_NEWER),
-            ),
-            (
-                Value::from("num"),
-                Value::from(page_size.clamp(1, i64::MAX as usize) as i64),
-            ),
-        ]),
-    )]);
+    let query = Value::Map(vec![
+        (Value::from("markAsRead"), Value::from(false)),
+        (
+            Value::from("disablePostProcessThread"),
+            Value::from(!hydrate_attachments),
+        ),
+        (
+            Value::from("messageIDControl"),
+            Value::Map(vec![
+                (Value::from("pivot"), Value::from(pivot)),
+                (
+                    Value::from("mode"),
+                    Value::from(MESSAGE_ID_CONTROL_MODE_NEWER),
+                ),
+                (
+                    Value::from("num"),
+                    Value::from(page_size.clamp(1, i64::MAX as usize) as i64),
+                ),
+            ]),
+        ),
+    ]);
     let result = client
         .call(
             CHAT_GET_THREAD_LOCAL,
@@ -11788,19 +12171,8 @@ async fn hydrate_thread_attachment_paths(
 }
 
 fn message_needs_image_attachment_hydration(message: &MessageRecord) -> bool {
-    message.attachments.iter().any(|attachment| {
-        attachment.kind == AttachmentKind::Image
-            && (!attachment
-                .source
-                .as_ref()
-                .is_some_and(attachment_source_renderable_for_image)
-                || !attachment
-                    .preview
-                    .as_ref()
-                    .is_some_and(|preview| {
-                        attachment_source_renderable_for_image(&preview.source)
-                    }))
-    })
+    let (source, preview) = image_attachment_hydration_flags(message);
+    source || preview
 }
 
 fn message_needs_video_attachment_hydration(message: &MessageRecord) -> bool {
@@ -11843,6 +12215,10 @@ fn image_attachment_hydration_flags(message: &MessageRecord) -> (bool, bool) {
     let needs_preview_hydration = message.attachments.iter().any(|attachment| {
         attachment.kind == AttachmentKind::Image
             && !attachment
+                .source
+                .as_ref()
+                .is_some_and(attachment_source_renderable_for_image)
+            && !attachment
                 .preview
                 .as_ref()
                 .is_some_and(|preview| attachment_source_renderable_for_image(&preview.source))
@@ -11856,6 +12232,9 @@ async fn hydrate_attachment_paths_for_messages(
     messages: &mut [MessageRecord],
     message_limit: usize,
 ) -> Vec<MessageId> {
+    if benchmark_read_only() {
+        return Vec::new();
+    }
     let mut hydrated = 0usize;
     let mut updated_ids = Vec::new();
     for message in messages {
@@ -12048,6 +12427,95 @@ struct BootstrapConversation {
     pinned_state: PinnedState,
 }
 
+fn conversation_topic_type(value: &Value) -> Option<i64> {
+    map_get(value, "topicType").and_then(as_i64).or_else(|| {
+        map_get(value, "triple")
+            .and_then(|triple| map_get(triple, "topicType"))
+            .and_then(as_i64)
+    })
+}
+
+fn is_chat_topic(value: &Value) -> bool {
+    // Missing metadata is tolerated for legacy payloads; explicit internal types
+    // (EMOJI, EMOJICROSS, KBFSFILEEDIT, DEV) never belong in the chat workspace.
+    conversation_topic_type(value).is_none_or(|topic_type| topic_type == TOPIC_TYPE_CHAT)
+}
+
+async fn repair_cached_conversation_topics(
+    client: &mut KeybaseRpcClient,
+    local_store: &LocalStore,
+    sender: &Sender<BackendEvent>,
+) -> io::Result<()> {
+    let ids = local_store.unverified_conversation_ids()?;
+    for chunk in ids.chunks(200) {
+        let raw_ids = chunk
+            .iter()
+            .filter_map(|id| {
+                provider_ref_to_conversation_id_bytes(&ProviderConversationRef::new(id.0.clone()))
+                    .map(Value::Binary)
+            })
+            .collect::<Vec<_>>();
+        if raw_ids.is_empty() {
+            continue;
+        }
+        // No topicType filter: we need metadata for historical internal entries too.
+        let response = client
+            .call(
+                CHAT_GET_INBOX_SUMMARY_CLI_LOCAL,
+                vec![Value::Map(vec![(
+                    "query".into(),
+                    Value::Map(vec![
+                        ("convIDs".into(), Value::Array(raw_ids)),
+                        ("visibility".into(), TLF_VISIBILITY_ANY.into()),
+                        ("status".into(), Value::Array(Vec::new())),
+                        ("memberStatus".into(), all_member_statuses()),
+                    ]),
+                )])],
+            )
+            .await?;
+        let mut topics = Vec::new();
+        for conversation in map_get(&response, "conversations")
+            .and_then(as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(info) = map_get(conversation, "info") else {
+                continue;
+            };
+            let Some(raw_id) = map_get(info, "id").and_then(value_to_conversation_id_bytes) else {
+                continue;
+            };
+            let Some(topic_type) = conversation_topic_type(info) else {
+                continue;
+            };
+            let id = ConversationId::new(format!("kb_conv:{}", hex_encode(&raw_id)));
+            if chunk.contains(&id) {
+                topics.push((id, topic_type));
+            }
+        }
+        local_store.persist_conversation_topic_types(&topics)?;
+        tracing::info!(
+            checked = topics.len(),
+            excluded = topics.iter().filter(|(_, t)| *t != TOPIC_TYPE_CHAT).count(),
+            "keybase.cache_topic_repair"
+        );
+        let excluded = topics
+            .into_iter()
+            .filter(|(_, t)| *t != TOPIC_TYPE_CHAT)
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        if !excluded.is_empty() {
+            sender
+                .send(BackendEvent::WorkspaceConversationsExcluded {
+                    workspace_id: WorkspaceId::new(WORKSPACE_ID),
+                    conversation_ids: excluded,
+                })
+                .map_err(|_| io::Error::other("UI closed"))?;
+        }
+    }
+    Ok(())
+}
+
 fn parse_inbox_conversations(
     value: &Value,
     self_username: Option<&str>,
@@ -12063,6 +12531,9 @@ fn parse_inbox_conversations(
         let Some(info) = map_get_any(&conversation, &["info", "i", "conv", "conversation"]) else {
             continue;
         };
+        if !is_chat_topic(info) {
+            continue;
+        }
         let Some(raw_id) = map_get_any(info, &["id", "i"]).and_then(value_to_conversation_id_bytes)
         else {
             continue;
@@ -12117,6 +12588,7 @@ fn parse_inbox_conversations(
             Some(ConversationGroup {
                 id: tlf_name.clone(),
                 display_name: tlf_name.clone(),
+                team_type: parse_team_type(info),
             })
         } else {
             None
@@ -12151,6 +12623,14 @@ fn parse_inbox_conversations(
     result
 }
 
+fn parse_team_type(value: &Value) -> ConversationTeamType {
+    match map_get(value, "teamType").and_then(as_i64) {
+        Some(1) => ConversationTeamType::Simple,
+        Some(2) => ConversationTeamType::Complex,
+        _ => ConversationTeamType::Unknown,
+    }
+}
+
 /// Parse a single `InboxUIItem` (as embedded in `NewChatActivity` notifications) into a
 /// `BootstrapConversation`. The `InboxUIItem` has top-level fields like `convID` (hex string),
 /// `name` (tlfName), `channel` (topicName), `membersType`, `memberStatus`, `status`, `time`, etc.
@@ -12158,6 +12638,9 @@ fn parse_inbox_ui_item(
     value: &Value,
     self_username: Option<&str>,
 ) -> Option<BootstrapConversation> {
+    if !is_chat_topic(value) {
+        return None;
+    }
     let conv_id_str = map_get_any(value, &["convID", "convId"])
         .and_then(as_str)?;
     let raw_id = hex_decode(conv_id_str)?;
@@ -12199,6 +12682,7 @@ fn parse_inbox_ui_item(
         Some(ConversationGroup {
             id: tlf_name.clone(),
             display_name: tlf_name.clone(),
+            team_type: parse_team_type(value),
         })
     } else {
         None
@@ -12246,6 +12730,7 @@ fn extract_conv_from_notify(event: &KeybaseNotifyEvent) -> Option<&Value> {
         "newConversation", "nc",
         "setStatus", "ss",
         "readMessage", "rm",
+        "teamtype",
     ] {
         if let Some(container) = map_get(activity, container_key) {
             if let Some(conv) = map_get_any(container, &["conv", "c"]) {
@@ -12369,15 +12854,8 @@ fn conversation_unread_count(conversation: &Value, reader_info: &Value) -> u32 {
         return unread_total.max(0) as u32;
     }
 
-    let max_msg = map_get_any(reader_info, &["maxMsgid", "maxMsgID"])
-        .and_then(as_i64)
-        .or_else(|| map_get_any(conversation, &["maxMsgID", "maxMsgid"]).and_then(as_i64));
-    if let (Some(max_msg), Some(read_msg)) = (max_msg, read_msg) {
-        // maxMsgid includes non-visible types (deletes, reactions, edits),
-        // so we can only infer "some unread exists", not a reliable count.
-        return if max_msg > read_msg { 1 } else { 0 };
-    }
-
+    // maxMsgid also advances for reactions, edits and deletes. Without visible
+    // summaries it is not evidence of unread chat content; wait for badge state.
     map_get_any(conversation, &["unread", "u"])
         .and_then(as_bool)
         .map(|unread| if unread { 1 } else { 0 })
@@ -12436,6 +12914,9 @@ fn conversation_mention_count(conversation: &Value, reader_info: &Value) -> u32 
 
 fn parse_thread_page(value: &Value, conversation_id: &ConversationId) -> ThreadPage {
     let mut page = ThreadPage::default();
+    page.offline = map_get_any(value, &["offline"])
+        .and_then(as_bool)
+        .unwrap_or(false);
     let Some(thread) = map_get_any(value, &["thread", "t"]) else {
         return page;
     };
@@ -12458,6 +12939,13 @@ fn parse_thread_page(value: &Value, conversation_id: &ConversationId) -> ThreadP
         let Some(valid) = extract_valid_message(item) else {
             continue;
         };
+        if let Some(id) = map_get_any(valid, &["serverHeader", "s"])
+            .and_then(|header| map_get_any(header, &["messageID", "messageId", "m"]))
+            .and_then(as_i64)
+            .filter(|id| *id >= 0)
+        {
+            page.raw_message_ids.push(id as u64);
+        }
         let message_body = map_get_any(valid, &["messageBody", "b"]);
         let message_type = message_body.and_then(message_type_from_message_body);
         if message_type == Some(MESSAGE_TYPE_REACTION) {
@@ -12485,6 +12973,9 @@ fn parse_thread_page(value: &Value, conversation_id: &ConversationId) -> ThreadP
                     &message.id,
                     extract_message_timestamp_ms(valid),
                 ));
+            if matches!(message.event, Some(ChatEvent::MessageDeleted { .. })) {
+                page.deletions.push(message.clone());
+            }
             page.messages.push(message);
         }
     }
@@ -16044,6 +16535,218 @@ mod tests {
     }
 
     #[test]
+    fn notification_disconnect_reconnects_and_subscribes_again() {
+        let path = temp_emoji_asset_dir("listener-reconnect");
+        std::fs::create_dir_all(&path).unwrap();
+        let socket = PathBuf::from("/tmp").join(format!(
+            "zbase-test-{}-{}.sock",
+            std::process::id(),
+            now_unix_ms()
+        ));
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let server = tokio::spawn(async move {
+                for _ in 0..2 {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let mut transport = FramedMsgpackTransport::from_stream(stream);
+                    let request = transport.read_value().await.unwrap();
+                    let parts = as_array(&request).unwrap();
+                    assert_eq!(
+                        as_str(&parts[2]),
+                        Some("keybase.1.notifyCtl.setNotifications")
+                    );
+                    transport
+                        .write_value(&Value::Array(vec![
+                            Value::from(1),
+                            parts[1].clone(),
+                            Value::Nil,
+                            Value::Nil,
+                        ]))
+                        .await
+                        .unwrap();
+                    let request = transport.read_value().await.unwrap();
+                    let parts = as_array(&request).unwrap();
+                    assert_eq!(as_str(&parts[2]), Some("keybase.1.badger.getBadgeState"));
+                    let badge_state = |unread| Value::Map(vec![(Value::from("conversations"), Value::Array(vec![Value::Map(vec![
+                        (Value::from("convID"), Value::Binary(vec![0xab, 0xcd])),
+                        (Value::from("unreadMessages"), Value::from(unread)),
+                        (Value::from("badgeCount"), Value::from(0)),
+                    ])]))]);
+                    transport.write_value(&Value::Array(vec![
+                        Value::from(1), parts[1].clone(), Value::Nil, badge_state(5),
+                    ])).await.unwrap();
+                    // A read in another client arrives through NotifyBadges.
+                    transport.write_value(&Value::Array(vec![
+                        Value::from(2), Value::from("keybase.1.NotifyBadges.badgeState"),
+                        Value::Array(vec![Value::Map(vec![(Value::from("badgeState"), badge_state(0))])]),
+                    ])).await.unwrap();
+                    // Dropping the stream simulates a daemon restart after subscription.
+                }
+            });
+            let store = Arc::new(LocalStore::open_at(path.join("store")).unwrap());
+            let index = Arc::new(SearchIndex::open_at(path.join("index")).unwrap());
+            let pending = Arc::new(Mutex::new(HashMap::new()));
+            let account = AccountId::new("test-account");
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let (sender, receiver) = mpsc::channel();
+            let cancel = Arc::clone(&shutdown);
+            let observer = tokio::spawn(async move {
+                let mut connected = 0;
+                let mut disconnected = 0;
+                let mut badge_counts = Vec::new();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    while let Ok(event) = receiver.try_recv() {
+                        match event {
+                            BackendEvent::AccountConnected { .. } => connected += 1,
+                            BackendEvent::AccountDisconnected { .. } => disconnected += 1,
+                            BackendEvent::ConversationBadgesUpdated { counts, complete, .. } => {
+                                assert!(complete);
+                                badge_counts.push(counts[&ConversationId::new("kb_conv:abcd")].unread_count);
+                            }
+                            _ => {}
+                        }
+                    }
+                    if connected == 2 && badge_counts.len() == 4 {
+                        break;
+                    }
+                    assert!(Instant::now() < deadline, "listener did not reconnect: connected={connected}, badge_counts={badge_counts:?}");
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                assert!(disconnected >= 1);
+                assert_eq!(badge_counts, vec![5, 0, 5, 0]);
+                cancel.store(true, Ordering::Relaxed);
+            });
+            tokio::time::timeout(
+                Duration::from_secs(6),
+                listen_with_reconnect(
+                    &sender,
+                    &store,
+                    &index,
+                    &pending,
+                    &account,
+                    &shutdown,
+                    || Some(socket.clone()),
+                ),
+            )
+            .await
+            .unwrap();
+            observer.await.unwrap();
+            server.await.unwrap();
+        });
+        std::fs::remove_file(socket).unwrap();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn failed_subscription_never_reports_connected() {
+        let path = temp_emoji_asset_dir("listener-rejected");
+        std::fs::create_dir_all(&path).unwrap();
+        let socket = PathBuf::from("/tmp").join(format!(
+            "zbase-rejected-{}-{}.sock",
+            std::process::id(),
+            now_unix_ms()
+        ));
+        Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+                let server = tokio::spawn(async move {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let mut transport = FramedMsgpackTransport::from_stream(stream);
+                    let request = transport.read_value().await.unwrap();
+                    let parts = as_array(&request).unwrap();
+                    transport
+                        .write_value(&Value::Array(vec![
+                            Value::from(1),
+                            parts[1].clone(),
+                            Value::from("subscription rejected"),
+                            Value::Nil,
+                        ]))
+                        .await
+                        .unwrap();
+                });
+                let store = Arc::new(LocalStore::open_at(path.join("store")).unwrap());
+                let index = Arc::new(SearchIndex::open_at(path.join("index")).unwrap());
+                let (sender, receiver) = mpsc::channel();
+                let result = run_listener_session(
+                    &socket,
+                    &sender,
+                    &store,
+                    &index,
+                    &Arc::new(Mutex::new(HashMap::new())),
+                    &AccountId::new("test-account"),
+                    &AtomicBool::new(false),
+                )
+                .await;
+                assert!(result.is_err());
+                assert!(
+                    !receiver
+                        .try_iter()
+                        .any(|event| matches!(event, BackendEvent::AccountConnected { .. }))
+                );
+                server.await.unwrap();
+            });
+        std::fs::remove_file(socket).unwrap();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn history_sync_applies_edits_and_deletes_in_operation_order() {
+        let path = temp_emoji_asset_dir("history-sync-mutations");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let conversation = ConversationId::new("history-sync-mutations");
+        let mut original = make_test_message("1");
+        original.conversation_id = conversation.clone();
+        original.fragments = vec![MessageFragment::Text("before".into())];
+        store.persist_message(&original).unwrap();
+        let mut edited = original.clone();
+        edited.fragments = vec![MessageFragment::Text("after".into())];
+        edited.edited = Some(EditMeta {
+            edit_id: MessageId::new("2"),
+            edited_at_ms: Some(2),
+        });
+        edited.attachments.push(test_image_attachment(None, None));
+        let mut deleted = make_test_message("3");
+        deleted.conversation_id = conversation.clone();
+        deleted.event = Some(ChatEvent::MessageDeleted {
+            target_message_id: Some(original.id.clone()),
+        });
+        let (sender, receiver) = mpsc::channel();
+        persist_sync_page(
+            &sender,
+            &store,
+            &conversation,
+            ThreadPage {
+                messages: vec![edited],
+                deletions: vec![deleted],
+                raw_message_ids: vec![2, 3],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            store
+                .get_message(&conversation, &original.id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .is_message_deleted(&conversation, &original.id)
+                .unwrap()
+        );
+        let events = receiver.try_iter().collect::<Vec<_>>();
+        assert!(events.iter().any(|event| matches!(event, BackendEvent::MessageUpserted(message) if message.edited.is_some() && message.attachments[0].source.is_none())));
+        assert!(events.iter().any(|event| matches!(event, BackendEvent::MessageDeleted { message_id, .. } if message_id == &original.id)));
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn message_needs_image_attachment_hydration_skips_renderable_image_urls() {
         let mut message = make_test_message("img-renderable");
         message.attachments.push(test_image_attachment(
@@ -18555,6 +19258,39 @@ mod tests {
     }
 
     #[test]
+    fn internal_topics_never_become_sidebar_conversations() {
+        for topic_type in [1i64, 2, 3, 4, 5] {
+            let ui = Value::Map(vec![
+                ("convID".into(), "abcd".into()),
+                ("name".into(), "butterbot,cameroncooper".into()),
+                ("membersType".into(), IMPTEAM_MEMBERS_TYPE.into()),
+                ("topicType".into(), topic_type.into()),
+            ]);
+            assert_eq!(
+                parse_inbox_ui_item(&ui, Some("cameroncooper")).is_some(),
+                topic_type == TOPIC_TYPE_CHAT
+            );
+            let info = Value::Map(vec![
+                ("id".into(), Value::Binary(vec![0xab, 0xcd])),
+                ("tlfName".into(), "butterbot,cameroncooper".into()),
+                ("membersType".into(), IMPTEAM_MEMBERS_TYPE.into()),
+                (
+                    "triple".into(),
+                    Value::Map(vec![("topicType".into(), topic_type.into())]),
+                ),
+            ]);
+            let inbox = Value::Map(vec![(
+                "conversations".into(),
+                Value::Array(vec![Value::Map(vec![("info".into(), info)])]),
+            )]);
+            assert_eq!(
+                parse_inbox_conversations(&inbox, Some("cameroncooper"), false).len(),
+                usize::from(topic_type == TOPIC_TYPE_CHAT)
+            );
+        }
+    }
+
+    #[test]
     fn parse_team_member_roles_extracts_active_roles() {
         let payload = Value::Array(vec![
             Value::Map(vec![
@@ -18587,6 +19323,225 @@ mod tests {
             parsed.get(&UserId::new("deleted")).is_none(),
             "non-active team members should be ignored"
         );
+    }
+
+    #[test]
+    #[ignore = "requires a running Keybase daemon and ZBASE_UNREAD_TEST_CACHE pointing to a disposable cache"]
+    fn live_badge_snapshot_matches_cached_unread_counts() {
+        let path = PathBuf::from(std::env::var("ZBASE_UNREAD_TEST_CACHE").expect("supply a disposable cache path"));
+        let store = LocalStore::open_at(path).unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        let value = runtime.block_on(async {
+            let transport = FramedMsgpackTransport::connect(&socket_path().expect("Keybase socket")).await?;
+            KeybaseRpcClient::new(transport).call("keybase.1.badger.getBadgeState", vec![]).await
+        }).unwrap();
+        let badges = crate::domain::conversation::ConversationBadgeState {
+            counts: parse_badge_state(&value).expect("valid daemon badge snapshot"), complete: true,
+        };
+        let ids = store.load_cached_conversation_ids(100_000).unwrap();
+        assert!(!ids.is_empty(), "cache must contain conversations");
+        let mut unread = 0;
+        for id in &ids {
+            let summary = store.get_conversation(id).unwrap().unwrap();
+            let mut expected = summary.clone();
+            badges.apply(&mut expected);
+            assert_eq!((summary.unread_count, summary.mention_count), (expected.unread_count, expected.mention_count), "cached badge mismatch for {}", id.0);
+            unread += usize::from(summary.unread_count > 0);
+        }
+        println!(
+            "Verified {} cached conversations against live daemon badge state; {} unread",
+            ids.len(),
+            unread
+        );
+    }
+
+    #[test]
+    fn inbox_parsers_preserve_simple_and_complex_team_metadata() {
+        for (raw_type, expected) in [
+            (1, ConversationTeamType::Simple),
+            (2, ConversationTeamType::Complex),
+        ] {
+            let info = Value::Map(vec![
+                ("id".into(), Value::Binary(vec![0xab, 0xcd])),
+                ("tlfName".into(), "finance".into()),
+                ("topicName".into(), "general".into()),
+                ("membersType".into(), TEAM_MEMBERS_TYPE.into()),
+                ("teamType".into(), raw_type.into()),
+            ]);
+            let inbox = Value::Map(vec![(
+                "conversations".into(),
+                Value::Array(vec![Value::Map(vec![
+                    ("info".into(), info),
+                    (
+                        "readerInfo".into(),
+                        Value::Map(vec![(
+                            "status".into(),
+                            CONVERSATION_MEMBER_STATUS_ACTIVE.into(),
+                        )]),
+                    ),
+                ])]),
+            )]);
+            let parsed = parse_inbox_conversations(&inbox, None, false);
+            assert_eq!(
+                parsed[0].summary.group.as_ref().unwrap().team_type,
+                expected
+            );
+            assert_eq!(parsed[0].summary.kind, ConversationKind::Channel);
+            let ui_item = Value::Map(vec![
+                ("convID".into(), "abcd".into()),
+                ("name".into(), "finance".into()),
+                ("channel".into(), "general".into()),
+                ("membersType".into(), TEAM_MEMBERS_TYPE.into()),
+                ("teamType".into(), raw_type.into()),
+                (
+                    "memberStatus".into(),
+                    CONVERSATION_MEMBER_STATUS_ACTIVE.into(),
+                ),
+            ]);
+            assert_eq!(
+                parse_inbox_ui_item(&ui_item, None)
+                    .unwrap()
+                    .summary
+                    .group
+                    .unwrap()
+                    .team_type,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn team_type_notification_promotes_all_cached_team_channels() {
+        let path = temp_emoji_asset_dir("team-type-change");
+        let store = Arc::new(LocalStore::open_at(path.clone()).unwrap());
+        for (id, team) in [("abcd", "finance"), ("1234", "finance"), ("5678", "other")] {
+            let summary = ConversationSummary {
+                id: ConversationId::new(format!("kb_conv:{id}")),
+                title: "general".into(),
+                kind: ConversationKind::Channel,
+                topic: "general".into(),
+                group: Some(ConversationGroup {
+                    id: team.into(),
+                    display_name: team.into(),
+                    team_type: ConversationTeamType::Simple,
+                }),
+                unread_count: 3,
+                mention_count: 1,
+                muted: false,
+                last_activity_ms: 100,
+            };
+            store.persist_conversation(&summary, 100).unwrap();
+        }
+        let event = KeybaseNotifyEvent::from_method(
+            "chat.1.NotifyChat.NewChatActivity",
+            Value::Map(vec![(
+                "activity".into(),
+                Value::Map(vec![
+                    ("activityType".into(), 8.into()),
+                    (
+                        "teamtype".into(),
+                        Value::Map(vec![
+                            ("convID".into(), Value::Binary(vec![0xab, 0xcd])),
+                            ("teamType".into(), 2.into()),
+                        ]),
+                    ),
+                ]),
+            )]),
+        );
+        let (sender, receiver) = mpsc::channel();
+        maybe_handle_team_type_notify(&event, &sender, &store);
+        for id in ["abcd", "1234"] {
+            let summary = store
+                .get_conversation(&ConversationId::new(format!("kb_conv:{id}")))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                summary.group.unwrap().team_type,
+                ConversationTeamType::Complex
+            );
+            assert_eq!(
+                (
+                    summary.unread_count,
+                    summary.mention_count,
+                    summary.last_activity_ms
+                ),
+                (3, 1, 100)
+            );
+        }
+        assert_eq!(
+            store
+                .get_conversation(&ConversationId::new("kb_conv:5678"))
+                .unwrap()
+                .unwrap()
+                .group
+                .unwrap()
+                .team_type,
+            ConversationTeamType::Simple
+        );
+        assert!(
+            matches!(receiver.try_recv().unwrap(), BackendEvent::WorkspaceConversationsExtended { channels, .. } if channels.len() == 2)
+        );
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn badge_snapshot_parses_counts_and_rejects_malformed_data() {
+        let value = Value::Map(vec![(
+            Value::from("conversations"),
+            Value::Array(vec![Value::Map(vec![
+                (Value::from("convID"), Value::Binary(vec![0xab, 0xcd])),
+                (Value::from("unreadMessages"), Value::from(7)),
+                (Value::from("badgeCount"), Value::from(2)),
+            ])]),
+        )]);
+        let counts = parse_badge_state(&value).unwrap();
+        assert_eq!(
+            counts[&ConversationId::new("kb_conv:abcd")],
+            ConversationBadgeCounts {
+                unread_count: 7,
+                badge_count: 2
+            }
+        );
+        assert!(parse_badge_state(&Value::Nil).is_none());
+        assert!(
+            parse_badge_state(&Value::Map(vec![(
+                Value::from("conversations"),
+                Value::Array(vec![Value::Nil])
+            )]))
+            .is_none()
+        );
+        assert!(
+            parse_badge_state(&Value::Map(vec![(
+                Value::from("conversations"),
+                Value::Array(vec![])
+            )]))
+            .unwrap()
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn inbox_refresh_coalesces_bursts_without_losing_a_request() {
+        let mut refresh = InboxUnreadRefresh::default();
+        assert!(refresh.request());
+        assert!(!refresh.request());
+        assert!(!refresh.request());
+        assert!(
+            refresh.finish(),
+            "run again after requests received during first fetch"
+        );
+        assert!(!refresh.request());
+        assert!(
+            refresh.finish(),
+            "also retain a request arriving during the follow-up fetch"
+        );
+        assert!(!refresh.finish());
+        assert!(
+            refresh.request(),
+            "a new worker can start after the previous one finishes"
+        );
+        assert!(!refresh.finish());
     }
 
     #[test]
@@ -18633,7 +19588,7 @@ mod tests {
         assert_eq!(parsed.conversation_id.0, "kb_conv:abcd");
         assert_eq!(parsed.read_upto.0, "99");
         let snapshot = parsed.snapshot.expect("snapshot");
-        assert_eq!(snapshot.unread_count, 1);
+        assert_eq!(snapshot.unread_count, 0);
         assert_eq!(snapshot.mention_count, 2);
         assert_eq!(
             snapshot.read_upto.as_ref().map(|id| id.0.as_str()),
@@ -18642,7 +19597,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_inbox_conversations_prefers_message_id_delta_over_boolean_unread() {
+    fn parse_inbox_conversations_does_not_infer_unread_from_nonvisible_activity() {
         let payload = Value::Map(vec![(
             Value::from("conversations"),
             Value::Array(vec![Value::Map(vec![
@@ -18679,7 +19634,7 @@ mod tests {
 
         let parsed = parse_inbox_conversations(&payload, Some("alice"), false);
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].summary.unread_count, 1);
+        assert_eq!(parsed[0].summary.unread_count, 0);
     }
 
     #[test]

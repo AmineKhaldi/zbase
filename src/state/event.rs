@@ -1,7 +1,7 @@
 use crate::domain::{
     affinity::Affinity,
     call::{CallStatus, ParticipantSummary},
-    conversation::ConversationSummary,
+    conversation::{ConversationBadgeCounts, ConversationSummary},
     ids::{CallId, ConversationId, MessageId, UserId, WorkspaceId},
     message::{EmojiSourceRef, MessageRecord},
     pins::PinnedState,
@@ -95,8 +95,15 @@ pub struct CallPatch {
     pub participants: Vec<ParticipantSummary>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BootstrapSource {
+    Cache,
+    Server,
+}
+
 #[derive(Clone, Debug)]
 pub enum BackendEvent {
+    BenchmarkPulse(std::time::Instant),
     AccountConnected {
         account_id: crate::domain::backend::AccountId,
     },
@@ -105,6 +112,7 @@ pub enum BackendEvent {
         reason: String,
     },
     BootstrapLoaded {
+        source: BootstrapSource,
         account_id: crate::domain::backend::AccountId,
         payload: BootstrapPayload,
     },
@@ -113,6 +121,13 @@ pub enum BackendEvent {
         channels: Vec<ConversationSummary>,
         direct_messages: Vec<ConversationSummary>,
         conversation_bindings: Vec<ConversationBinding>,
+    },
+    WorkspaceConversationsExcluded {
+        workspace_id: WorkspaceId,
+        conversation_ids: Vec<ConversationId>,
+    },
+    HistorySynced {
+        conversation_id: ConversationId,
     },
     WorkspaceSynced {
         workspace_id: WorkspaceId,
@@ -133,6 +148,15 @@ pub enum BackendEvent {
         newer_cursor: Option<String>,
     },
     MessageUpserted(MessageRecord),
+    MessageAttachmentsUpdated {
+        conversation_id: ConversationId,
+        message_id: MessageId,
+        attachments: Vec<crate::domain::attachment::AttachmentSummary>,
+    },
+    CommandFailed {
+        command: Box<super::effect::BackendCommand>,
+        error: String,
+    },
     MessageSendConfirmed {
         op_id: OpId,
         client_message_id: ClientMessageId,
@@ -219,6 +243,9 @@ pub enum BackendEvent {
         emoji: String,
         actor_id: UserId,
     },
+    ReactionConfirmed {
+        op_id: OpId,
+    },
     ReactionFailed {
         op_id: OpId,
         error: String,
@@ -240,6 +267,11 @@ pub enum BackendEvent {
         unread_count: u32,
         mention_count: u32,
         read_upto: Option<MessageId>,
+    },
+    ConversationBadgesUpdated {
+        backend_id: crate::domain::backend::BackendId,
+        counts: HashMap<ConversationId, ConversationBadgeCounts>,
+        complete: bool,
     },
     ReadMarkerUpdated {
         conversation_id: ConversationId,

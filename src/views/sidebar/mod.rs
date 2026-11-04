@@ -6,10 +6,10 @@ use crate::{
     },
     views::{
         accent,
-        avatar::{Avatar, default_avatar_background, demo_avatar_asset},
+        avatar::{Avatar, default_avatar_background},
         chevron_down_icon, chevron_right_icon, glass_surface_dark, hash_icon, is_dark_theme,
-        mention, plus_icon, search_icon, sidebar_bg, subtle_surface, success, success_soft,
-        text_primary, text_secondary, tint,
+        plus_icon, search_icon, sidebar_bg, subtle_surface, success, success_soft, text_primary,
+        text_secondary, tint, unread_indicator,
     },
 };
 use gpui::prelude::FluentBuilder;
@@ -417,10 +417,12 @@ impl Sidebar {
                     .child(row.label.clone()),
             )
             .when(has_mention, |d| {
-                d.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(mention())))
+                d.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(unread_indicator())))
             })
             .when(has_unread && !has_mention, |d| {
-                d.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(accent())))
+                d.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(
+                    if is_dark_theme() { unread_indicator() } else { accent() }
+                )))
             })
             .into_any_element()
     }
@@ -445,7 +447,7 @@ impl Sidebar {
                 .into_any_element(),
             Route::DirectMessage { .. } => {
                 let live_asset = dm_avatar_assets.get(route_label).map(String::as_str);
-                let asset = live_asset.or_else(|| demo_avatar_asset(&row.label));
+                let asset = live_asset;
                 Avatar::render(
                     &row.label,
                     asset,

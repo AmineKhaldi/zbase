@@ -92,7 +92,7 @@ impl ConversationView {
             .drag_over::<ExternalPaths>(|style, _, _, _| {
                 style
                     .bg(if is_dark_theme() {
-                        tint(0x0b1117, 0.72)
+                        tint(crate::views::main_bg(), 0.72)
                     } else {
                         tint(0xe8eef5, 0.70)
                     })

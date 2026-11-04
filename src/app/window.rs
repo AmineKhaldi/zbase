@@ -49,7 +49,14 @@ pub fn open_main_window(cx: &mut App) {
     cx.open_window(options, |window, cx| {
         let settings = SettingsStore::load_from_disk().unwrap_or_default();
         let models = if env_flag(ENV_BENCH_USE_DEMO) {
-            AppModels::demo_with_settings(settings)
+            #[cfg(any(test, feature = "demo-fixtures"))]
+            {
+                assert!(env_flag(ENV_BENCH_SKIP_BACKEND) && std::env::var_os("ZBASE_DATA_DIR").is_some(),
+                    "Demo fixtures require ZBASE_BENCH_SKIP_BACKEND=1 and an isolated ZBASE_DATA_DIR");
+                AppModels::demo_with_settings(settings)
+            }
+            #[cfg(not(any(test, feature = "demo-fixtures")))]
+            panic!("Demo fixtures are excluded from this build; explicitly build with --features demo-fixtures for isolated benchmarks");
         } else {
             AppModels::empty_with_settings(settings)
         };
@@ -172,7 +179,7 @@ fn build_app_store(models: &AppModels) -> AppStore {
     store.register_account(AccountState {
         account_id: account_id.clone(),
         backend_id: backend_id.clone(),
-        display_name: "Demo Keybase".to_string(),
+        display_name: "Keybase".to_string(),
         avatar: None,
         connection_state: ConnectionState::Disconnected,
         capabilities: BackendCapabilities::keybase_defaults(),
@@ -208,6 +215,50 @@ fn build_app_store(models: &AppModels) -> AppStore {
             account_id: account_id.clone(),
             provider_message_ref: ProviderMessageRef::new(message.id.0.clone()),
         });
+    }
+
+    if env_flag("ZBASE_BENCH_USE_DEMO") && env_flag(ENV_BENCH_SKIP_BACKEND) {
+        let mut state = store.snapshot().clone();
+        state.app.boot_phase = crate::state::state::BootPhase::Ready;
+        state.workspace.active_workspace_id = Some(models.app.active_workspace_id.clone());
+        state.workspace.workspace_name = models.workspace.workspace_name.clone();
+        state.workspace.channels = models.workspace.channels.clone();
+        state.workspace.direct_messages = models.workspace.direct_messages.clone();
+        state.sidebar.sections = models
+            .sidebar
+            .sections
+            .iter()
+            .map(|section| crate::state::state::UiSidebarSectionState {
+                id: Some(section.id.clone()),
+                title: section.title.clone(),
+                collapsed: section.collapsed,
+                rows: section
+                    .rows
+                    .iter()
+                    .map(|row| crate::state::state::UiSidebarRowState {
+                        label: row.label.clone(),
+                        unread_count: row.unread_count,
+                        mention_count: row.mention_count,
+                        route: Some(row.route.clone()),
+                    })
+                    .collect(),
+            })
+            .collect();
+        state.sidebar.highlighted_route = models.sidebar.highlighted_route.clone();
+        state.timeline.conversation_id = Some(models.timeline.conversation_id.clone());
+        state.timeline.typing_text = models.timeline.typing_text.clone();
+        state.timeline.messages = models
+            .timeline
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                crate::models::timeline_model::TimelineRow::Message(row) => {
+                    Some(row.message.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        store = AppStore::new(state);
     }
 
     store

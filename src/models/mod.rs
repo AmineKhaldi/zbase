@@ -1,3 +1,6 @@
+#[cfg(any(test, feature = "demo-fixtures"))]
+mod demo;
+
 pub mod app_model;
 pub mod call_model;
 pub mod composer_model;
@@ -27,16 +30,12 @@ use std::{
 use crate::domain::{
     affinity::Affinity,
     attachment::{AttachmentKind, AttachmentSource, AttachmentSummary, attachment_kind_from_path},
-    call::{CallSessionSummary, CallStatus},
-    conversation::{ConversationGroup, ConversationKind, ConversationSummary},
-    ids::{
-        CallId, ChannelId, ConversationId, DmId, MessageId, SidebarSectionId, UserId, WorkspaceId,
-    },
+    call::CallStatus,
+    conversation::{ConversationKind, ConversationSummary},
+    ids::{ChannelId, ConversationId, DmId, MessageId, SidebarSectionId, UserId, WorkspaceId},
     message::{BroadcastKind, EditMeta, MessageFragment, MessageRecord, MessageSendState},
-    presence::{Availability, Presence},
     route::Route,
     search::{SearchFilter, SearchResult},
-    user::UserSummary,
 };
 use crate::util::{
     deep_link::parse_keybase_chat_link,
@@ -60,9 +59,7 @@ use self::{
     find_in_chat_model::FindInChatModel,
     navigation_model::{NavigationModel, RightPaneMode},
     new_chat_model::NewChatModel,
-    notifications_model::{
-        ActivityItem, ActivityKind, NotificationsModel, ToastAction, ToastNotification,
-    },
+    notifications_model::{NotificationsModel, ToastAction, ToastNotification},
     overlay_model::{
         FullscreenImageOverlay, OverlayModel, ReactionHoverTooltip, SidebarHoverTooltip,
     },
@@ -70,9 +67,9 @@ use self::{
     quick_switcher_model::{QuickSwitcherModel, QuickSwitcherResult, QuickSwitcherResultKind},
     search_model::SearchModel,
     settings_model::{SettingsModel, ThemeMode},
-    sidebar_model::{SidebarModel, SidebarRow, SidebarSection},
+    sidebar_model::SidebarModel,
     thread_pane_model::ThreadPaneModel,
-    timeline_model::{MessageRow, TimelineModel, TimelineRow},
+    timeline_model::{TimelineModel, TimelineRow},
     workspace_model::WorkspaceModel,
 };
 
@@ -150,6 +147,8 @@ pub enum SendDispatch {
 }
 
 pub struct AppModels {
+    #[cfg(any(test, feature = "demo-fixtures"))]
+    fixture_mode: bool,
     pub app: AppModel,
     pub workspace: WorkspaceModel,
     pub navigation: NavigationModel,
@@ -179,531 +178,92 @@ pub struct AppModels {
 }
 
 impl AppModels {
-    pub fn demo() -> Self {
-        Self::demo_with_settings(SettingsModel::default())
-    }
-
     pub fn empty_with_settings(settings: SettingsModel) -> Self {
-        let mut models = Self::demo_with_settings(settings);
         let workspace_id = WorkspaceId::new("ws_primary");
         let conversation_id = ConversationId::new("conv_placeholder");
-
-        models.app.open_workspaces = vec![workspace_id.clone()];
-        models.app.active_workspace_id = workspace_id.clone();
-        models.app.global_unread_count = 0;
-        models.app.current_user_id = None;
-        models.app.current_user_display_name = "You".to_string();
-        models.app.current_user_avatar_asset = None;
-
-        models.workspace.workspace_id = workspace_id.clone();
-        models.workspace.workspace_name = "Keybase".to_string();
-        models.workspace.channels.clear();
-        models.workspace.direct_messages.clear();
-
-        models.sidebar.sections.clear();
-        models.sidebar.filter.clear();
-        models.sidebar.highlighted_route = Some(Route::WorkspaceHome {
-            workspace_id: workspace_id.clone(),
-        });
-
-        models.navigation.current = Route::WorkspaceHome {
+        let route = Route::WorkspaceHome {
             workspace_id: workspace_id.clone(),
         };
-        models.navigation.back_stack.clear();
-        models.navigation.forward_stack.clear();
-        models.navigation.right_pane = RightPaneMode::Hidden;
-
-        models.conversation.summary = ConversationSummary {
-            id: conversation_id.clone(),
-            title: "No conversation selected".to_string(),
-            kind: ConversationKind::DirectMessage,
-            topic: String::new(),
-            group: None,
-            unread_count: 0,
-            mention_count: 0,
-            muted: false,
-            last_activity_ms: 0,
-        };
-        models.conversation.member_count = 0;
-        models.conversation.pinned_message = None;
-        models.conversation.details = None;
-        models.conversation.can_post = false;
-        models.conversation.is_archived = false;
-
-        models.timeline.conversation_id = conversation_id.clone();
-        models.timeline.rows.clear();
-        models.timeline.highlighted_message_id = None;
-        models.timeline.unread_marker = None;
-        models.timeline.pending_scroll_target = None;
-        models.timeline.older_cursor = None;
-        models.timeline.newer_cursor = None;
-        models.timeline.loading_older = false;
-
-        models.search.query.clear();
-        models.search.filters.clear();
-        models.search.results.clear();
-        models.search.highlighted_index = None;
-        models.search.is_loading = false;
-        models.new_chat = NewChatModel::default();
-
-        models.quick_switcher.query.clear();
-        models.quick_switcher.results.clear();
-        models.quick_switcher.selected_index = 0;
-        models.quick_switcher.loading_messages = false;
-        models.quick_switcher_profile_names.clear();
-        models.emoji_picker = EmojiPickerModel::default();
-
-        models.find_in_chat.close();
-
-        models.thread_pane.open = false;
-        models.thread_pane.root_message_id = None;
-        models.thread_pane.replies.clear();
-        models.thread_pane.reply_draft.clear();
-        models.thread_pane.reply_attachments.clear();
-        models.thread_pane.reply_autocomplete = None;
-        models.thread_pane.following = false;
-        models.thread_pane.loading = false;
-
-        models.profile_panel.user_id = None;
-        models.profile_panel.profile = None;
-        models.profile_panel.loading = false;
-        models.profile_panel.active_social_tab = Default::default();
-        models.profile_panel.loading_social_list = false;
-
-        models.overlay.new_chat_open = false;
-        models.overlay.quick_switcher_open = false;
-        models.overlay.command_palette_open = false;
-        models.overlay.emoji_picker_open = false;
-        models.overlay.reaction_target_message_id = None;
-        models.overlay.fullscreen_image = None;
-        models.overlay.active_modal = None;
-        models.overlay.profile_card_user_id = None;
-        models.overlay.profile_card_position = None;
-        models.overlay.sidebar_hover_tooltip = None;
-        models.overlay.reaction_hover_tooltip = None;
-
-        models.call.active_call = None;
-        models.call.is_muted = false;
-        models.call.is_sharing_screen = false;
-
-        models.notifications.toasts.clear();
-        models.notifications.notification_center_count = 0;
-        models.notifications.activity_items.clear();
-        models.notifications.highlighted_index = None;
-
-        models.composer.conversation_id = conversation_id;
-        models.composer.mode = ComposerMode::Compose;
-        models.composer.draft_text.clear();
-        models.composer.attachments.clear();
-        models.composer.autocomplete = None;
-
-        models.composer_drafts.clear();
-        models.thread_reply_drafts.clear();
-        models.pending_send_outcomes.clear();
-        models.send_attempt_count = 0;
-        models.rebuild_quick_switcher_local_search_corpus();
-        models.sync_emoji_picker_from_settings();
-
-        models
-    }
-
-    pub fn demo_with_settings(settings: SettingsModel) -> Self {
-        let acme_id = WorkspaceId::new("ws_acme");
-        let friends_id = WorkspaceId::new("ws_friends");
-        let oss_id = WorkspaceId::new("ws_oss");
-
-        let general_channel_id = ChannelId::new("general");
-        let design_channel_id = ChannelId::new("design");
-        let hangout_channel_id = ChannelId::new("hangout");
-        let travel_channel_id = ChannelId::new("travel");
-        let zbase_channel_id = ChannelId::new("zbase");
-        let gpui_channel_id = ChannelId::new("gpui");
-        let alice_dm_id = DmId::new("alice");
-
-        let general_conversation_id = ConversationId::new("conv_general");
-        let design_conversation_id = ConversationId::new("conv_design");
-        let hangout_conversation_id = ConversationId::new("conv_hangout");
-        let travel_conversation_id = ConversationId::new("conv_travel");
-        let zbase_conversation_id = ConversationId::new("conv_zbase");
-        let gpui_conversation_id = ConversationId::new("conv_gpui");
-        let alice_conversation_id = ConversationId::new("conv_alice");
-        let alice_id = UserId::new("user_alice");
-        let search_query = "gpui".to_string();
-        let route = Route::Channel {
-            workspace_id: acme_id.clone(),
-            channel_id: general_channel_id.clone(),
-        };
-
-        let acme_group = ConversationGroup {
-            id: "acme".to_string(),
-            display_name: "Acme Product".to_string(),
-        };
-        let friends_group = ConversationGroup {
-            id: "friends".to_string(),
-            display_name: "Friends".to_string(),
-        };
-        let oss_group = ConversationGroup {
-            id: "oss".to_string(),
-            display_name: "Open Source".to_string(),
-        };
-
-        let general = ConversationSummary {
-            id: general_conversation_id.clone(),
-            title: "general".to_string(),
-            kind: ConversationKind::Channel,
-            topic: "Company-wide announcements".to_string(),
-            group: Some(acme_group.clone()),
-            unread_count: 3,
-            mention_count: 1,
-            muted: false,
-            last_activity_ms: 1_711_000_000_000,
-        };
-        let design = ConversationSummary {
-            id: design_conversation_id.clone(),
-            title: "design".to_string(),
-            kind: ConversationKind::Channel,
-            topic: "Product design crit and UI system work".to_string(),
-            group: Some(acme_group.clone()),
-            unread_count: 0,
-            mention_count: 0,
-            muted: false,
-            last_activity_ms: 1_710_000_000_000,
-        };
-        let hangout = ConversationSummary {
-            id: hangout_conversation_id.clone(),
-            title: "hangout".to_string(),
-            kind: ConversationKind::Channel,
-            topic: "Off-topic chat".to_string(),
-            group: Some(friends_group.clone()),
-            unread_count: 5,
-            mention_count: 0,
-            muted: false,
-            last_activity_ms: 1_709_000_000_000,
-        };
-        let travel = ConversationSummary {
-            id: travel_conversation_id.clone(),
-            title: "travel".to_string(),
-            kind: ConversationKind::Channel,
-            topic: "Trip planning".to_string(),
-            group: Some(friends_group.clone()),
-            unread_count: 0,
-            mention_count: 0,
-            muted: false,
-            last_activity_ms: 1_708_000_000_000,
-        };
-        let zbase_conv = ConversationSummary {
-            id: zbase_conversation_id.clone(),
-            title: "zbase".to_string(),
-            kind: ConversationKind::Channel,
-            topic: "Keybase UI client".to_string(),
-            group: Some(oss_group.clone()),
-            unread_count: 2,
-            mention_count: 1,
-            muted: false,
-            last_activity_ms: 1_712_000_000_000,
-        };
-        let gpui_conv = ConversationSummary {
-            id: gpui_conversation_id.clone(),
-            title: "gpui".to_string(),
-            kind: ConversationKind::Channel,
-            topic: "GPUI framework discussion".to_string(),
-            group: Some(oss_group.clone()),
-            unread_count: 0,
-            mention_count: 0,
-            muted: false,
-            last_activity_ms: 1_707_000_000_000,
-        };
-        let alice_dm = ConversationSummary {
-            id: alice_conversation_id.clone(),
-            title: "Alice Johnson".to_string(),
-            kind: ConversationKind::DirectMessage,
-            topic: "Product design".to_string(),
-            group: None,
-            unread_count: 1,
-            mention_count: 0,
-            muted: false,
-            last_activity_ms: 1_713_000_000_000,
-        };
-
-        let general_message = MessageRecord {
-            id: MessageId::new("msg_001"),
-            conversation_id: general_conversation_id.clone(),
-            author_id: alice_id,
-            reply_to: None,
-            thread_root_id: None,
-            timestamp_ms: Some(1_712_000_000_000),
-            event: None,
-            link_previews: Vec::new(),
-            permalink: "slack://acme/general/p/msg_001".to_string(),
-            fragments: vec![
-                MessageFragment::Text("Here is the shell layout for the GPUI port.".to_string()),
-                MessageFragment::Code {
-                    text: "AppWindow -> BodySplit -> TimelineList".to_string(),
-                    lang: None,
-                },
-            ],
-            source_text: None,
-            attachments: vec![AttachmentSummary {
-                name: "slack-shell.png".to_string(),
-                kind: AttachmentKind::Image,
-                size_bytes: 128_000,
-                ..AttachmentSummary::default()
-            }],
-            reactions: Vec::new(),
-            thread_reply_count: 4,
-            send_state: MessageSendState::Sent,
-            edited: None,
-        };
-
-        let composer = ComposerModel {
-            conversation_id: general_conversation_id.clone(),
-            mode: ComposerMode::Compose,
-            draft_text: String::new(),
-            attachments: Vec::new(),
-            autocomplete: Some(AutocompleteState {
-                trigger: '@',
-                query: "ali".to_string(),
-                trigger_offset: 0,
-                selected_index: 0,
-                candidates: Vec::new(),
-            }),
-        };
-        let thread_pane = ThreadPaneModel {
-            open: true,
-            root_message_id: Some(MessageId::new("msg_001")),
-            width_px: 360.0,
-            following: true,
-            replies: Vec::new(),
-            reply_draft: String::new(),
-            reply_attachments: Vec::new(),
-            reply_autocomplete: None,
-            loading: false,
-        };
-
         let mut models = Self {
+            #[cfg(any(test, feature = "demo-fixtures"))]
+            fixture_mode: false,
             app: AppModel {
-                open_workspaces: vec![acme_id.clone(), friends_id.clone(), oss_id.clone()],
-                active_workspace_id: acme_id.clone(),
-                connectivity: Connectivity::Online,
-                global_unread_count: 4,
-                current_user_id: Some(UserId::new("cameron")),
-                current_user_display_name: "cameron".to_string(),
-                current_user_avatar_asset: Some("assets/avatars/me.svg".to_string()),
+                open_workspaces: vec![workspace_id.clone()],
+                active_workspace_id: workspace_id.clone(),
+                connectivity: Connectivity::Reconnecting,
+                global_unread_count: 0,
+                current_user_id: None,
+                current_user_display_name: "You".into(),
+                current_user_avatar_asset: None,
             },
             workspace: WorkspaceModel {
-                workspace_id: acme_id.clone(),
-                workspace_name: "cameron".to_string(),
-                channels: vec![
-                    general.clone(),
-                    design.clone(),
-                    hangout.clone(),
-                    travel.clone(),
-                    zbase_conv.clone(),
-                    gpui_conv.clone(),
-                ],
-                direct_messages: vec![alice_dm.clone()],
+                workspace_id: workspace_id.clone(),
+                workspace_name: "Keybase".into(),
+                channels: vec![],
+                direct_messages: vec![],
             },
             navigation: NavigationModel {
                 current: route.clone(),
-                back_stack: Vec::new(),
-                forward_stack: Vec::new(),
-                right_pane: RightPaneMode::Thread,
+                back_stack: vec![],
+                forward_stack: vec![],
+                right_pane: RightPaneMode::Hidden,
             },
             sidebar: SidebarModel {
-                sections: vec![
-                    SidebarSection {
-                        id: SidebarSectionId::new("team_acme"),
-                        title: "Acme Product".to_string(),
-                        rows: vec![
-                            SidebarRow {
-                                label: "general".to_string(),
-                                unread_count: 3,
-                                mention_count: 1,
-                                route: Route::Channel {
-                                    workspace_id: acme_id.clone(),
-                                    channel_id: general_channel_id.clone(),
-                                },
-                            },
-                            SidebarRow {
-                                label: "design".to_string(),
-                                unread_count: 0,
-                                mention_count: 0,
-                                route: Route::Channel {
-                                    workspace_id: acme_id.clone(),
-                                    channel_id: design_channel_id.clone(),
-                                },
-                            },
-                        ],
-                        collapsed: false,
-                    },
-                    SidebarSection {
-                        id: SidebarSectionId::new("team_friends"),
-                        title: "Friends".to_string(),
-                        rows: vec![
-                            SidebarRow {
-                                label: "hangout".to_string(),
-                                unread_count: 5,
-                                mention_count: 0,
-                                route: Route::Channel {
-                                    workspace_id: friends_id.clone(),
-                                    channel_id: hangout_channel_id.clone(),
-                                },
-                            },
-                            SidebarRow {
-                                label: "travel".to_string(),
-                                unread_count: 0,
-                                mention_count: 0,
-                                route: Route::Channel {
-                                    workspace_id: friends_id.clone(),
-                                    channel_id: travel_channel_id.clone(),
-                                },
-                            },
-                        ],
-                        collapsed: false,
-                    },
-                    SidebarSection {
-                        id: SidebarSectionId::new("team_oss"),
-                        title: "Open Source".to_string(),
-                        rows: vec![
-                            SidebarRow {
-                                label: "zbase".to_string(),
-                                unread_count: 2,
-                                mention_count: 1,
-                                route: Route::Channel {
-                                    workspace_id: oss_id.clone(),
-                                    channel_id: zbase_channel_id.clone(),
-                                },
-                            },
-                            SidebarRow {
-                                label: "gpui".to_string(),
-                                unread_count: 0,
-                                mention_count: 0,
-                                route: Route::Channel {
-                                    workspace_id: oss_id.clone(),
-                                    channel_id: gpui_channel_id.clone(),
-                                },
-                            },
-                        ],
-                        collapsed: false,
-                    },
-                    SidebarSection {
-                        id: SidebarSectionId::new("dms"),
-                        title: "DMs".to_string(),
-                        rows: vec![SidebarRow {
-                            label: "Alice Johnson".to_string(),
-                            unread_count: 1,
-                            mention_count: 0,
-                            route: Route::DirectMessage {
-                                workspace_id: acme_id.clone(),
-                                dm_id: alice_dm_id.clone(),
-                            },
-                        }],
-                        collapsed: false,
-                    },
-                ],
+                sections: vec![],
                 filter: String::new(),
-                highlighted_route: Some(route.clone()),
+                highlighted_route: Some(route),
                 width_px: crate::views::SIDEBAR_WIDTH_PX,
             },
             conversation: ConversationModel {
-                summary: general.clone(),
+                summary: ConversationSummary {
+                    id: conversation_id.clone(),
+                    title: "No conversation selected".into(),
+                    kind: ConversationKind::DirectMessage,
+                    topic: String::new(),
+                    group: None,
+                    unread_count: 0,
+                    mention_count: 0,
+                    muted: false,
+                    last_activity_ms: 0,
+                },
                 pinned_message: None,
                 details: None,
                 avatar_asset: None,
-                member_count: 24,
-                can_post: true,
+                member_count: 0,
+                can_post: false,
                 is_archived: false,
             },
             timeline: TimelineModel {
-                conversation_id: general_conversation_id.clone(),
-                current_user_id: Some(UserId::new("user_me")),
-                rows: vec![
-                    TimelineRow::DateDivider("Today".to_string()),
-                    TimelineRow::UnreadDivider("3 unread messages".to_string()),
-                    TimelineRow::Message(MessageRow {
-                        author: demo_alice(),
-                        message: general_message,
-                        show_header: true,
-                    }),
-                ],
-                highlighted_message_id: Some(MessageId::new("msg_001")),
-                editing_message_id: None,
-                unread_marker: Some(MessageId::new("msg_001")),
-                affinity_index: HashMap::new(),
-                emoji_index: HashMap::new(),
-                emoji_source_index: HashMap::new(),
-                reaction_index: HashMap::new(),
-                author_role_index: HashMap::new(),
-                pending_scroll_target: None,
-                older_cursor: Some("cursor_older".to_string()),
-                newer_cursor: None,
-                loading_older: false,
-                hovered_message_id: None,
-                hovered_message_is_thread: None,
-                hovered_message_anchor_x: None,
-                hovered_message_anchor_y: None,
-                hovered_message_window_left: None,
-                hovered_message_window_top: None,
-                hovered_message_window_width: None,
-                hover_toolbar_settled: false,
-                typing_text: Some("Sam is typing…".to_string()),
-                quick_react_recent: None,
+                conversation_id: conversation_id.clone(),
+                ..TimelineModel::default()
             },
-            composer,
+            composer: ComposerModel {
+                conversation_id,
+                mode: ComposerMode::Compose,
+                draft_text: String::new(),
+                attachments: vec![],
+                autocomplete: None,
+            },
             quick_switcher: QuickSwitcherModel::default(),
-            emoji_picker: EmojiPickerModel {
-                query: String::new(),
-                selected_skin_tone: skin_tone_from_setting_value(
-                    settings.emoji_skin_tone.as_deref(),
-                ),
-                active_group: None,
-                hovered: None,
-                recent_aliases: settings.emoji_recents.clone(),
-                skin_tone_expanded: false,
-            },
+            emoji_picker: EmojiPickerModel::default(),
             find_in_chat: FindInChatModel::default(),
-            search: SearchModel {
-                query: search_query.clone(),
-                filters: Vec::new(),
-                results: demo_search_results(&search_query, &[], &acme_id),
-                highlighted_index: Some(0),
-                is_loading: false,
-            },
+            search: SearchModel::default(),
             new_chat: NewChatModel::default(),
-            thread_pane,
+            thread_pane: ThreadPaneModel {
+                width_px: 360.0,
+                ..ThreadPaneModel::default()
+            },
             profile_panel: ProfilePanelModel::default(),
-            overlay: OverlayModel {
-                new_chat_open: false,
-                quick_switcher_open: false,
-                command_palette_open: false,
-                emoji_picker_open: false,
-                reaction_target_message_id: None,
-                fullscreen_image: None,
-                file_upload_lightbox: None,
-                active_modal: None,
-                profile_card_user_id: None,
-                profile_card_position: None,
-                sidebar_hover_tooltip: None,
-                reaction_hover_tooltip: None,
-            },
-            call: CallModel {
-                active_call: None,
-                is_muted: false,
-                is_sharing_screen: false,
-            },
-            notifications: NotificationsModel {
-                toasts: Vec::new(),
-                notification_center_count: 2,
-                activity_items: demo_activity_items(&acme_id),
-                highlighted_index: Some(0),
-            },
+            overlay: OverlayModel::default(),
+            call: CallModel::default(),
+            notifications: NotificationsModel::default(),
             settings,
             quick_switcher_profile_names: HashMap::new(),
             quick_switcher_search_corpus: Arc::new(QuickSwitcherSearchCorpus {
                 revision: 0,
-                entries: Vec::new(),
-                channel_entry_indices: Vec::new(),
-                dm_entry_indices: Vec::new(),
+                entries: vec![],
+                channel_entry_indices: vec![],
+                dm_entry_indices: vec![],
             }),
             quick_switcher_search_corpus_revision: 0,
             quick_switcher_search_corpus_dirty: false,
@@ -712,13 +272,102 @@ impl AppModels {
             pending_send_outcomes: HashMap::new(),
             send_attempt_count: 0,
         };
-
-        models.store_current_composer_draft();
-        models.store_current_thread_draft();
-        models.refresh_notification_counts();
-        models.apply_saved_sidebar_order();
         models.rebuild_quick_switcher_local_search_corpus();
+        models.sync_emoji_picker_from_settings();
         models
+    }
+
+    fn sync_route_models(&mut self, route: &Route) {
+        #[cfg(any(test, feature = "demo-fixtures"))]
+        if self.fixture_mode {
+            self.sync_demo_route_models(route);
+            return;
+        }
+        self.find_in_chat.close();
+        let conversation_id = match route {
+            Route::Channel {
+                workspace_id,
+                channel_id,
+            } => {
+                self.app.active_workspace_id = workspace_id.clone();
+                Some(ConversationId::new(channel_id.0.clone()))
+            }
+            Route::DirectMessage {
+                workspace_id,
+                dm_id,
+            } => {
+                self.app.active_workspace_id = workspace_id.clone();
+                Some(ConversationId::new(dm_id.0.clone()))
+            }
+            Route::Search { query, .. } => {
+                self.sync_live_search_query(query.clone());
+                self.set_right_pane(RightPaneMode::Hidden);
+                None
+            }
+            _ => {
+                self.set_right_pane(RightPaneMode::Hidden);
+                None
+            }
+        };
+        if let Some(id) = conversation_id {
+            let summary = self
+                .workspace
+                .channels
+                .iter()
+                .chain(self.workspace.direct_messages.iter())
+                .find(|summary| summary.id == id)
+                .cloned()
+                .unwrap_or_else(|| ConversationSummary {
+                    id: id.clone(),
+                    title: "Loading conversation…".into(),
+                    kind: if matches!(route, Route::Channel { .. }) {
+                        ConversationKind::Channel
+                    } else {
+                        ConversationKind::DirectMessage
+                    },
+                    topic: String::new(),
+                    group: None,
+                    unread_count: 0,
+                    mention_count: 0,
+                    muted: false,
+                    last_activity_ms: 0,
+                });
+            if self.timeline.conversation_id != id {
+                self.timeline = TimelineModel {
+                    conversation_id: id,
+                    current_user_id: self.app.current_user_id.clone(),
+                    ..TimelineModel::default()
+                };
+                self.conversation = ConversationModel {
+                    summary: summary.clone(),
+                    pinned_message: None,
+                    details: None,
+                    avatar_asset: None,
+                    member_count: 0,
+                    can_post: false,
+                    is_archived: false,
+                };
+                self.composer = self.restore_composer_for_conversation(&summary, String::new());
+                self.thread_pane = ThreadPaneModel {
+                    width_px: self.thread_pane.width_px,
+                    ..ThreadPaneModel::default()
+                };
+                self.set_right_pane(RightPaneMode::Hidden);
+            }
+        }
+        self.sidebar.highlighted_route = Some(route.clone());
+    }
+
+    pub fn start_or_open_call(&mut self) -> Option<Route> {
+        if let Some(route) = self.active_call_route() {
+            return Some(route);
+        }
+        #[cfg(any(test, feature = "demo-fixtures"))]
+        if self.fixture_mode {
+            return Some(self.start_demo_call());
+        }
+        self.push_toast("Calls are not supported by this backend", None);
+        None
     }
 
     pub fn navigate_to(&mut self, route: Route) {
@@ -1178,29 +827,28 @@ impl AppModels {
         self.refresh_search_results();
 
         if let Route::Search {
-            workspace_id,
             query: current_query,
+            ..
         } = &mut self.navigation.current
         {
             *current_query = self.search.query.clone();
-            self.search.results =
-                demo_search_results(current_query, &self.search.filters, workspace_id);
-            self.search.highlighted_index = (!self.search.results.is_empty()).then_some(0);
         }
     }
 
     pub fn refresh_search_results(&mut self) {
-        self.search.results = demo_search_results(
-            &self.search.query,
-            &self.search.filters,
-            &self.workspace.workspace_id,
-        );
-        self.search.highlighted_index = (!self.search.results.is_empty()).then_some(
-            self.search
-                .highlighted_index
-                .unwrap_or(0)
-                .min(self.search.results.len().saturating_sub(1)),
-        );
+        #[cfg(any(test, feature = "demo-fixtures"))]
+        if self.fixture_mode {
+            self.search.results = demo::demo_search_results(
+                &self.search.query,
+                &self.search.filters,
+                &self.workspace.workspace_id,
+            );
+            self.search.highlighted_index = (!self.search.results.is_empty()).then_some(0);
+            return;
+        }
+        self.search.results.clear();
+        self.search.highlighted_index = None;
+        self.search.is_loading = false;
     }
 
     pub fn toggle_search_filter(&mut self, filter: SearchFilter) {
@@ -1495,14 +1143,6 @@ impl AppModels {
         self.overlay.file_upload_lightbox.take().is_some()
     }
 
-    pub fn add_composer_attachment(&mut self) {
-        self.composer.attachments.push(next_demo_attachment(
-            self.composer.attachments.len(),
-            "composer",
-        ));
-        self.store_current_composer_draft();
-    }
-
     pub fn remove_composer_attachment(&mut self, index: usize) {
         if index < self.composer.attachments.len() {
             self.composer.attachments.remove(index);
@@ -1513,16 +1153,6 @@ impl AppModels {
     pub fn set_composer_autocomplete(&mut self, autocomplete: Option<AutocompleteState>) {
         self.composer.autocomplete = autocomplete;
         self.store_current_composer_draft();
-    }
-
-    pub fn add_thread_attachment(&mut self) {
-        self.thread_pane
-            .reply_attachments
-            .push(next_demo_attachment(
-                self.thread_pane.reply_attachments.len(),
-                "thread",
-            ));
-        self.store_current_thread_draft();
     }
 
     pub fn remove_thread_attachment(&mut self, index: usize) {
@@ -2211,33 +1841,6 @@ impl AppModels {
         Some((route, message_id))
     }
 
-    pub fn start_or_open_call(&mut self) -> Route {
-        if let Some(route) = self.active_call_route() {
-            return route;
-        }
-
-        let call_id = CallId::new(format!("call_{}", self.conversation.summary.title));
-        self.call.active_call = Some(CallSessionSummary {
-            call_id: call_id.clone(),
-            status: if matches!(
-                self.conversation.summary.kind,
-                ConversationKind::DirectMessage
-            ) {
-                CallStatus::ActiveVideo
-            } else {
-                CallStatus::ActiveAudio
-            },
-            participants: active_call_participants(&self.conversation.summary),
-        });
-        self.call.is_muted = false;
-        self.call.is_sharing_screen = false;
-        self.push_toast("Call started", Some(ToastAction::OpenActiveCall));
-        Route::ActiveCall {
-            workspace_id: self.app.active_workspace_id.clone(),
-            call_id,
-        }
-    }
-
     pub fn active_call_route(&self) -> Option<Route> {
         self.call
             .active_call
@@ -2289,138 +1892,6 @@ impl AppModels {
             CallStatus::SharingScreen => CallStatus::Reconnecting,
             CallStatus::Idle => CallStatus::Ringing,
         };
-    }
-
-    fn sync_route_models(&mut self, route: &Route) {
-        self.find_in_chat.close();
-        match route {
-            Route::Channel {
-                channel_id,
-                workspace_id,
-                ..
-            } => {
-                self.app.active_workspace_id = workspace_id.clone();
-
-                let (summary, member_count, timeline, composer_seed) = match channel_id.0.as_str() {
-                    "design" => (
-                        self.workspace
-                            .channels
-                            .iter()
-                            .find(|c| c.title == "design")
-                            .cloned()
-                            .expect("missing design demo channel"),
-                        12,
-                        design_timeline(),
-                        String::new(),
-                    ),
-                    "general" => (
-                        self.workspace
-                            .channels
-                            .iter()
-                            .find(|c| c.title == "general")
-                            .cloned()
-                            .expect("missing general demo channel"),
-                        24,
-                        general_timeline(),
-                        String::new(),
-                    ),
-                    _ => {
-                        let channel_name = channel_id.0.as_str();
-                        let summary = self
-                            .workspace
-                            .channels
-                            .iter()
-                            .find(|c| c.title == channel_name)
-                            .cloned()
-                            .unwrap_or_else(|| ConversationSummary {
-                                id: ConversationId::new(format!("conv_{channel_name}")),
-                                title: channel_name.to_string(),
-                                kind: ConversationKind::Channel,
-                                topic: format!("#{channel_name}"),
-                                group: None,
-                                unread_count: 0,
-                                mention_count: 0,
-                                muted: false,
-                                last_activity_ms: 0,
-                            });
-                        (summary, 8, general_timeline(), String::new())
-                    }
-                };
-
-                self.conversation = ConversationModel {
-                    summary: summary.clone(),
-                    pinned_message: None,
-                    details: None,
-                    avatar_asset: None,
-                    member_count,
-                    can_post: true,
-                    is_archived: false,
-                };
-                self.timeline = timeline;
-                self.composer = self.restore_composer_for_conversation(&summary, composer_seed);
-            }
-            Route::DirectMessage { .. } => {
-                let summary = self
-                    .workspace
-                    .direct_messages
-                    .first()
-                    .cloned()
-                    .expect("missing demo dm");
-                self.conversation = ConversationModel {
-                    summary: summary.clone(),
-                    pinned_message: None,
-                    details: None,
-                    avatar_asset: None,
-                    member_count: 2,
-                    can_post: true,
-                    is_archived: false,
-                };
-                self.timeline = dm_timeline();
-                self.composer = self.restore_composer_for_conversation(&summary, String::new());
-            }
-            Route::Search {
-                query,
-                workspace_id,
-            } => {
-                self.search.query = query.clone();
-                self.search.results =
-                    demo_search_results(query, &self.search.filters, workspace_id);
-                self.search.highlighted_index = (!self.search.results.is_empty()).then_some(0);
-                self.set_right_pane(RightPaneMode::Hidden);
-            }
-            Route::Activity { .. }
-            | Route::Preferences
-            | Route::WorkspaceHome { .. } => {
-                self.set_right_pane(RightPaneMode::Hidden);
-            }
-            Route::ActiveCall { .. } => {
-                self.set_right_pane(RightPaneMode::Hidden);
-                if self.call.active_call.is_none() {
-                    let _ = self.start_or_open_call();
-                }
-            }
-        }
-
-        self.sidebar.highlighted_route = self
-            .visible_sidebar_routes()
-            .into_iter()
-            .find(|candidate| candidate == route)
-            .or_else(|| self.sidebar.highlighted_route.clone());
-
-        self.notifications.highlighted_index = if self.notifications.activity_items.is_empty() {
-            None
-        } else {
-            Some(
-                self.notifications
-                    .highlighted_index
-                    .unwrap_or(0)
-                    .min(self.notifications.activity_items.len().saturating_sub(1)),
-            )
-        };
-
-        if self.timeline.highlighted_message_id.is_none() {
-            self.timeline.highlighted_message_id = self.default_timeline_highlight();
-        }
     }
 
     fn restore_composer_for_conversation(
@@ -2479,6 +1950,7 @@ impl AppModels {
         );
     }
 
+    #[cfg(any(test, feature = "demo-fixtures"))]
     fn register_pending_send(&mut self, message_id: &MessageId) {
         self.send_attempt_count += 1;
         let will_succeed = !self.send_attempt_count.is_multiple_of(4);
@@ -2487,14 +1959,11 @@ impl AppModels {
     }
 
     fn mark_route_seen(&mut self, route: &Route, message_id: Option<&MessageId>) {
-        match route {
-            Route::Channel { .. } | Route::DirectMessage { .. } => {
-                if let Some(conversation_id) = conversation_id_for_route(route) {
-                    self.clear_workspace_counts(&conversation_id);
-                }
+        #[cfg(any(test, feature = "demo-fixtures"))]
+        if self.fixture_mode {
+            if let Some(conversation_id) = conversation_id_for_route(route) {
+                self.clear_workspace_counts(&conversation_id);
             }
-            Route::Preferences => {}
-            _ => {}
         }
 
         for item in &mut self.notifications.activity_items {
@@ -2616,443 +2085,6 @@ impl AppModels {
     }
 }
 
-fn demo_alice() -> UserSummary {
-    UserSummary {
-        id: UserId::new("user_alice"),
-        display_name: "Alice Johnson".to_string(),
-        title: "Staff Product Designer".to_string(),
-        avatar_asset: Some("assets/avatars/alice.svg".to_string()),
-        presence: Presence {
-            availability: Availability::Active,
-            status_text: Some("Reviewing the desktop shell".to_string()),
-        },
-        affinity: Affinity::Positive,
-    }
-}
-
-fn demo_sam() -> UserSummary {
-    UserSummary {
-        id: UserId::new("user_sam"),
-        display_name: "Sam Rivera".to_string(),
-        title: "Rust UI Engineer".to_string(),
-        avatar_asset: Some("assets/avatars/sam.svg".to_string()),
-        presence: Presence {
-            availability: Availability::Active,
-            status_text: Some("Profiling the timeline".to_string()),
-        },
-        affinity: Affinity::None,
-    }
-}
-
-fn demo_me() -> UserSummary {
-    UserSummary {
-        id: UserId::new("user_me"),
-        display_name: "You".to_string(),
-        title: "Desktop Client Engineer".to_string(),
-        avatar_asset: Some("assets/avatars/me.svg".to_string()),
-        presence: Presence {
-            availability: Availability::Active,
-            status_text: Some("Driving the GPUI shell".to_string()),
-        },
-        affinity: Affinity::None,
-    }
-}
-
-fn demo_search_results(
-    query: &str,
-    filters: &[SearchFilter],
-    workspace_id: &WorkspaceId,
-) -> Vec<SearchResult> {
-    let results = vec![
-        SearchResult {
-            conversation_id: ConversationId::new("conv_general"),
-            route: Route::Channel {
-                workspace_id: workspace_id.clone(),
-                channel_id: ChannelId::new("general"),
-            },
-            snippet: "Here is the shell layout for the GPUI port.".to_string(),
-            snippet_highlight_ranges: Vec::new(),
-            message: MessageRecord {
-                id: MessageId::new("msg_001"),
-                conversation_id: ConversationId::new("conv_general"),
-                author_id: UserId::new("user_alice"),
-                reply_to: None,
-                thread_root_id: None,
-                timestamp_ms: Some(1_712_000_000_000),
-                event: None,
-                link_previews: Vec::new(),
-                permalink: "slack://acme/general/p/msg_001".to_string(),
-                fragments: vec![
-                    MessageFragment::Text(
-                        "Here is the shell layout for the GPUI port.".to_string(),
-                    ),
-                    MessageFragment::Code {
-                        text: "AppWindow -> BodySplit -> TimelineList".to_string(),
-                        lang: None,
-                    },
-                ],
-                source_text: None,
-                attachments: vec![AttachmentSummary {
-                    name: "slack-shell.png".to_string(),
-                    kind: AttachmentKind::Image,
-                    size_bytes: 128_000,
-                    ..AttachmentSummary::default()
-                }],
-                reactions: Vec::new(),
-                thread_reply_count: 4,
-                send_state: MessageSendState::Sent,
-                edited: None,
-            },
-        },
-        SearchResult {
-            conversation_id: ConversationId::new("conv_design"),
-            route: Route::Channel {
-                workspace_id: workspace_id.clone(),
-                channel_id: ChannelId::new("design"),
-            },
-            snippet: "The shell feels right. Next step is focus routing.".to_string(),
-            snippet_highlight_ranges: Vec::new(),
-            message: MessageRecord {
-                id: MessageId::new("msg_design_001"),
-                conversation_id: ConversationId::new("conv_design"),
-                author_id: UserId::new("user_sam"),
-                reply_to: None,
-                thread_root_id: None,
-                timestamp_ms: Some(1_711_600_000_000),
-                event: None,
-                link_previews: Vec::new(),
-                permalink: "slack://acme/design/p/msg_design_001".to_string(),
-                fragments: vec![
-                    MessageFragment::Text(
-                        "The shell feels right. Next step is focus routing.".to_string(),
-                    ),
-                    MessageFragment::Quote(
-                        "Keep the root view stateful and the panes presentational.".to_string(),
-                    ),
-                ],
-                source_text: None,
-                attachments: Vec::new(),
-                reactions: Vec::new(),
-                thread_reply_count: 2,
-                send_state: MessageSendState::Sent,
-                edited: None,
-            },
-        },
-        SearchResult {
-            conversation_id: ConversationId::new("conv_alice"),
-            route: Route::DirectMessage {
-                workspace_id: workspace_id.clone(),
-                dm_id: DmId::new("alice"),
-            },
-            snippet: "Can you make the right pane toggles keyboard accessible too?".to_string(),
-            snippet_highlight_ranges: Vec::new(),
-            message: MessageRecord {
-                id: MessageId::new("msg_dm_001"),
-                conversation_id: ConversationId::new("conv_alice"),
-                author_id: UserId::new("user_alice"),
-                reply_to: None,
-                thread_root_id: None,
-                timestamp_ms: Some(1_712_200_000_000),
-                event: None,
-                link_previews: Vec::new(),
-                permalink: "slack://acme/dm/alice/p/msg_dm_001".to_string(),
-                fragments: vec![
-                    MessageFragment::Text(
-                        "Can you make the right pane toggles keyboard accessible too?".to_string(),
-                    ),
-                    MessageFragment::Text(
-                        "I also dropped notes in https://docs.acme.dev/ui".to_string(),
-                    ),
-                ],
-                source_text: None,
-                attachments: Vec::new(),
-                reactions: Vec::new(),
-                thread_reply_count: 1,
-                send_state: MessageSendState::Sent,
-                edited: None,
-            },
-        },
-    ];
-
-    let query = query.trim().to_lowercase();
-
-    results
-        .into_iter()
-        .filter(|result| {
-            query.is_empty()
-                || result.snippet.to_lowercase().contains(&query)
-                || flatten_fragments(&result.message.fragments)
-                    .to_lowercase()
-                    .contains(&query)
-        })
-        .filter(|result| {
-            filters
-                .iter()
-                .all(|filter| search_filter_matches(filter, result))
-        })
-        .collect()
-}
-
-fn demo_activity_items(workspace_id: &WorkspaceId) -> Vec<ActivityItem> {
-    vec![
-        ActivityItem {
-            kind: ActivityKind::Mention,
-            title: "Alice mentioned you in #general".to_string(),
-            detail: "She asked for the GPUI shell layout so implementation can start.".to_string(),
-            route: Route::Channel {
-                workspace_id: workspace_id.clone(),
-                channel_id: ChannelId::new("general"),
-            },
-            message_id: Some(MessageId::new("msg_001")),
-            unread: true,
-        },
-        ActivityItem {
-            kind: ActivityKind::ThreadReply,
-            title: "New replies in the design thread".to_string(),
-            detail: "Sam followed up on focus routing and pane ownership.".to_string(),
-            route: Route::Channel {
-                workspace_id: workspace_id.clone(),
-                channel_id: ChannelId::new("design"),
-            },
-            message_id: Some(MessageId::new("msg_design_001")),
-            unread: true,
-        },
-        ActivityItem {
-            kind: ActivityKind::Reminder,
-            title: "Preferences review".to_string(),
-            detail: "Confirm whether the right pane should stay globally enabled.".to_string(),
-            route: Route::Preferences,
-            message_id: None,
-            unread: false,
-        },
-        ActivityItem {
-            kind: ActivityKind::Reaction,
-            title: "Alice reacted in your DM".to_string(),
-            detail: "She wants keyboard-accessible thread controls in the same pass.".to_string(),
-            route: Route::DirectMessage {
-                workspace_id: workspace_id.clone(),
-                dm_id: DmId::new("alice"),
-            },
-            message_id: Some(MessageId::new("msg_dm_001")),
-            unread: false,
-        },
-    ]
-}
-
-fn general_timeline() -> TimelineModel {
-    let author = demo_alice();
-    let conversation_id = ConversationId::new("conv_general");
-    TimelineModel {
-        conversation_id: conversation_id.clone(),
-        current_user_id: Some(UserId::new("user_me")),
-        rows: vec![
-            TimelineRow::DateDivider("Today".to_string()),
-            TimelineRow::UnreadDivider("3 unread messages".to_string()),
-            TimelineRow::Message(MessageRow {
-                author,
-                message: MessageRecord {
-                    id: MessageId::new("msg_001"),
-                    conversation_id,
-                    author_id: UserId::new("user_alice"),
-                    reply_to: None,
-                    thread_root_id: None,
-                    timestamp_ms: Some(1_712_000_000_000),
-                    event: None,
-                    link_previews: Vec::new(),
-                    permalink: "slack://acme/general/p/msg_001".to_string(),
-                    fragments: vec![
-                        MessageFragment::Text(
-                            "Here is the shell layout for the GPUI port.".to_string(),
-                        ),
-                        MessageFragment::Code {
-                            text: "AppWindow -> BodySplit -> TimelineList".to_string(),
-                            lang: None,
-                        },
-                    ],
-                    source_text: None,
-                    attachments: vec![AttachmentSummary {
-                        name: "slack-shell.png".to_string(),
-                        kind: AttachmentKind::Image,
-                        size_bytes: 128_000,
-                        ..AttachmentSummary::default()
-                    }],
-                    reactions: Vec::new(),
-                    thread_reply_count: 4,
-                    send_state: MessageSendState::Sent,
-                    edited: None,
-                },
-                show_header: true,
-            }),
-        ],
-        highlighted_message_id: Some(MessageId::new("msg_001")),
-        editing_message_id: None,
-        unread_marker: Some(MessageId::new("msg_001")),
-        affinity_index: HashMap::new(),
-        emoji_index: HashMap::new(),
-        emoji_source_index: HashMap::new(),
-        reaction_index: HashMap::new(),
-        author_role_index: HashMap::new(),
-        pending_scroll_target: None,
-        older_cursor: Some("cursor_older".to_string()),
-        newer_cursor: None,
-        loading_older: false,
-        hovered_message_id: None,
-        hovered_message_is_thread: None,
-        hovered_message_anchor_x: None,
-        hovered_message_anchor_y: None,
-        hovered_message_window_left: None,
-        hovered_message_window_top: None,
-        hovered_message_window_width: None,
-        hover_toolbar_settled: false,
-        typing_text: Some("Sam is typing…".to_string()),
-        quick_react_recent: None,
-    }
-}
-
-fn design_timeline() -> TimelineModel {
-    let conversation_id = ConversationId::new("conv_design");
-    TimelineModel {
-        conversation_id: conversation_id.clone(),
-        current_user_id: Some(UserId::new("user_me")),
-        rows: vec![
-            TimelineRow::DateDivider("Yesterday".to_string()),
-            TimelineRow::Message(MessageRow {
-                author: demo_sam(),
-                message: MessageRecord {
-                    id: MessageId::new("msg_design_001"),
-                    conversation_id: conversation_id.clone(),
-                    author_id: UserId::new("user_sam"),
-                    reply_to: None,
-                    thread_root_id: None,
-                    timestamp_ms: Some(1_711_600_000_000),
-                    event: None,
-                    link_previews: Vec::new(),
-                    permalink: "slack://acme/design/p/msg_design_001".to_string(),
-                    fragments: vec![
-                        MessageFragment::Text(
-                            "The shell feels right. Next step is focus routing.".to_string(),
-                        ),
-                        MessageFragment::Quote(
-                            "Keep the root view stateful and the panes presentational.".to_string(),
-                        ),
-                    ],
-                    source_text: None,
-                    attachments: Vec::new(),
-                    reactions: Vec::new(),
-                    thread_reply_count: 2,
-                    send_state: MessageSendState::Sent,
-                    edited: None,
-                },
-                show_header: true,
-            }),
-            TimelineRow::Message(MessageRow {
-                author: demo_sam(),
-                message: MessageRecord {
-                    id: MessageId::new("msg_design_002"),
-                    conversation_id,
-                    author_id: UserId::new("user_sam"),
-                    reply_to: None,
-                    thread_root_id: None,
-                    timestamp_ms: Some(1_711_601_000_000),
-                    event: None,
-                    link_previews: Vec::new(),
-                    permalink: "slack://acme/design/p/msg_design_002".to_string(),
-                    fragments: vec![MessageFragment::Text(
-                        "We should add a command layer before building the real composer."
-                            .to_string(),
-                    )],
-                    source_text: None,
-                    attachments: Vec::new(),
-                    reactions: Vec::new(),
-                    thread_reply_count: 0,
-                    send_state: MessageSendState::Sent,
-                    edited: None,
-                },
-                show_header: false,
-            }),
-        ],
-        highlighted_message_id: Some(MessageId::new("msg_design_002")),
-        editing_message_id: None,
-        unread_marker: None,
-        affinity_index: HashMap::new(),
-        emoji_index: HashMap::new(),
-        emoji_source_index: HashMap::new(),
-        reaction_index: HashMap::new(),
-        author_role_index: HashMap::new(),
-        pending_scroll_target: None,
-        older_cursor: Some("cursor_design_older".to_string()),
-        newer_cursor: None,
-        loading_older: false,
-        hovered_message_id: None,
-        hovered_message_is_thread: None,
-        hovered_message_anchor_x: None,
-        hovered_message_anchor_y: None,
-        hovered_message_window_left: None,
-        hovered_message_window_top: None,
-        hovered_message_window_width: None,
-        hover_toolbar_settled: false,
-        typing_text: None,
-        quick_react_recent: None,
-    }
-}
-
-fn dm_timeline() -> TimelineModel {
-    let conversation_id = ConversationId::new("conv_alice");
-    TimelineModel {
-        conversation_id: conversation_id.clone(),
-        current_user_id: Some(UserId::new("user_me")),
-        rows: vec![
-            TimelineRow::DateDivider("Today".to_string()),
-            TimelineRow::Message(MessageRow {
-                author: demo_alice(),
-                message: MessageRecord {
-                    id: MessageId::new("msg_dm_001"),
-                    conversation_id,
-                    author_id: UserId::new("user_alice"),
-                    reply_to: None,
-                    thread_root_id: None,
-                    timestamp_ms: Some(1_712_200_000_000),
-                    event: None,
-                    link_previews: Vec::new(),
-                    permalink: "slack://acme/dm/alice/p/msg_dm_001".to_string(),
-                    fragments: vec![MessageFragment::Text(
-                        "Can you make the right pane toggles keyboard accessible too?".to_string(),
-                    )],
-                    source_text: None,
-                    attachments: Vec::new(),
-                    reactions: Vec::new(),
-                    thread_reply_count: 1,
-                    send_state: MessageSendState::Sent,
-                    edited: None,
-                },
-                show_header: true,
-            }),
-        ],
-        highlighted_message_id: Some(MessageId::new("msg_dm_001")),
-        editing_message_id: None,
-        unread_marker: None,
-        affinity_index: HashMap::new(),
-        emoji_index: HashMap::new(),
-        emoji_source_index: HashMap::new(),
-        reaction_index: HashMap::new(),
-        author_role_index: HashMap::new(),
-        pending_scroll_target: None,
-        older_cursor: None,
-        newer_cursor: None,
-        loading_older: false,
-        hovered_message_id: None,
-        hovered_message_is_thread: None,
-        hovered_message_anchor_x: None,
-        hovered_message_anchor_y: None,
-        hovered_message_window_left: None,
-        hovered_message_window_top: None,
-        hovered_message_window_width: None,
-        hover_toolbar_settled: false,
-        typing_text: None,
-        quick_react_recent: None,
-    }
-}
-
 fn flatten_fragments(fragments: &[MessageFragment]) -> String {
     fragments
         .iter()
@@ -3070,49 +2102,6 @@ fn flatten_fragments(fragments: &[MessageFragment]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn search_filter_matches(filter: &SearchFilter, result: &SearchResult) -> bool {
-    match filter {
-        SearchFilter::FromUser(user) => {
-            let author = match result.message.author_id.0.as_str() {
-                "user_alice" => "alice",
-                "user_sam" => "sam",
-                "user_me" => "you",
-                other => other,
-            };
-            author.contains(&user.to_lowercase())
-        }
-        SearchFilter::InChannel(channel) => match &result.route {
-            Route::Channel { channel_id, .. } => channel_id.0.contains(&channel.to_lowercase()),
-            Route::DirectMessage { .. } => channel == "dm",
-            _ => false,
-        },
-        SearchFilter::HasFile => !result.message.attachments.is_empty(),
-        SearchFilter::HasLink => flatten_fragments(&result.message.fragments).contains("http"),
-        SearchFilter::MentionsMe => flatten_fragments(&result.message.fragments)
-            .to_lowercase()
-            .contains("you"),
-    }
-}
-
-fn next_demo_attachment(index: usize, prefix: &str) -> AttachmentSummary {
-    let (name, kind, size_bytes) = match index % 3 {
-        0 => (format!("{prefix}-notes.md"), AttachmentKind::File, 16_500),
-        1 => (format!("{prefix}-mock.png"), AttachmentKind::Image, 248_000),
-        _ => (
-            format!("{prefix}-clip.mov"),
-            AttachmentKind::Video,
-            3_200_000,
-        ),
-    };
-
-    AttachmentSummary {
-        name,
-        kind,
-        size_bytes,
-        ..AttachmentSummary::default()
-    }
 }
 
 fn quick_switcher_label_for_summary(
@@ -3714,25 +2703,9 @@ pub(crate) fn compute_quick_switcher_local_results(
 
 fn conversation_id_for_route(route: &Route) -> Option<ConversationId> {
     match route {
-        Route::Channel { channel_id, .. } => Some(match channel_id.0.as_str() {
-            "design" => ConversationId::new("conv_design"),
-            _ => ConversationId::new("conv_general"),
-        }),
-        Route::DirectMessage { .. } => Some(ConversationId::new("conv_alice")),
+        Route::Channel { channel_id, .. } => Some(ConversationId::new(channel_id.0.clone())),
+        Route::DirectMessage { dm_id, .. } => Some(ConversationId::new(dm_id.0.clone())),
         _ => None,
-    }
-}
-
-fn active_call_participants(conversation: &ConversationSummary) -> Vec<UserSummary> {
-    match conversation.kind {
-        ConversationKind::DirectMessage => vec![demo_me(), demo_alice()],
-        ConversationKind::Channel | ConversationKind::GroupDirectMessage => {
-            if conversation.title == "design" {
-                vec![demo_me(), demo_sam(), demo_alice()]
-            } else {
-                vec![demo_me(), demo_alice(), demo_sam()]
-            }
-        }
     }
 }
 
@@ -3766,6 +2739,156 @@ mod tests {
             muted: false,
             last_activity_ms: 0,
         }
+    }
+
+    fn assert_empty_conversation_content(models: &AppModels) {
+        assert!(models.timeline.rows.is_empty());
+        assert!(models.timeline.typing_text.is_none());
+        assert!(models.timeline.highlighted_message_id.is_none());
+        assert!(models.timeline.unread_marker.is_none());
+        assert!(models.thread_pane.replies.is_empty());
+        assert!(models.thread_pane.reply_attachments.is_empty());
+        assert!(models.conversation.pinned_message.is_none());
+        assert!(models.conversation.details.is_none());
+        assert_eq!(models.conversation.member_count, 0);
+        assert!(models.call.active_call.is_none());
+    }
+
+    #[test]
+    fn production_models_start_empty_without_inheriting_fixture_state() {
+        let models = AppModels::empty_with_settings(SettingsModel::default());
+        assert_empty_conversation_content(&models);
+        assert!(models.workspace.channels.is_empty());
+        assert!(models.workspace.direct_messages.is_empty());
+        assert!(models.sidebar.sections.is_empty());
+        assert!(models.search.results.is_empty());
+        assert!(models.notifications.activity_items.is_empty());
+        assert!(models.composer.attachments.is_empty());
+        assert!(models.composer.autocomplete.is_none());
+        assert!(models.timeline.current_user_id.is_none());
+        assert!(!models.conversation.can_post);
+        assert!(!models.fixture_mode);
+    }
+
+    #[test]
+    fn production_quick_switcher_navigation_never_seeds_messages_before_backend_reply() {
+        let mut models = AppModels::empty_with_settings(SettingsModel::default());
+        let mut first = channel_summary("kb_conv:first", "general");
+        first.unread_count = 4;
+        let mut gitops = channel_summary("kb_conv:gitops", "gitops");
+        gitops.unread_count = 2;
+        models.workspace.channels = vec![first.clone(), gitops.clone()];
+        models.rebuild_quick_switcher_local_search_corpus();
+        models.update_quick_switcher_query("gitops".into());
+        let selected = models
+            .quick_switcher_selected_result()
+            .unwrap()
+            .route
+            .clone();
+        models.navigate_to(selected.clone());
+        assert_eq!(models.navigation.current, selected);
+        assert_eq!(models.conversation.summary.id, gitops.id);
+        assert_eq!(models.composer.conversation_id, gitops.id);
+        assert_eq!(models.timeline.conversation_id, gitops.id);
+        assert_empty_conversation_content(&models);
+        assert_eq!(
+            models.workspace.channels[1].unread_count, 2,
+            "navigation must not invent read confirmations"
+        );
+        models.update_composer_draft_text("unsent production draft".into());
+        // No server/cache response is delivered during these navigation/history steps.
+        models.navigate_to(Route::Channel {
+            workspace_id: models.workspace.workspace_id.clone(),
+            channel_id: ChannelId::new(first.id.0.clone()),
+        });
+        assert!(models.navigate_back());
+        assert_eq!(models.timeline.conversation_id, gitops.id);
+        assert_eq!(models.composer.draft_text, "unsent production draft");
+        assert_empty_conversation_content(&models);
+        assert!(models.navigate_forward());
+        assert_eq!(models.timeline.conversation_id, first.id);
+        assert_empty_conversation_content(&models);
+    }
+
+    #[test]
+    fn production_routes_match_canonical_ids_even_with_duplicate_titles_or_missing_metadata() {
+        let mut models = AppModels::empty_with_settings(SettingsModel::default());
+        models.workspace.channels = vec![
+            channel_summary("kb_conv:first", "general"),
+            channel_summary("kb_conv:second", "general"),
+        ];
+        models.workspace.direct_messages = vec![
+            dm_summary("kb_conv:dm1", "first", ConversationKind::DirectMessage),
+            dm_summary("kb_conv:dm2", "second", ConversationKind::DirectMessage),
+        ];
+        for (route, expected) in [
+            (
+                Route::Channel {
+                    workspace_id: WorkspaceId::new("ws"),
+                    channel_id: ChannelId::new("kb_conv:second"),
+                },
+                "kb_conv:second",
+            ),
+            (
+                Route::DirectMessage {
+                    workspace_id: WorkspaceId::new("ws"),
+                    dm_id: DmId::new("kb_conv:dm2"),
+                },
+                "kb_conv:dm2",
+            ),
+            (
+                Route::Channel {
+                    workspace_id: WorkspaceId::new("ws"),
+                    channel_id: ChannelId::new("general"),
+                },
+                "general",
+            ),
+            (
+                Route::DirectMessage {
+                    workspace_id: WorkspaceId::new("ws"),
+                    dm_id: DmId::new("unknown-dm"),
+                },
+                "unknown-dm",
+            ),
+        ] {
+            models.navigate_to(route);
+            assert_eq!(models.conversation.summary.id.0, expected);
+            assert_eq!(models.timeline.conversation_id.0, expected);
+            assert_empty_conversation_content(&models);
+        }
+    }
+
+    #[test]
+    fn production_search_and_unsupported_calls_never_manufacture_fixture_results() {
+        let mut models = AppModels::empty_with_settings(SettingsModel::default());
+        for query in ["gpui", "design", "alice", ""] {
+            models.sync_live_search_query(query.into());
+            models.navigate_to(Route::Search {
+                workspace_id: WorkspaceId::new("ws"),
+                query: query.into(),
+            });
+            models.toggle_search_filter(SearchFilter::HasFile);
+            assert!(models.search.results.is_empty());
+            assert!(models.search.highlighted_index.is_none());
+            assert!(models.notifications.activity_items.is_empty());
+        }
+        assert!(models.start_or_open_call().is_none());
+        assert!(models.call.active_call.is_none());
+    }
+
+    #[test]
+    fn fixture_data_requires_the_explicit_demo_constructor() {
+        let mut demo = AppModels::demo();
+        assert!(demo.fixture_mode);
+        assert!(!demo.timeline.rows.is_empty());
+        demo.navigate_to(Route::Channel {
+            workspace_id: demo.workspace.workspace_id.clone(),
+            channel_id: ChannelId::new("design"),
+        });
+        assert!(!demo.timeline.rows.is_empty());
+        assert_eq!(demo.conversation.summary.title, "design");
+        let live = AppModels::empty_with_settings(SettingsModel::default());
+        assert_empty_conversation_content(&live);
     }
 
     #[test]

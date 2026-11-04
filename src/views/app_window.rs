@@ -9,7 +9,7 @@ use crate::{
         channel_details::{ChannelDetails, ChannelMemberPreview, NotificationLevel},
         conversation::{ConversationKind, ConversationSummary},
         ids::{ConversationId, MessageId, SidebarSectionId, UserId, WorkspaceId},
-        message::{ChatEvent, LinkPreview, MessageFragment, MessageRecord, MessageSendState},
+        message::{ChatEvent, LinkPreview, MessageFragment, MessageRecord},
         profile::SocialGraphListType,
         route::Route,
         search::SearchFilter,
@@ -349,6 +349,7 @@ struct ShellLayout {
 
 #[derive(Default)]
 struct SyncCache {
+    projected_conversation_id: Option<ConversationId>,
     workspace_sig: Option<u64>,
     sidebar_sections_sig: Option<u64>,
     dm_avatar_sig: Option<u64>,
@@ -384,7 +385,7 @@ struct VideoDecodeOutcome {
     render_image: Option<Arc<RenderImage>>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BenchScriptScenario {
     TimelineScroll,
     ProfileScroll,
@@ -393,6 +394,10 @@ enum BenchScriptScenario {
     ComposerTyping,
     ComposerPaste,
     ThreadOpen,
+    Navigation,
+    QuickSwitcher,
+    GlobalSearch,
+    Idle,
 }
 
 impl BenchScriptScenario {
@@ -409,6 +414,10 @@ impl BenchScriptScenario {
             }
             "composer_paste" | "composer-paste" | "paste" => Some(Self::ComposerPaste),
             "thread_open" | "thread-open" | "thread" => Some(Self::ThreadOpen),
+            "navigation" => Some(Self::Navigation),
+            "quick_switcher" => Some(Self::QuickSwitcher),
+            "global_search" => Some(Self::GlobalSearch),
+            "idle" => Some(Self::Idle),
             _ => None,
         }
     }
@@ -422,6 +431,10 @@ impl BenchScriptScenario {
             Self::ComposerTyping => "composer_typing",
             Self::ComposerPaste => "composer_paste",
             Self::ThreadOpen => "thread_open",
+            Self::Navigation => "navigation",
+            Self::QuickSwitcher => "quick_switcher",
+            Self::GlobalSearch => "global_search",
+            Self::Idle => "idle",
         }
     }
 }
@@ -763,6 +776,10 @@ impl AppWindow {
     }
 
     pub fn init(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.perf_harness.config().autostart {
+            cx.activate(true);
+            window.activate_window();
+        }
         self.window_is_focused = window.is_window_active();
         if !self.bench_skip_backend {
             self.dispatch_ui_action(UiAction::StartApp);
@@ -791,6 +808,7 @@ impl AppWindow {
                 if this.models.quick_switcher.query == query {
                     return;
                 }
+                this.last_text_input_activity = Some(Instant::now());
                 if this.models.flush_quick_switcher_local_search_corpus_if_dirty() {
                     this.quick_switcher_last_local_query.clear();
                     this.quick_switcher_last_local_matched_entry_indices = Arc::new(Vec::new());
@@ -1040,12 +1058,33 @@ impl AppWindow {
         } else {
             tracing::warn!("bench.backend.skip enabled");
         }
-        if let Some(message_count) =
-            env_usize(ENV_BENCH_TIMELINE_MESSAGES).filter(|count| *count > 0)
+        #[cfg(any(test, feature = "demo-fixtures"))]
+        if self.bench_skip_backend
+            && env_flag("ZBASE_BENCH_USE_DEMO")
+            && let Some(message_count) =
+                env_usize(ENV_BENCH_TIMELINE_MESSAGES).filter(|count| *count > 0)
         {
             self.inflate_bench_timeline_messages(message_count);
             tracing::warn!("bench.timeline.synthetic_messages={message_count}");
             self.refresh(cx);
+        }
+        if self.bench_skip_backend && env_flag("ZBASE_BENCH_USE_DEMO") {
+            let mut state = self.app_store.snapshot().clone();
+            state.timeline.typing_text = self.models.timeline.typing_text.clone();
+            state.timeline.messages = self
+                .models
+                .timeline
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    crate::models::timeline_model::TimelineRow::Message(row) => {
+                        Some(row.message.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            self.app_store = AppStore::new(state);
+            self.splash_open = false;
         }
         if let Some(script) = self.bench_script {
             tracing::warn!(
@@ -1053,10 +1092,24 @@ impl AppWindow {
                 script.scenario.slug(),
                 script.tick.as_millis()
             );
-            self.start_bench_script_loop(cx);
+            self.start_bench_script_loop(window.window_handle(), cx);
         }
         if self.perf_harness.config().autostart {
-            self.start_perf_capture(None, cx);
+            let warmup = env_usize("ZBASE_BENCH_WARMUP_SECS").unwrap_or(0);
+            if warmup == 0 {
+                self.start_perf_capture(None, cx);
+            } else {
+                cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                    let background = cx.background_executor().clone();
+                    let mut async_app = cx.clone();
+                    async move {
+                        background.timer(Duration::from_secs(warmup as u64)).await;
+                        let _ = this
+                            .update(&mut async_app, |this, cx| this.start_perf_capture(None, cx));
+                    }
+                })
+                .detach();
+            }
         }
     }
 
@@ -1121,7 +1174,8 @@ impl AppWindow {
         let mut needs_refresh = self.drain_video_decode_results();
         needs_refresh |= self.drain_og_fetch_results();
         let quick_switcher_typing = self.models.overlay.quick_switcher_open
-            && !self.models.quick_switcher.query.trim().is_empty();
+            && !self.models.quick_switcher.query.trim().is_empty()
+            && self.text_input_activity_recent();
         if events.is_empty() {
             if self.sync_cache.deferred_model_sync && !quick_switcher_typing {
                 self.sync_cache.deferred_model_sync = false;
@@ -1144,6 +1198,11 @@ impl AppWindow {
         let defer_model_sync = quick_switcher_typing || self.text_input_activity_recent();
         let mut deferred_events_applied = false;
         for event in events {
+            if let BackendEvent::BenchmarkPulse(sent_at) = &event {
+                self.perf_harness
+                    .record_duration(PerfTimer::BackendDeliveryDelay, sent_at.elapsed());
+                continue;
+            }
             if defer_model_sync {
                 match &event {
                     crate::state::event::BackendEvent::BootstrapLoaded { payload, .. } => {
@@ -1448,9 +1507,7 @@ impl AppWindow {
                     break;
                 }
 
-                let Ok(events) = self.backend_router.apply_effects(&pending_effects) else {
-                    break;
-                };
+                let events = self.backend_router.apply_effects(&pending_effects);
                 if events.is_empty() {
                     break;
                 }
@@ -2019,6 +2076,7 @@ impl AppWindow {
         if !self.perf_harness.stop_capture() {
             return;
         }
+        self.log_bench_state("stop");
         self.perf_capture_generation = self.perf_capture_generation.wrapping_add(1);
         if self.perf_exit_on_stop {
             tracing::warn!("bench.capture.exit_on_stop enabled");
@@ -2057,7 +2115,7 @@ impl AppWindow {
         .detach();
     }
 
-    fn start_bench_script_loop(&mut self, cx: &mut Context<Self>) {
+    fn start_bench_script_loop(&mut self, handle: gpui::AnyWindowHandle, cx: &mut Context<Self>) {
         let Some(script) = self.bench_script else {
             return;
         };
@@ -2067,17 +2125,46 @@ impl AppWindow {
             let mut async_app = cx.clone();
             async move {
                 loop {
+                    let wake_started = Instant::now();
                     background.timer(tick).await;
-                    let _ = this.update(&mut async_app, |this, cx| {
-                        this.run_bench_script_tick(cx);
-                    });
+                    if async_app
+                        .update_window(handle, |_, window, cx| {
+                            let result = this.update(cx, |this, cx| {
+                                this.perf_harness.record_duration(
+                                    PerfTimer::UiLoopDelay,
+                                    wake_started.elapsed().saturating_sub(tick),
+                                );
+                                this.run_bench_script_tick(window, cx)
+                            });
+                            // Build the real GPUI scene without presenting it. This keeps
+                            // CPU/layout benchmarks valid when the display is locked or
+                            // the window is occluded; it does not measure GPU presentation.
+                            if env_flag("ZBASE_BENCH_FORCE_DRAW")
+                                && script.scenario != BenchScriptScenario::Idle
+                            {
+                                window.refresh();
+                                let frame_started = Instant::now();
+                                window.draw(cx).clear();
+                                let _ = this.update(cx, |this, _cx| {
+                                    this.perf_harness.record_duration(
+                                        PerfTimer::FrameBuild,
+                                        frame_started.elapsed(),
+                                    );
+                                });
+                            }
+                            result
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
             }
         })
         .detach();
     }
 
-    fn run_bench_script_tick(&mut self, cx: &mut Context<Self>) {
+    fn run_bench_script_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.perf_harness.is_capturing() {
             return;
         }
@@ -2085,6 +2172,7 @@ impl AppWindow {
             return;
         };
 
+        let step_started = Instant::now();
         self.ensure_bench_profile_initialized();
         self.bench_script_step = self.bench_script_step.wrapping_add(1);
         match script.scenario {
@@ -2147,6 +2235,9 @@ impl AppWindow {
                 self.refresh(cx);
             }
             BenchScriptScenario::ComposerPaste => {
+                if !self.bench_script_step.is_multiple_of(48) {
+                    return;
+                }
                 if self.bench_script_step.is_multiple_of(96) {
                     self.composer_input
                         .update(cx, |input, cx| input.set_text(String::new(), cx));
@@ -2161,9 +2252,126 @@ impl AppWindow {
                 self.refresh(cx);
             }
             BenchScriptScenario::ThreadOpen => {
+                if !self.bench_script_step.is_multiple_of(24) {
+                    return;
+                }
+                if self.bench_thread_root_id.is_none()
+                    && self.bench_thread_root_ids.is_empty()
+                    && self.bench_thread_root_candidate().is_none()
+                {
+                    return;
+                }
                 self.run_bench_thread_open_tick(cx);
             }
+            BenchScriptScenario::Navigation => {
+                if self.bench_script_step.is_multiple_of(24) {
+                    let routes = self
+                        .models
+                        .workspace
+                        .channels
+                        .iter()
+                        .chain(self.models.workspace.direct_messages.iter())
+                        .take(8)
+                        .map(|summary| {
+                            route_for_conversation_id(
+                                &self.models.app.active_workspace_id,
+                                &summary.id,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    if !routes.is_empty() {
+                        let route =
+                            routes[(self.bench_script_step as usize / 24) % routes.len()].clone();
+                        self.navigate_to(route, window, cx);
+                    }
+                } else {
+                    return;
+                }
+            }
+            BenchScriptScenario::QuickSwitcher => {
+                if !self.models.overlay.quick_switcher_open {
+                    self.toggle_quick_switcher(cx);
+                }
+                if self.bench_script_step.is_multiple_of(12) {
+                    let queries = ["", "g", "ge", "gen", "general", "", "a", "al", "test"];
+                    let query = queries[(self.bench_script_step as usize / 12) % queries.len()];
+                    self.quick_switcher_input
+                        .update(cx, |input, cx| input.set_text(query, cx));
+                    self.refresh(cx);
+                } else {
+                    return;
+                }
+            }
+            BenchScriptScenario::GlobalSearch => {
+                if self.bench_script_step % 48 == 0 {
+                    let queries = ["test", "update", "the", "build"];
+                    let query = queries[(self.bench_script_step as usize / 48) % queries.len()];
+                    self.search_input
+                        .update(cx, |input, cx| input.set_text(query, cx));
+                } else if self.bench_script_step % 48 == 1 {
+                    self.submit_search_input(window, cx);
+                } else {
+                    return;
+                }
+            }
+            BenchScriptScenario::Idle => {
+                return;
+            }
         }
+        self.perf_harness
+            .record_duration(PerfTimer::ScenarioStep, step_started.elapsed());
+        if self.bench_script_step.is_multiple_of(60) {
+            self.log_bench_state("tick");
+        }
+    }
+
+    fn log_bench_state(&self, phase: &str) {
+        let state = self.app_store.snapshot();
+        let message_provenance_matches = self.models.timeline.rows.iter().all(|row| match row {
+            crate::models::timeline_model::TimelineRow::Message(row) => {
+                row.message.conversation_id == self.models.timeline.conversation_id
+                    && state.timeline.messages.iter().any(|stored| {
+                        stored.id == row.message.id
+                            && stored.conversation_id == row.message.conversation_id
+                    })
+            }
+            _ => true,
+        });
+        let sidebar_team_groups = state
+            .sidebar
+            .sections
+            .iter()
+            .filter(|section| {
+                section
+                    .id
+                    .as_ref()
+                    .is_some_and(|id| id.0.starts_with("group_"))
+            })
+            .map(|section| section.title.as_str())
+            .collect::<Vec<_>>();
+        let model_count = timeline_message_count(&self.models);
+        let route_matches =
+            state.navigation.current_route.as_ref() == Some(&self.models.navigation.current);
+        let conversation_matches =
+            state.timeline.conversation_id.as_ref() == Some(&self.models.timeline.conversation_id);
+        tracing::warn!(
+            phase,
+            model_messages = model_count,
+            store_messages = state.timeline.messages.len(),
+            conversations = state.workspace.channels.len() + state.workspace.direct_messages.len(),
+            route_matches,
+            conversation_matches,
+            message_provenance_matches,
+            typing_matches = self.models.timeline.typing_text == state.timeline.typing_text,
+            splash = self.splash_open,
+            search_results = state.search.results.len(),
+            search_loading = state.search.is_loading,
+            thread_replies = state.thread.replies.len(),
+            thread_loading = state.thread.loading,
+            sidebar_team_groups = ?sidebar_team_groups,
+            simple_team_conversations = state.workspace.channels.iter().filter(|summary| summary.is_simple_team()).count(),
+            "bench.state"
+        );
     }
 
     fn run_bench_profile_scroll_tick(&mut self, cx: &mut Context<Self>) {
@@ -2323,6 +2531,7 @@ impl AppWindow {
         self.bench_profile_initialized = true;
     }
 
+    #[cfg(any(test, feature = "demo-fixtures"))]
     fn inflate_bench_timeline_messages(&mut self, message_count: usize) {
         if message_count <= timeline_message_count(&self.models) {
             return;
@@ -2398,7 +2607,7 @@ impl AppWindow {
                 } else {
                     0
                 },
-                send_state: MessageSendState::Sent,
+                send_state: crate::domain::message::MessageSendState::Sent,
                 edited: None,
             };
 
@@ -2467,6 +2676,9 @@ impl AppWindow {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        for error in self.app_store.take_toasts() {
+            self.models.push_toast(error, None);
+        }
         self.sync_sidebar_view_state(cx);
         self.sync_timeline_list_state_len(self.models.timeline.rows.len());
         self.perf_harness.record_refresh();
@@ -2672,9 +2884,7 @@ impl AppWindow {
 
         loop {
             let apply_started_at = profile_open_thread.then(Instant::now);
-            let Ok(events) = self.backend_router.apply_effects(&pending_effects) else {
-                break;
-            };
+            let events = self.backend_router.apply_effects(&pending_effects);
             if let Some(apply_started_at) = apply_started_at {
                 backend_apply_elapsed += apply_started_at.elapsed();
                 backend_apply_calls = backend_apply_calls.saturating_add(1);
@@ -2818,6 +3028,21 @@ impl AppWindow {
         let t0 = Instant::now();
         let snapshot = self.app_store.snapshot();
 
+        self.models.app.connectivity = if snapshot
+            .backend
+            .accounts
+            .values()
+            .any(|account| matches!(account.connection_state, ConnectionState::Connected))
+        {
+            Connectivity::Online
+        } else if matches!(
+            snapshot.app.boot_phase,
+            BootPhase::Launching | BootPhase::HydratingLocalState | BootPhase::ConnectingBackend
+        ) {
+            Connectivity::Reconnecting
+        } else {
+            Connectivity::Offline
+        };
         self.models.sidebar.filter = snapshot.sidebar.filter.clone();
         self.models.search.query = snapshot.search.query.clone();
         self.models.search.filters = snapshot.search.filters.clone();
@@ -3033,9 +3258,12 @@ impl AppWindow {
             self.sync_cache.dm_avatar_sig = Some(dm_avatar_sig);
         }
 
-        let mut conversation_changed = false;
+        // Compare with the last store projection, not a view model that navigation
+        // may already have reset to the destination conversation.
+        let conversation_changed =
+            self.sync_cache.projected_conversation_id != snapshot.timeline.conversation_id;
+        self.sync_cache.projected_conversation_id = snapshot.timeline.conversation_id.clone();
         if let Some(conversation_id) = snapshot.timeline.conversation_id.clone() {
-            conversation_changed = self.models.timeline.conversation_id != conversation_id;
             self.models.timeline.conversation_id = conversation_id;
         }
         if conversation_changed {
@@ -3235,6 +3463,7 @@ impl AppWindow {
         self.models.timeline.highlighted_message_id =
             snapshot.timeline.highlighted_message_id.clone();
         self.models.timeline.unread_marker = snapshot.timeline.unread_marker.clone();
+        self.models.timeline.typing_text = snapshot.timeline.typing_text.clone();
         self.models.timeline.current_user_id = current_user_id.clone();
         self.models.timeline.affinity_index = snapshot.backend.user_affinities.clone();
         self.models.timeline.older_cursor = snapshot.timeline.older_cursor.clone();
@@ -3419,7 +3648,8 @@ impl AppWindow {
             current_user_id.as_ref(),
             current_user_avatar.as_deref(),
         );
-        let timeline_rows_changed = self.sync_cache.timeline_rows_sig != Some(timeline_rows_sig);
+        let timeline_rows_changed =
+            conversation_changed || self.sync_cache.timeline_rows_sig != Some(timeline_rows_sig);
         if timeline_rows_changed {
             let mut rows: Vec<crate::models::timeline_model::TimelineRow> = Vec::new();
             let unread_marker = snapshot.timeline.unread_marker.clone();
@@ -3571,7 +3801,6 @@ impl AppWindow {
                 ));
             }
 
-            self.models.timeline.typing_text = snapshot.timeline.typing_text.clone();
             if loading_older {
                 rows.insert(
                     0,
@@ -4048,7 +4277,6 @@ impl AppWindow {
         }
         if route_changed {
             self.models.navigate_to(route.clone());
-            self.sync_models_from_store();
         }
         self.dispatch_ui_action(UiAction::Navigate(route.clone()));
         if let Some(conversation_id) = conversation_id_from_navigated_route(&route) {
@@ -4065,6 +4293,9 @@ impl AppWindow {
         }
         self.sync_inputs_from_models(cx);
         self.restore_chat_focus(window, cx);
+        if self.perf_harness.is_capturing() {
+            self.log_bench_state("navigate");
+        }
         self.refresh(cx);
     }
 
@@ -4159,9 +4390,7 @@ impl AppWindow {
             if pending_effects.is_empty() {
                 break;
             }
-            let Ok(events) = self.backend_router.apply_effects(&pending_effects) else {
-                break;
-            };
+            let events = self.backend_router.apply_effects(&pending_effects);
             if events.is_empty() {
                 break;
             }
@@ -5779,41 +6008,21 @@ impl AppWindow {
 
     pub(crate) fn composer_insert_mention(&mut self, cx: &mut Context<Self>) {
         self.composer_input
-            .update(cx, |input, cx| input.insert_text("@Alice ", cx));
-        self.models
-            .set_composer_autocomplete(Some(AutocompleteState {
-                trigger: '@',
-                query: "alice".to_string(),
-                trigger_offset: 0,
-                selected_index: 0,
-                candidates: Vec::new(),
-            }));
+            .update(cx, |input, cx| input.insert_text("@", cx));
+        self.sync_drafts_from_inputs(cx);
         self.refresh(cx);
     }
 
     pub(crate) fn thread_insert_mention(&mut self, cx: &mut Context<Self>) {
         self.thread_input
-            .update(cx, |input, cx| input.insert_text("@Sam ", cx));
-        self.models.set_thread_autocomplete(Some(AutocompleteState {
-            trigger: '@',
-            query: "sam".to_string(),
-            trigger_offset: 0,
-            selected_index: 0,
-            candidates: Vec::new(),
-        }));
+            .update(cx, |input, cx| input.insert_text("@", cx));
+        self.sync_drafts_from_inputs(cx);
         self.refresh(cx);
     }
 
     pub(crate) fn composer_insert_formatting(&mut self, cx: &mut Context<Self>) {
         self.composer_input
             .update(cx, |input, cx| input.insert_text("*bold* ", cx));
-        self.refresh(cx);
-    }
-
-    pub(crate) fn composer_insert_link(&mut self, cx: &mut Context<Self>) {
-        self.composer_input.update(cx, |input, cx| {
-            input.insert_text("https://docs.acme.dev/gpui ", cx)
-        });
         self.refresh(cx);
     }
 
@@ -6561,8 +6770,11 @@ impl AppWindow {
     }
 
     pub(crate) fn start_or_open_call(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let route = self.models.start_or_open_call();
-        self.navigate_to(route, window, cx);
+        if let Some(route) = self.models.start_or_open_call() {
+            self.navigate_to(route, window, cx);
+        } else {
+            self.refresh(cx);
+        }
     }
 
     pub(crate) fn leave_call(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -6734,6 +6946,12 @@ impl AppWindow {
         }
         self.splash_boot_ready = true;
         let elapsed = self.splash_shown_at.elapsed();
+        if self.perf_harness.config().autostart {
+            tracing::warn!(
+                ready_ms = elapsed.as_millis() as u64,
+                "bench.startup.data_ready"
+            );
+        }
         if elapsed >= Self::SPLASH_MIN_DURATION {
             self.splash_open = false;
         } else {
@@ -8715,6 +8933,14 @@ fn mix_sig_conversation_summary(
             mix_sig(sig, 1);
             mix_sig_str(sig, &group.id);
             mix_sig_str(sig, &group.display_name);
+            mix_sig(
+                sig,
+                match group.team_type {
+                    crate::domain::conversation::ConversationTeamType::Unknown => 0,
+                    crate::domain::conversation::ConversationTeamType::Simple => 1,
+                    crate::domain::conversation::ConversationTeamType::Complex => 2,
+                },
+            );
         }
         None => mix_sig(sig, 0),
     }
