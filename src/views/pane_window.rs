@@ -6,10 +6,43 @@ pub(super) struct PaneWindowSizing {
     expanded_width: Option<f32>,
     pane_width: Option<f32>,
     pending_open: bool,
+    pending_resize: Option<(f32, f32)>,
 }
 
 impl PaneWindowSizing {
     pub fn sync(
+        &mut self,
+        width: f32,
+        pane: Option<f32>,
+        required: f32,
+        maximum: f32,
+        resizable: bool,
+    ) -> Option<f32> {
+        if let Some((start, target)) = self.pending_resize {
+            if (width - target).abs() <= 1.0 || (width - start).abs() > 1.0 {
+                self.pending_resize = None;
+            }
+        }
+        let result = self.sync_size(width, pane, required, maximum, resizable);
+        if let Some(target) = result {
+            self.pending_resize = ((target - width).abs() > 1.0).then_some((width, target));
+        }
+        result
+    }
+
+    /// Keep the current chat intact until the native content-size callback.
+    pub fn expanding(&self) -> bool {
+        self.pending_resize
+            .is_some_and(|(start, target)| target > start)
+    }
+
+    pub fn closing_width(&self) -> Option<f32> {
+        self.pending_resize
+            .filter(|(start, target)| target < start)
+            .map(|(_, target)| target)
+    }
+
+    fn sync_size(
         &mut self,
         width: f32,
         pane: Option<f32>,
@@ -56,6 +89,26 @@ impl PaneWindowSizing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_resize_transition_retains_chat_layout_until_size_is_observed() {
+        let mut sizing = PaneWindowSizing::default();
+        sizing.sync(780., Some(360.), 1124., 1600., true);
+        assert!(sizing.expanding());
+        sizing.sync(780., Some(360.), 1124., 1600., true);
+        assert!(
+            sizing.expanding(),
+            "extra renders must not reveal an overlay"
+        );
+        sizing.sync(1140., Some(360.), 1124., 1600., true);
+        assert!(!sizing.expanding());
+        sizing.sync(1140., None, 764., 1600., true);
+        assert_eq!(sizing.closing_width(), Some(780.));
+        sizing.sync(1140., None, 764., 1600., true);
+        assert_eq!(sizing.closing_width(), Some(780.));
+        sizing.sync(780., None, 764., 1600., true);
+        assert_eq!(sizing.closing_width(), None);
+    }
 
     #[test]
     fn narrow_window_expands_once_and_restores_after_switching_pane_content() {

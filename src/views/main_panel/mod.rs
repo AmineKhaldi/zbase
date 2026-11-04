@@ -7,6 +7,7 @@ use crate::{
         input::TextField, preferences::PreferencesView, search::SearchView, text_primary,
     },
 };
+use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, Context, Entity, IntoElement, ListState, ParentElement, RenderImage, Styled, div,
     px, rgb,
@@ -20,6 +21,7 @@ impl MainPanelHost {
     pub fn render(
         &self,
         models: &AppModels,
+        fixed_width: Option<f32>,
         video_render_cache: &HashMap<String, Arc<RenderImage>>,
         search_input: &Entity<TextField>,
         find_in_chat_input: &Entity<TextField>,
@@ -55,6 +57,7 @@ impl MainPanelHost {
 
         div()
             .flex_1()
+            .when_some(fixed_width, |panel, width| panel.flex_none().w(px(width)))
             .min_w(px(MAIN_PANEL_MIN_WIDTH_PX))
             .h_full()
             .flex()

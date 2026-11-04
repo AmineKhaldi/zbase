@@ -4601,7 +4601,11 @@ impl AppWindow {
             maximum,
             !window.is_fullscreen() && !window.is_maximized(),
         ) {
-            window.resize(gpui::size(px(width), viewport.height));
+            // Native resizing is asynchronous on macOS. Submit it after this
+            // frame rather than changing the platform window during rendering.
+            window.on_next_frame(move |window, _cx| {
+                window.resize(gpui::size(px(width), viewport.height));
+            });
         }
     }
 
@@ -8234,12 +8238,21 @@ impl Render for AppWindow {
         }
 
         let element = with_theme(resolved_theme, || {
-            let shell_layout = shell_layout(
+            let mut shell_layout = shell_layout(
                 &self.models.navigation.right_pane,
                 self.models.thread_pane.width_px,
                 self.models.sidebar.width_px,
                 f32::from(window.viewport_size().width),
             );
+            if self.pane_window_sizing.expanding() {
+                shell_layout.show_right_pane = false;
+                shell_layout.overlay_right_pane = false;
+            }
+            let closing_main_width = self.pane_window_sizing.closing_width().map(|width| {
+                (width - self.models.sidebar.width_px - RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX
+                    - SHELL_HORIZONTAL_PADDING_PX - SHELL_GAP_PX)
+                    .max(MAIN_PANEL_MIN_WIDTH_PX)
+            });
             let capabilities = current_backend_capabilities(&self.app_store.snapshot());
 
             let t_right = Instant::now();
@@ -8441,6 +8454,7 @@ impl Render for AppWindow {
                     let t = Instant::now();
                     let el = MainPanelHost.render(
                         &self.models,
+                        closing_main_width,
                         &self.video_render_cache,
                         &self.search_input,
                         &self.find_in_chat_input,

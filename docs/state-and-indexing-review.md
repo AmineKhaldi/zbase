@@ -70,7 +70,7 @@ Canonical cache writes use direct key lookups rather than scanning a conversatio
 
 ### Compact windows and message context
 
-New windows start at a compact 780-point width and a taller 880-point height; the minimum remains 780 × 680. Opening a thread/profile pane expands a narrow window and remembers its previous width; closing it restores that width. Already-wide windows use existing space, manual resizing is respected, and switching pane content does not repeatedly expand the window. A requested pane stays accessible as an overlay while native resizing is pending or screen/fullscreen constraints prevent enough expansion.
+New windows start at a compact 780-point width and a taller 880-point height; the minimum remains 780 × 680. Opening a thread/profile pane expands a narrow window and remembers its previous width; closing it restores that width. Already-wide windows use existing space, manual resizing is respected, and switching pane content does not repeatedly expand the window. Native size changes are submitted after the current frame. While expansion is pending, the chat retains its existing layout and the pane waits for the content-size update; while shrinking, the chat retains its restored width. A requested pane uses an overlay when screen/fullscreen constraints prevent enough expansion.
 
 The reaction strip shares one placement policy across timeline messages, thread replies, and right-click activation. Its measured footprint includes recent-reaction and delete buttons. Placement tries the right, above, then below with a pointer gap; it never clamps a right-hand candidate underneath the pointer. Hidden strips are absent from the element tree and cannot intercept clicks.
 
@@ -78,7 +78,7 @@ Thread replies retain their message text and link interactions in the main chat.
 
 ## Validation
 
-The latest full run passed all 239 tests: 237 app tests and 2 protocol inventory tests. One opt-in live test is ignored by default. The suite runs with:
+The latest full run passed all 240 tests: 238 app tests and 2 protocol inventory tests. One opt-in live test is ignored by default. The suite runs with:
 
 ```sh
 cargo test --all-targets --features gpui/runtime_shaders
