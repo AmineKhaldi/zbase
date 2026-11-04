@@ -215,6 +215,8 @@ pub struct UserProfileState {
 
 #[derive(Clone, Debug, Default)]
 pub struct UserProfilePanelState {
+    pub selected_user: Option<UserId>,
+    pub active_social_tab: SocialGraphListType,
     pub profiles: HashMap<UserId, UserProfile>,
     pub loading: HashSet<UserId>,
     pub social_lists: HashMap<(UserId, SocialGraphListType), SocialListLoadState>,

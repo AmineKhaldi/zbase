@@ -33,7 +33,7 @@ use crate::{
     },
     services::{
         backends::router::BackendRouter, local_store::LocalStore, settings_store::SettingsStore,
-        window_preferences::WindowPreferences,
+        window_preferences::WindowPreferences, window_preferences_writer::WindowPreferencesWriter,
     },
     state::{
         AppStore, ConnectionState, DraftKey, UiAction,
@@ -230,7 +230,7 @@ pub struct AppWindow {
     closing_pane: Option<ClosingPane>,
     window_preferences: Option<WindowPreferences>,
     observed_window_bounds: Option<WindowPreferences>,
-    window_save_task: Option<gpui::Task<()>>,
+    window_preferences_writer: WindowPreferencesWriter,
     app_store: AppStore,
     backend_router: BackendRouter,
     focus_handle: FocusHandle,
@@ -705,7 +705,7 @@ impl AppWindow {
             closing_pane: None,
             window_preferences: None,
             observed_window_bounds: None,
-            window_save_task: None,
+            window_preferences_writer: WindowPreferencesWriter::default(),
             app_store,
             backend_router,
             focus_handle,
@@ -812,15 +812,19 @@ impl AppWindow {
         self.sync_sidebar_view_state(cx);
 
         let owner = cx.weak_entity();
-        window.on_window_should_close(cx, move |_, cx| {
-            let _ = owner.update(cx, |this, _| this.flush_window_preferences());
-            true
+        window.on_window_should_close(cx, move |window, cx| {
+            let Ok(flush) = owner.update(cx, |this, _| this.window_preferences_writer.flush())
+            else {
+                return true;
+            };
+            Self::close_window_after_preferences(window, cx, flush);
+            false
         });
         self.subscriptions = vec![
             cx.observe_window_bounds(window, |_, _, cx| cx.notify()),
             cx.on_app_quit(|this, _| {
-                this.flush_window_preferences();
-                async {}
+                let flush = this.window_preferences_writer.flush();
+                async move { let _ = flush.await; }
             }),
             cx.observe_window_activation(window, |this, window, cx| {
                 this.window_is_focused = window.is_window_active();
@@ -3184,6 +3188,12 @@ impl AppWindow {
             self.models.navigation.current = next_route.clone();
         }
 
+        self.models.profile_panel.user_id = snapshot.backend.profile_panel.selected_user.clone();
+        self.models.profile_panel.active_social_tab =
+            match snapshot.backend.profile_panel.active_social_tab {
+                SocialGraphListType::Followers => SocialTab::Followers,
+                SocialGraphListType::Following => SocialTab::Following,
+            };
         if let Some(user_id) = self.models.profile_panel.user_id.clone() {
             self.models.profile_panel.profile = snapshot
                 .backend
@@ -4623,13 +4633,22 @@ impl AppWindow {
         ) {
             // Native resizing is asynchronous on macOS. Submit it after this
             // frame rather than changing the platform window during rendering.
-            window.on_next_frame(move |window, _cx| {
-                window.resize(gpui::size(px(width), viewport.height));
+            let generation = self.pane_window_sizing.queued_generation().unwrap();
+            let owner = cx.weak_entity();
+            window.on_next_frame(move |window, cx| {
+                if window.is_fullscreen() || window.is_maximized() {
+                    return;
+                }
+                let _ = owner.update(cx, |this, _| {
+                    if this.pane_window_sizing.submit(generation) {
+                        window.resize(gpui::size(px(width), viewport.height));
+                    }
+                });
             });
         }
     }
 
-    fn remember_window_preferences(&mut self, window: &Window, cx: &mut Context<Self>) {
+    fn remember_window_preferences(&mut self, window: &Window) {
         if window.is_fullscreen() || window.is_maximized() {
             return;
         }
@@ -4659,30 +4678,23 @@ impl AppWindow {
             return;
         }
         self.window_preferences = Some(preferred);
-        // Cancel the previous debounce when a resize/move is still in progress.
-        self.window_save_task = Some(cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let timer = cx.background_executor().timer(Duration::from_millis(350));
-            let mut cx = cx.clone();
-            async move {
-                timer.await;
-                let _ = this.update(&mut cx, |this, _| {
-                    if let Some(preferred) = this.window_preferences {
-                        if let Err(error) = preferred.save() {
-                            tracing::warn!(%error, "could not save window preferences");
-                        }
-                    }
-                });
-            }
-        }));
+        self.window_preferences_writer.update(preferred);
     }
 
-    fn flush_window_preferences(&mut self) {
-        self.window_save_task = None;
-        if let Some(preferred) = self.window_preferences {
-            if let Err(error) = preferred.save() {
-                tracing::warn!(%error, "could not save window preferences");
-            }
-        }
+    fn close_window_after_preferences(
+        window: &Window,
+        cx: &mut App,
+        flush: tokio::sync::oneshot::Receiver<()>,
+    ) {
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                async move {
+                    let _ = flush.await;
+                    let _ = cx.update(|window, _| window.remove_window());
+                }
+            })
+            .detach();
     }
 
     pub(crate) fn toggle_pane(
@@ -4757,7 +4769,6 @@ impl AppWindow {
             user_id: user_id.clone(),
             conversation_id: self.app_store.snapshot().timeline.conversation_id.clone(),
         });
-        self.maybe_load_profile_social_tab(&user_id);
         self.refresh(cx);
     }
 
@@ -4780,10 +4791,6 @@ impl AppWindow {
         list_type: SocialGraphListType,
         cx: &mut Context<Self>,
     ) {
-        self.models.profile_panel.active_social_tab = match list_type {
-            SocialGraphListType::Followers => SocialTab::Followers,
-            SocialGraphListType::Following => SocialTab::Following,
-        };
         let Some(user_id) = self.models.profile_panel.user_id.clone() else {
             return;
         };
@@ -4799,32 +4806,6 @@ impl AppWindow {
     pub(crate) fn profile_unfollow_user(&mut self, user_id: UserId, cx: &mut Context<Self>) {
         self.dispatch_ui_action(UiAction::UnfollowUser { user_id });
         self.refresh(cx);
-    }
-
-    fn maybe_load_profile_social_tab(&mut self, user_id: &UserId) {
-        let Some(profile) = self.models.profile_panel.profile.as_ref() else {
-            return;
-        };
-        let active_tab = self.models.profile_panel.active_social_tab.as_list_type();
-        let list_loaded = profile
-            .sections
-            .iter()
-            .find_map(|section| match section {
-                crate::domain::profile::ProfileSection::SocialGraph(graph) => {
-                    Some(match active_tab {
-                        SocialGraphListType::Followers => graph.followers.is_some(),
-                        SocialGraphListType::Following => graph.following.is_some(),
-                    })
-                }
-                _ => None,
-            })
-            .unwrap_or(false);
-        if !list_loaded {
-            self.dispatch_ui_action(UiAction::LoadSocialGraphList {
-                user_id: user_id.clone(),
-                list_type: active_tab,
-            });
-        }
     }
 
     pub(crate) fn open_thread(
@@ -8215,18 +8196,27 @@ impl AppWindow {
         &mut self,
         _: &commands::CloseWindow,
         window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
-        window.remove_window();
+        Self::close_window_after_preferences(window, cx, self.window_preferences_writer.flush());
     }
 
     fn quit_app_action(
         &mut self,
         _: &commands::QuitApp,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        cx.quit();
+        let flush = self.window_preferences_writer.flush();
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                async move {
+                    let _ = flush.await;
+                    let _ = cx.update(|_, cx| cx.quit());
+                }
+            })
+            .detach();
     }
 
     fn toggle_benchmark_capture_action(
@@ -8304,7 +8294,7 @@ impl Render for AppWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let render_t0 = Instant::now();
         self.sync_pane_window_size(window, cx);
-        self.remember_window_preferences(window, cx);
+        self.remember_window_preferences(window);
         if self.pending_file_upload_caption_focus {
             self.pending_file_upload_caption_focus = false;
             window.focus(&self.file_upload_caption_input.focus_handle(cx));

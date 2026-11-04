@@ -155,6 +155,7 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             }
         }
         UiAction::CloseRightPane => {
+            state.backend.profile_panel.selected_user = None;
             state.navigation.active_thread_root = None;
             state.thread.open = false;
             state.thread.root_message_id = None;
@@ -618,10 +619,20 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             }
         }
         UiAction::ShowUserProfileCard { user_id } | UiAction::ShowUserProfilePanel { user_id } => {
+            state.backend.profile_panel.selected_user = Some(user_id.clone());
             state.backend.profile_panel.loading.insert(user_id.clone());
-            ReducerOutput {
-                effects: vec![Effect::Backend(BackendCommand::LoadUserProfile { user_id })],
+            let mut output = ReducerOutput {
+                effects: vec![Effect::Backend(BackendCommand::LoadUserProfile {
+                    user_id: user_id.clone(),
+                })],
+            };
+            if state.backend.profile_panel.profiles.contains_key(&user_id) {
+                let list_type = state.backend.profile_panel.active_social_tab;
+                output
+                    .effects
+                    .extend(request_social_graph_refresh(state, user_id, list_type).effects);
             }
+            output
         }
         UiAction::RefreshProfilePresence {
             user_id,
@@ -633,26 +644,8 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             })],
         },
         UiAction::LoadSocialGraphList { user_id, list_type } => {
-            if state
-                .backend
-                .profile_panel
-                .social_lists
-                .get(&(user_id.clone(), list_type))
-                == Some(&SocialListLoadState::Loading)
-            {
-                return ReducerOutput::default();
-            }
-            state
-                .backend
-                .profile_panel
-                .social_lists
-                .insert((user_id.clone(), list_type), SocialListLoadState::Loading);
-            ReducerOutput {
-                effects: vec![Effect::Backend(BackendCommand::LoadSocialGraphList {
-                    user_id,
-                    list_type,
-                })],
-            }
+            state.backend.profile_panel.active_social_tab = list_type;
+            request_social_graph_refresh(state, user_id, list_type)
         }
         UiAction::FollowUser { user_id } => {
             state
@@ -1148,6 +1141,7 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             profile,
         } => {
             let user_id = profile.user_id.clone();
+            let first_profile = !state.backend.profile_panel.profiles.contains_key(&user_id);
             let mut profile = profile;
             profile.avatar_asset = profile.avatar_asset.or_else(|| {
                 state
@@ -1161,10 +1155,6 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             }
             // Profile metadata and social rosters arrive independently. Missing
             // roster fields mean "not included", not an empty refreshed list.
-            let needs_social_load = profile.sections.iter().any(|section| {
-                matches!(section, ProfileSection::SocialGraph(graph)
-                    if graph.followers.is_none() && graph.following.is_none())
-            });
             if let Some(previous) = state.backend.profile_panel.profiles.get(&user_id) {
                 preserve_social_lists(&mut profile, previous);
             }
@@ -1192,24 +1182,10 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 account.avatar = profile.avatar_asset.clone();
             }
 
-            if needs_social_load
-                && !state
-                    .backend
-                    .profile_panel
-                    .social_lists
-                    .get(&(user_id.clone(), SocialGraphListType::Followers))
-                    .is_some_and(|status| *status == SocialListLoadState::Loading)
+            if first_profile && state.backend.profile_panel.selected_user.as_ref() == Some(&user_id)
             {
-                state.backend.profile_panel.social_lists.insert(
-                    (user_id.clone(), SocialGraphListType::Followers),
-                    SocialListLoadState::Loading,
-                );
-                return ReducerOutput {
-                    effects: vec![Effect::Backend(BackendCommand::LoadSocialGraphList {
-                        user_id,
-                        list_type: SocialGraphListType::Followers,
-                    })],
-                };
+                let list_type = state.backend.profile_panel.active_social_tab;
+                return request_social_graph_refresh(state, user_id, list_type);
             }
         }
         BackendEvent::SocialGraphListLoaded {
@@ -1864,6 +1840,28 @@ fn update_follow_status(
                 graph.you_are_following = you_are_following;
             }
         }
+    }
+}
+
+fn request_social_graph_refresh(
+    state: &mut UiState,
+    user_id: UserId,
+    list_type: SocialGraphListType,
+) -> ReducerOutput {
+    let key = (user_id.clone(), list_type);
+    if state.backend.profile_panel.social_lists.get(&key) == Some(&SocialListLoadState::Loading) {
+        return ReducerOutput::default();
+    }
+    state
+        .backend
+        .profile_panel
+        .social_lists
+        .insert(key, SocialListLoadState::Loading);
+    ReducerOutput {
+        effects: vec![Effect::Backend(BackendCommand::LoadSocialGraphList {
+            user_id,
+            list_type,
+        })],
     }
 }
 
@@ -3625,6 +3623,12 @@ mod tests {
             .profile_panel
             .profiles
             .insert(user.clone(), cached);
+        reduce_ui_action(
+            &mut state,
+            UiAction::ShowUserProfilePanel {
+                user_id: user.clone(),
+            },
+        );
         let mut fresh = profile_with_follow_status("alice", true);
         if let ProfileSection::SocialGraph(graph) = &mut fresh.sections[0] {
             graph.followers = None;
@@ -3684,6 +3688,80 @@ mod tests {
             "an authoritative empty list must replace cached entries"
         );
         assert_eq!(graph.following.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn reopening_cached_following_refreshes_only_the_canonical_active_tab() {
+        let mut state = UiState::default();
+        let user = UserId::new("alice");
+        let metadata = profile_with_follow_status("alice", false);
+        state
+            .backend
+            .profile_panel
+            .profiles
+            .insert(user.clone(), metadata.clone());
+        state.backend.profile_panel.active_social_tab = SocialGraphListType::Following;
+        for _ in 0..2 {
+            let opened = reduce_ui_action(
+                &mut state,
+                UiAction::ShowUserProfilePanel {
+                    user_id: user.clone(),
+                },
+            );
+            assert!(
+                matches!(
+                    opened.effects.as_slice(),
+                    [
+                        Effect::Backend(BackendCommand::LoadUserProfile { .. }),
+                        Effect::Backend(BackendCommand::LoadSocialGraphList {
+                            list_type: SocialGraphListType::Following,
+                            ..
+                        })
+                    ]
+                ),
+                "reopening refreshes the loaded active list independently of metadata"
+            );
+            let output = reduce_backend_event(
+                &mut state,
+                BackendEvent::UserProfileLoaded {
+                    account_id: AccountId::new("account"),
+                    profile: metadata.clone(),
+                },
+            );
+            assert!(
+                output.effects.is_empty(),
+                "metadata must not duplicate the active-tab refresh"
+            );
+            reduce_backend_event(
+                &mut state,
+                BackendEvent::SocialGraphListLoaded {
+                    user_id: user.clone(),
+                    list_type: SocialGraphListType::Following,
+                    entries: vec![],
+                },
+            );
+            // Even a completed roster refresh is not restarted by later metadata.
+            let output = reduce_backend_event(
+                &mut state,
+                BackendEvent::UserProfileLoaded {
+                    account_id: AccountId::new("account"),
+                    profile: metadata.clone(),
+                },
+            );
+            assert!(output.effects.is_empty());
+            reduce_ui_action(&mut state, UiAction::CloseRightPane);
+        }
+        let output = reduce_backend_event(
+            &mut state,
+            BackendEvent::UserProfileLoaded {
+                account_id: AccountId::new("account"),
+                profile: metadata,
+            },
+        );
+        assert!(
+            output.effects.is_empty(),
+            "closed profiles do not start hidden roster loads"
+        );
     }
 
     #[test]

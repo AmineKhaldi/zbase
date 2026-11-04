@@ -1,13 +1,40 @@
-//! Remember only window expansion owned by opening a pane. Explicit user
-//! resizing updates the base chat width independently of temporary pane space.
+//! One owner for desired pane space, observed native width, and resize requests.
+#[derive(Clone, Copy)]
+enum PaneSpace {
+    Existing,
+    Added(f32),
+}
+
+#[derive(Clone, Copy)]
+struct ResizeRequest {
+    from: f32,
+    target: f32,
+    generation: u64,
+}
+
+#[derive(Clone, Copy)]
+enum Transition {
+    Queued(ResizeRequest),
+    InFlight(ResizeRequest),
+}
+
+impl Transition {
+    fn request(self) -> ResizeRequest {
+        match self {
+            Self::Queued(request) | Self::InFlight(request) => request,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct PaneWindowSizing {
-    original_width: Option<f32>,
-    expanded_width: Option<f32>,
-    pane_width: Option<f32>,
-    pending_open: bool,
-    pending_resize: Option<(f32, f32)>,
-    resize_acknowledged: bool,
+    base: Option<f32>,
+    observed: Option<f32>,
+    desired_pane: Option<f32>,
+    space: Option<PaneSpace>,
+    transition: Option<Transition>,
+    generation: u64,
+    native_acknowledged: bool,
 }
 
 impl PaneWindowSizing {
@@ -19,86 +46,125 @@ impl PaneWindowSizing {
         maximum: f32,
         resizable: bool,
     ) -> Option<f32> {
-        self.resize_acknowledged = false;
-        if let Some((start, target)) = self.pending_resize {
-            if (width - target).abs() <= 1.0 || (width - start).abs() > 1.0 {
-                self.resize_acknowledged = (width - target).abs() <= 1.0;
-                self.pending_resize = None;
+        self.native_acknowledged = false;
+        if !resizable {
+            // Do not learn fullscreen/maximized bounds as the user's base size.
+            return None;
+        }
+        let base = *self.base.get_or_insert(width);
+        if let Some(transition) = self.transition {
+            if matches!(transition, Transition::Queued(_))
+                && (width - transition.request().from).abs() > 1.
+                && (width - transition.request().target).abs() > 1.
+            {
+                self.transition = None;
+            }
+            if (width - transition.request().target).abs() <= 1. {
+                self.transition = None;
+                self.native_acknowledged = true;
             }
         }
-        if resizable && self.pending_resize.is_none() && !self.resize_acknowledged {
-            if let (Some(base), Some(expanded)) = (self.original_width, self.expanded_width) {
-                // A manual resize changes the base by the same amount. Keep
-                // only the actual app-added delta, including screen caps.
-                self.original_width =
-                    Some((base + width - expanded).max(crate::views::WINDOW_MIN_WIDTH_PX));
-                self.expanded_width = Some(width);
+        if self.transition.is_none()
+            && !self.native_acknowledged
+            && self.observed.is_some_and(|old| (old - width).abs() > 1.)
+        {
+            let added = match self.space {
+                Some(PaneSpace::Added(delta)) => delta,
+                _ => 0.,
+            };
+            let base = (width - added).max(crate::views::WINDOW_MIN_WIDTH_PX);
+            self.base = Some(base);
+            if matches!(self.space, Some(PaneSpace::Added(_))) {
+                self.space = Some(PaneSpace::Added((width - base).max(0.)));
             }
         }
-        let result = self.sync_size(width, pane, required, maximum, resizable);
-        if let Some(target) = result {
-            self.pending_resize = ((target - width).abs() > 1.0).then_some((width, target));
+        self.observed = Some(width);
+        let changed = pane != self.desired_pane;
+        self.desired_pane = pane;
+        let base = self.base.unwrap_or(base);
+        if pane.is_some() && self.space.is_none() {
+            self.space = Some(if width >= required {
+                PaneSpace::Existing
+            } else {
+                PaneSpace::Added(0.)
+            });
         }
-        result
+        let target = match (pane, self.space) {
+            (Some(pane), Some(PaneSpace::Added(delta))) => {
+                let delta = if changed || delta == 0. {
+                    let target = (base + pane).max(required).min(maximum.max(base));
+                    (target - base).max(0.)
+                } else {
+                    delta
+                };
+                self.space = Some(PaneSpace::Added(delta));
+                base + delta
+            }
+            (None, Some(PaneSpace::Added(_))) => base,
+            _ => width,
+        };
+        // A submitted native resize cannot be cancelled. Reconcile the latest
+        // desired state after its acknowledgement instead of losing a reopen.
+        if matches!(self.transition, Some(Transition::InFlight(_))) {
+            return None;
+        }
+        if (target - width).abs() <= 1. {
+            self.transition = None;
+            if pane.is_none() {
+                self.space = None;
+            }
+            return None;
+        }
+        let reuse = self
+            .transition
+            .is_some_and(|transition| (transition.request().target - target).abs() <= 1.);
+        if !reuse {
+            self.generation += 1;
+            self.transition = Some(Transition::Queued(ResizeRequest {
+                from: width,
+                target,
+                generation: self.generation,
+            }));
+        }
+        Some(target)
+    }
+
+    pub fn queued_generation(&self) -> Option<u64> {
+        match self.transition {
+            Some(Transition::Queued(request)) => Some(request.generation),
+            _ => None,
+        }
+    }
+
+    /// Called by the deferred native effect. Obsolete callbacks do nothing.
+    pub fn submit(&mut self, generation: u64) -> bool {
+        match self.transition {
+            Some(Transition::Queued(request)) if request.generation == generation => {
+                self.transition = Some(Transition::InFlight(request));
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn automatic_resize(&self) -> bool {
-        self.pending_resize.is_some() || self.resize_acknowledged
+        self.transition.is_some() || self.native_acknowledged
     }
-
     pub fn base_width(&self, current: f32) -> f32 {
-        self.original_width
-            .or_else(|| self.closing_width())
-            .unwrap_or(current)
+        self.base.unwrap_or(current)
     }
-
-    /// Keep the current chat intact until the native content-size callback.
     pub fn expanding(&self) -> bool {
-        self.pending_resize
-            .is_some_and(|(start, target)| target > start)
+        self.desired_pane.is_some()
+            && self.transition.is_some_and(|transition| {
+                let request = transition.request();
+                request.target > request.from
+            })
     }
-
     pub fn closing_width(&self) -> Option<f32> {
-        self.pending_resize
-            .filter(|(start, target)| target < start)
-            .map(|(_, target)| target)
-    }
-
-    fn sync_size(
-        &mut self,
-        width: f32,
-        pane: Option<f32>,
-        required: f32,
-        maximum: f32,
-        resizable: bool,
-    ) -> Option<f32> {
-        let opening = pane.is_some() && (self.pane_width.is_none() || self.pending_open);
-        let pane_changed = pane != self.pane_width;
-        self.pane_width = pane;
-        if !resizable {
-            self.pending_open = opening && pane.is_some();
-            return None;
-        }
-        self.pending_open = false;
-        match pane {
-            Some(pane_width) if opening || (pane_changed && self.original_width.is_some()) => {
-                if opening && width >= required {
-                    return None;
-                }
-                let original = *self.original_width.get_or_insert(width);
-                let expanded = (original + pane_width)
-                    .max(required)
-                    .min(maximum.max(original));
-                self.expanded_width = Some(expanded);
-                ((expanded - width).abs() > 1.0).then_some(expanded)
-            }
-            None => {
-                let original = self.original_width.take()?;
-                self.expanded_width = None;
-                Some(original)
-            }
-            _ => None,
-        }
+        self.transition
+            .map(Transition::request)
+            .filter(|request| request.target < request.from)
+            .map(|request| request.target)
     }
 }
 
@@ -196,6 +262,40 @@ mod tests {
             1400.,
             "a pane borrowing existing space adds nothing"
         );
+    }
+
+    #[test]
+    fn reopen_after_submitted_collapse_reconciles_when_the_old_resize_arrives() {
+        let mut controller = PaneWindowSizing::default();
+        controller.sync(780., Some(360.), 1124., 1600., true);
+        assert!(controller.submit(controller.queued_generation().unwrap()));
+        controller.sync(1140., Some(360.), 1124., 1600., true);
+        assert_eq!(controller.sync(1140., None, 764., 1600., true), Some(780.));
+        assert!(controller.submit(controller.queued_generation().unwrap()));
+        assert_eq!(controller.sync(1140., Some(360.), 1124., 1600., true), None);
+        assert_eq!(
+            controller.sync(780., Some(360.), 1124., 1600., true),
+            Some(1140.)
+        );
+        controller.submit(controller.queued_generation().unwrap());
+        controller.sync(1140., Some(360.), 1124., 1600., true);
+        assert_eq!(controller.base_width(1140.), 780.);
+    }
+
+    #[test]
+    fn close_before_expansion_ack_and_obsolete_queued_callbacks_are_safe() {
+        let mut controller = PaneWindowSizing::default();
+        controller.sync(780., Some(360.), 1124., 1600., true);
+        let obsolete = controller.queued_generation().unwrap();
+        controller.sync(780., None, 764., 1600., true);
+        assert!(!controller.submit(obsolete));
+        controller.sync(780., Some(360.), 1124., 1600., true);
+        assert!(controller.submit(controller.queued_generation().unwrap()));
+        controller.sync(780., None, 764., 1600., true);
+        assert_eq!(controller.sync(1140., None, 764., 1600., true), Some(780.));
+        controller.submit(controller.queued_generation().unwrap());
+        assert_eq!(controller.sync(780., None, 764., 1600., true), None);
+        assert_eq!(controller.base_width(780.), 780.);
     }
 
     #[test]

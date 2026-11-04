@@ -2437,6 +2437,38 @@ mod tests {
     }
 
     #[test]
+    fn metadata_replay_preserves_missing_media_references_without_validating_files() {
+        let path = temp_rocks_path("replay-media-boundary");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let conversation = ConversationId::new("conversation");
+        let mut message = sample_message(&conversation, 1);
+        message.attachments.clear();
+        let source = crate::domain::attachment::AttachmentSource::LocalPath(
+            path.join("media-that-was-never-downloaded")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        message
+            .attachments
+            .push(crate::domain::attachment::AttachmentSummary {
+                source: Some(source.clone()),
+                ..Default::default()
+            });
+        store.persist_message(&message).unwrap();
+        let mut replayed = 0;
+        let _changes = store
+            .replay_messages_and_subscribe(|message| {
+                assert_eq!(message.attachments[0].source, Some(source.clone()));
+                replayed += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(replayed, 1);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn message_replay_does_not_lose_writes_during_snapshot_iteration() {
         let path = temp_rocks_path("replay-order");
         let store = LocalStore::open_at(path.clone()).unwrap();

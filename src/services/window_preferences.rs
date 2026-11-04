@@ -14,7 +14,7 @@ pub struct WindowPreferences {
 }
 
 impl WindowPreferences {
-    fn path() -> PathBuf {
+    pub(super) fn path() -> PathBuf {
         super::local_store::paths::data_root().join("window-preferences.json")
     }
 
@@ -60,11 +60,7 @@ impl WindowPreferences {
         }
     }
 
-    pub fn save(self) -> io::Result<()> {
-        self.save_at(&Self::path())
-    }
-
-    fn save_at(self, path: &Path) -> io::Result<()> {
+    pub(super) fn save_at(self, path: &Path) -> io::Result<()> {
         if !self.valid() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

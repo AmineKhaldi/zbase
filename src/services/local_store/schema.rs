@@ -450,11 +450,7 @@ impl CachedAttachment {
             source: self
                 .source
                 .as_deref()
-                .and_then(cached_attachment_source_from_string)
-                .filter(|source| match source {
-                    AttachmentSource::LocalPath(path) => std::path::Path::new(path).is_file(),
-                    AttachmentSource::Url(_) => true,
-                }),
+                .and_then(cached_attachment_source_from_string),
         }
     }
 }
@@ -931,7 +927,11 @@ mod tests {
         assert!(restored.to_domain().source.is_none());
         assert_eq!(restored.to_domain().name, attachment.name);
         std::fs::remove_file(path).unwrap();
-        assert!(cached.to_domain().source.is_none(), "deleted cache files must be eligible for rehydration");
+        assert_eq!(
+            cached.to_domain().source,
+            attachment.source,
+            "cache decoding must preserve metadata independently of filesystem state"
+        );
     }
 
     #[test]
