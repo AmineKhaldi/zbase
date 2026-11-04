@@ -214,9 +214,19 @@ fn unique_copy_destination(downloads_dir: &PathBuf, preferred_name: &str) -> Pat
     candidate
 }
 
+// Preserve the last pane for the frame preceding native shrink, so closing
+// never replaces its pixels with an empty background in the expanded window.
+struct ClosingPane {
+    navigation: crate::models::navigation_model::NavigationModel,
+    thread: crate::models::thread_pane_model::ThreadPaneModel,
+    profile: crate::models::profile_panel_model::ProfilePanelModel,
+    conversation: crate::models::conversation_model::ConversationModel,
+}
+
 pub struct AppWindow {
     models: AppModels,
     pane_window_sizing: PaneWindowSizing,
+    closing_pane: Option<ClosingPane>,
     app_store: AppStore,
     backend_router: BackendRouter,
     focus_handle: FocusHandle,
@@ -688,6 +698,7 @@ impl AppWindow {
         Self {
             models,
             pane_window_sizing: PaneWindowSizing::default(),
+            closing_pane: None,
             app_store,
             backend_router,
             focus_handle,
@@ -4274,11 +4285,7 @@ impl AppWindow {
                 != conversation_id_from_navigated_route(&route)
             && self.models.navigation.right_pane != RightPaneMode::Hidden
         {
-            self.dispatch_ui_action(UiAction::CloseRightPane);
-            self.models.set_right_pane(RightPaneMode::Hidden);
-            self.models.profile_panel.user_id = None;
-            self.models.profile_panel.profile = None;
-            self.reset_thread_scroll_state();
+            self.close_right_pane_state(cx);
         }
         if route_changed {
             self.models.navigate_to(route.clone());
@@ -4465,11 +4472,7 @@ impl AppWindow {
                 != conversation_id_from_navigated_route(&route)
             && self.models.navigation.right_pane != RightPaneMode::Hidden
         {
-            self.dispatch_ui_action(UiAction::CloseRightPane);
-            self.models.set_right_pane(RightPaneMode::Hidden);
-            self.models.profile_panel.user_id = None;
-            self.models.profile_panel.profile = None;
-            self.reset_thread_scroll_state();
+            self.close_right_pane_state(cx);
         }
         if route_changed {
             self.models.navigate_to(route.clone());
@@ -4615,6 +4618,10 @@ impl AppWindow {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.toggle_simple_pane(pane, cx);
+    }
+
+    fn toggle_simple_pane(&mut self, pane: RightPaneMode, cx: &mut Context<Self>) {
         if pane != RightPaneMode::Hidden && !self.models.settings.show_right_pane {
             self.models.push_toast(
                 "Right pane is disabled in preferences",
@@ -4624,12 +4631,11 @@ impl AppWindow {
             return;
         }
 
-        let next = if self.models.navigation.right_pane == pane {
-            RightPaneMode::Hidden
+        if self.models.navigation.right_pane == pane {
+            self.close_right_pane_state(cx);
         } else {
-            pane
-        };
-        self.models.set_right_pane(next);
+            self.models.set_right_pane(pane);
+        }
         self.refresh(cx);
     }
 
@@ -4654,6 +4660,11 @@ impl AppWindow {
     }
 
     pub(crate) fn open_user_profile_card(&mut self, user_id: UserId, cx: &mut Context<Self>) {
+        if self.models.navigation.right_pane == RightPaneMode::Profile(user_id.clone()) {
+            self.close_right_pane_state(cx);
+            self.refresh(cx);
+            return;
+        }
         if !self.models.settings.show_right_pane {
             self.models.push_toast(
                 "Right pane is disabled in preferences",
@@ -4683,28 +4694,7 @@ impl AppWindow {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.models.settings.show_right_pane {
-            self.models.push_toast(
-                "Right pane is disabled in preferences",
-                Some(ToastAction::OpenPreferences),
-            );
-            self.refresh(cx);
-            return;
-        }
-
-        self.models.hide_profile_card();
-        self.models.profile_panel.user_id = Some(user_id.clone());
-        self.models
-            .set_right_pane(RightPaneMode::Profile(user_id.clone()));
-        self.dispatch_ui_action(UiAction::ShowUserProfilePanel {
-            user_id: user_id.clone(),
-        });
-        self.dispatch_ui_action(UiAction::RefreshProfilePresence {
-            user_id: user_id.clone(),
-            conversation_id: self.app_store.snapshot().timeline.conversation_id.clone(),
-        });
-        self.maybe_load_profile_social_tab(&user_id);
-        self.refresh(cx);
+        self.open_user_profile_card(user_id, cx);
     }
 
     pub(crate) fn profile_open_message(&mut self, user_id: UserId, cx: &mut Context<Self>) {
@@ -4780,6 +4770,14 @@ impl AppWindow {
             return;
         }
 
+        if self.models.navigation.right_pane == RightPaneMode::Thread
+            && self.models.thread_pane.root_message_id.as_ref() == Some(&root_id)
+        {
+            self.close_right_pane(window, cx);
+            self.restore_chat_focus(window, cx);
+            return;
+        }
+
         self.ensure_message_binding_for_active_conversation(&root_id);
         self.models.open_thread(root_id.clone());
         self.dispatch_ui_action(UiAction::OpenThread {
@@ -4828,13 +4826,25 @@ impl AppWindow {
     }
 
     pub(crate) fn close_right_pane(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.close_right_pane_state(cx);
+        self.refresh(cx);
+    }
+
+    fn close_right_pane_state(&mut self, cx: &mut Context<Self>) {
         self.capture_live_inputs(cx);
+        if self.models.navigation.right_pane != RightPaneMode::Hidden {
+            self.closing_pane = Some(ClosingPane {
+                navigation: self.models.navigation.clone(),
+                thread: self.models.thread_pane.clone(),
+                profile: self.models.profile_panel.clone(),
+                conversation: self.models.conversation.clone(),
+            });
+        }
         self.dispatch_ui_action(UiAction::CloseRightPane);
         self.models.set_right_pane(RightPaneMode::Hidden);
         self.models.profile_panel.user_id = None;
         self.models.profile_panel.profile = None;
         self.reset_thread_scroll_state();
-        self.refresh(cx);
     }
 
     fn timeline_interactions_blocked_by_overlay(&self) -> bool {
@@ -6802,13 +6812,11 @@ impl AppWindow {
     }
 
     pub(crate) fn open_files_pane(&mut self, cx: &mut Context<Self>) {
-        self.models.set_right_pane(RightPaneMode::Files);
-        self.refresh(cx);
+        self.toggle_simple_pane(RightPaneMode::Files, cx);
     }
 
     pub(crate) fn open_search_pane(&mut self, cx: &mut Context<Self>) {
-        self.models.set_right_pane(RightPaneMode::Search);
-        self.refresh(cx);
+        self.toggle_simple_pane(RightPaneMode::Search, cx);
     }
 
     pub(crate) fn start_or_open_call(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -8248,6 +8256,15 @@ impl Render for AppWindow {
                 shell_layout.show_right_pane = false;
                 shell_layout.overlay_right_pane = false;
             }
+            let closing = self.pane_window_sizing.closing_width().is_some()
+                && self.models.navigation.right_pane == RightPaneMode::Hidden;
+            if !closing {
+                self.closing_pane = None;
+            }
+            if closing && self.closing_pane.is_some() {
+                shell_layout.show_right_pane = true;
+                shell_layout.overlay_right_pane = false;
+            }
             let closing_main_width = self.pane_window_sizing.closing_width().map(|width| {
                 (width - self.models.sidebar.width_px - RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX
                     - SHELL_HORIZONTAL_PADDING_PX - SHELL_GAP_PX)
@@ -8257,11 +8274,25 @@ impl Render for AppWindow {
 
             let t_right = Instant::now();
             let right_pane = shell_layout.show_right_pane.then(|| {
+                let (navigation, thread, conversation, profile) = match &self.closing_pane {
+                    Some(pane) if closing => (
+                        &pane.navigation,
+                        &pane.thread,
+                        &pane.conversation,
+                        &pane.profile,
+                    ),
+                    _ => (
+                        &self.models.navigation,
+                        &self.models.thread_pane,
+                        &self.models.conversation,
+                        &self.models.profile_panel,
+                    ),
+                };
                 let pane = RightPaneHost.render(
-                    &self.models.navigation,
-                    &self.models.thread_pane,
-                    &self.models.conversation,
-                    &self.models.profile_panel,
+                    navigation,
+                    thread,
+                    conversation,
+                    profile,
                     &self.models.search,
                     &self.models.timeline,
                     &self.video_render_cache,
