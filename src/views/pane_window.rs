@@ -1,5 +1,5 @@
 //! Remember only window expansion owned by opening a pane. Explicit user
-//! resizing is respected rather than being undone when the pane closes.
+//! resizing updates the base chat width independently of temporary pane space.
 #[derive(Default)]
 pub(super) struct PaneWindowSizing {
     original_width: Option<f32>,
@@ -7,6 +7,7 @@ pub(super) struct PaneWindowSizing {
     pane_width: Option<f32>,
     pending_open: bool,
     pending_resize: Option<(f32, f32)>,
+    resize_acknowledged: bool,
 }
 
 impl PaneWindowSizing {
@@ -18,9 +19,20 @@ impl PaneWindowSizing {
         maximum: f32,
         resizable: bool,
     ) -> Option<f32> {
+        self.resize_acknowledged = false;
         if let Some((start, target)) = self.pending_resize {
             if (width - target).abs() <= 1.0 || (width - start).abs() > 1.0 {
+                self.resize_acknowledged = (width - target).abs() <= 1.0;
                 self.pending_resize = None;
+            }
+        }
+        if resizable && self.pending_resize.is_none() && !self.resize_acknowledged {
+            if let (Some(base), Some(expanded)) = (self.original_width, self.expanded_width) {
+                // A manual resize changes the base by the same amount. Keep
+                // only the actual app-added delta, including screen caps.
+                self.original_width =
+                    Some((base + width - expanded).max(crate::views::WINDOW_MIN_WIDTH_PX));
+                self.expanded_width = Some(width);
             }
         }
         let result = self.sync_size(width, pane, required, maximum, resizable);
@@ -28,6 +40,16 @@ impl PaneWindowSizing {
             self.pending_resize = ((target - width).abs() > 1.0).then_some((width, target));
         }
         result
+    }
+
+    pub fn automatic_resize(&self) -> bool {
+        self.pending_resize.is_some() || self.resize_acknowledged
+    }
+
+    pub fn base_width(&self, current: f32) -> f32 {
+        self.original_width
+            .or_else(|| self.closing_width())
+            .unwrap_or(current)
     }
 
     /// Keep the current chat intact until the native content-size callback.
@@ -72,14 +94,8 @@ impl PaneWindowSizing {
             }
             None => {
                 let original = self.original_width.take()?;
-                let expanded = self.expanded_width.take().unwrap_or(original);
-                // Keep a deliberate manual resize. An unchanged expansion (or
-                // a close before the native resize completes) restores exactly.
-                if (width - expanded).abs() <= 1.0 || (width - original).abs() <= 1.0 {
-                    Some(original)
-                } else {
-                    None
-                }
+                self.expanded_width = None;
+                Some(original)
             }
             _ => None,
         }
@@ -124,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn wide_windows_and_manual_resizes_are_left_alone() {
+    fn wide_windows_use_existing_space_and_manual_resize_updates_the_base() {
         let mut sizing = PaneWindowSizing::default();
         assert_eq!(sizing.sync(1400., Some(360.), 1124., 1600., true), None);
         assert_eq!(sizing.sync(1400., None, 764., 1600., true), None);
@@ -132,7 +148,9 @@ mod tests {
             sizing.sync(780., Some(360.), 1124., 1600., true),
             Some(1140.)
         );
-        assert_eq!(sizing.sync(1300., None, 764., 1600., true), None);
+        assert_eq!(sizing.sync(1300., Some(360.), 1124., 1600., true), None);
+        assert_eq!(sizing.base_width(1300.), 940.);
+        assert_eq!(sizing.sync(1300., None, 764., 1600., true), Some(940.));
     }
 
     #[test]
@@ -149,6 +167,35 @@ mod tests {
             Some(1000.)
         );
         assert_eq!(sizing.sync(1000., None, 764., 1000., true), Some(780.));
+    }
+
+    #[test]
+    fn saved_width_excludes_only_app_added_space_even_with_a_screen_cap() {
+        let mut sizing = PaneWindowSizing::default();
+        sizing.sync(780., Some(360.), 1124., 1000., true);
+        assert_eq!(sizing.base_width(780.), 780.);
+        sizing.sync(1000., Some(360.), 1124., 1000., true);
+        assert_eq!(sizing.base_width(1000.), 780.);
+        sizing.sync(1200., Some(360.), 1124., 1600., true);
+        assert_eq!(
+            sizing.base_width(1200.),
+            980.,
+            "exclude the actual 220-point expansion"
+        );
+        assert_eq!(sizing.sync(1200., None, 764., 1600., true), Some(980.));
+        assert_eq!(
+            sizing.base_width(1200.),
+            980.,
+            "save the base even before collapse finishes"
+        );
+        sizing.sync(980., None, 764., 1600., true);
+        assert_eq!(sizing.base_width(980.), 980.);
+        sizing.sync(1400., Some(360.), 1124., 1600., true);
+        assert_eq!(
+            sizing.base_width(1400.),
+            1400.,
+            "a pane borrowing existing space adds nothing"
+        );
     }
 
     #[test]

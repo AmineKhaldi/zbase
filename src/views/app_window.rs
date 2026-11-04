@@ -33,6 +33,7 @@ use crate::{
     },
     services::{
         backends::router::BackendRouter, local_store::LocalStore, settings_store::SettingsStore,
+        window_preferences::WindowPreferences,
     },
     state::{
         AppStore, ConnectionState, DraftKey, UiAction,
@@ -227,6 +228,9 @@ pub struct AppWindow {
     models: AppModels,
     pane_window_sizing: PaneWindowSizing,
     closing_pane: Option<ClosingPane>,
+    window_preferences: Option<WindowPreferences>,
+    observed_window_bounds: Option<WindowPreferences>,
+    window_save_task: Option<gpui::Task<()>>,
     app_store: AppStore,
     backend_router: BackendRouter,
     focus_handle: FocusHandle,
@@ -699,6 +703,9 @@ impl AppWindow {
             models,
             pane_window_sizing: PaneWindowSizing::default(),
             closing_pane: None,
+            window_preferences: None,
+            observed_window_bounds: None,
+            window_save_task: None,
             app_store,
             backend_router,
             focus_handle,
@@ -804,7 +811,17 @@ impl AppWindow {
 
         self.sync_sidebar_view_state(cx);
 
+        let owner = cx.weak_entity();
+        window.on_window_should_close(cx, move |_, cx| {
+            let _ = owner.update(cx, |this, _| this.flush_window_preferences());
+            true
+        });
         self.subscriptions = vec![
+            cx.observe_window_bounds(window, |_, _, cx| cx.notify()),
+            cx.on_app_quit(|this, _| {
+                this.flush_window_preferences();
+                async {}
+            }),
             cx.observe_window_activation(window, |this, window, cx| {
                 this.window_is_focused = window.is_window_active();
                 if this.window_is_focused && this.request_mark_conversation_read_if_needed() {
@@ -4612,6 +4629,62 @@ impl AppWindow {
         }
     }
 
+    fn remember_window_preferences(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if window.is_fullscreen() || window.is_maximized() {
+            return;
+        }
+        let bounds = window.bounds();
+        let viewport = window.viewport_size();
+        let observed = WindowPreferences {
+            x: bounds.origin.x.into(),
+            y: bounds.origin.y.into(),
+            width: viewport.width.into(),
+            height: viewport.height.into(),
+        };
+        let moved = self
+            .observed_window_bounds
+            .is_none_or(|old| old.x != observed.x || old.y != observed.y);
+        self.observed_window_bounds = Some(observed);
+        let mut preferred = self.window_preferences.unwrap_or(observed);
+        if moved && !self.pane_window_sizing.automatic_resize() {
+            preferred.x = observed.x;
+            preferred.y = observed.y;
+        }
+        preferred.width = self
+            .pane_window_sizing
+            .base_width(observed.width)
+            .max(crate::views::WINDOW_MIN_WIDTH_PX);
+        preferred.height = observed.height.max(crate::views::WINDOW_MIN_HEIGHT_PX);
+        if self.window_preferences == Some(preferred) {
+            return;
+        }
+        self.window_preferences = Some(preferred);
+        // Cancel the previous debounce when a resize/move is still in progress.
+        self.window_save_task = Some(cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let timer = cx.background_executor().timer(Duration::from_millis(350));
+            let mut cx = cx.clone();
+            async move {
+                timer.await;
+                let _ = this.update(&mut cx, |this, _| {
+                    if let Some(preferred) = this.window_preferences {
+                        if let Err(error) = preferred.save() {
+                            tracing::warn!(%error, "could not save window preferences");
+                        }
+                    }
+                });
+            }
+        }));
+    }
+
+    fn flush_window_preferences(&mut self) {
+        self.window_save_task = None;
+        if let Some(preferred) = self.window_preferences {
+            if let Err(error) = preferred.save() {
+                tracing::warn!(%error, "could not save window preferences");
+            }
+        }
+    }
+
     pub(crate) fn toggle_pane(
         &mut self,
         pane: RightPaneMode,
@@ -8231,6 +8304,7 @@ impl Render for AppWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let render_t0 = Instant::now();
         self.sync_pane_window_size(window, cx);
+        self.remember_window_preferences(window, cx);
         if self.pending_file_upload_caption_focus {
             self.pending_file_upload_caption_focus = false;
             window.focus(&self.file_upload_caption_input.focus_handle(cx));

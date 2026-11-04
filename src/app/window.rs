@@ -11,6 +11,7 @@ use crate::{
         backends::{keybase::KeybaseBackend, router::BackendRouter},
         local_store::LocalStore,
         settings_store::SettingsStore,
+        window_preferences::WindowPreferences,
     },
     state::{
         AccountState, AppStore, ConnectionState, ConversationBinding, MessageBinding, UiState,
@@ -31,10 +32,37 @@ const ENV_BENCH_USE_DEMO: &str = "ZBASE_BENCH_USE_DEMO";
 const ENV_BENCH_SKIP_BACKEND: &str = "ZBASE_BENCH_SKIP_BACKEND";
 
 pub fn open_main_window(cx: &mut App) {
-    let bounds = Bounds::centered(
+    let default = Bounds::centered(
         None,
         size(px(WINDOW_MIN_WIDTH_PX), px(WINDOW_DEFAULT_HEIGHT_PX)),
         cx,
+    );
+    let preferred = WindowPreferences::load().unwrap_or(WindowPreferences {
+        x: default.origin.x.into(),
+        y: default.origin.y.into(),
+        width: WINDOW_MIN_WIDTH_PX,
+        height: WINDOW_DEFAULT_HEIGHT_PX,
+    });
+    let mut displays = cx.displays();
+    if let Some(primary) = cx.primary_display() {
+        displays.sort_by_key(|display| display.id() != primary.id());
+    }
+    let displays = displays
+        .iter()
+        .map(|display| {
+            let bounds = display.bounds();
+            WindowPreferences {
+                x: bounds.origin.x.into(),
+                y: bounds.origin.y.into(),
+                width: bounds.size.width.into(),
+                height: bounds.size.height.into(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let preferred = preferred.constrained(&displays, (WINDOW_MIN_WIDTH_PX, WINDOW_MIN_HEIGHT_PX));
+    let bounds = Bounds::new(
+        point(px(preferred.x), px(preferred.y)),
+        size(px(preferred.width), px(preferred.height)),
     );
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
