@@ -70,6 +70,8 @@ For existing installations, the new position initially starts at zero. Establish
 
 Canonical cache writes use direct key lookups rather than scanning a conversation on every new message, and root messages avoid unnecessary ancestor lookups.
 
+The timeline unread divider begins only at a confirmed incoming message after the read marker. Pending, failed, or confirmed self-authored messages cannot create it; hidden placeholders and deleted messages cannot leave orphan dividers. Existing incoming unread regions remain visible when sending.
+
 ### Compact windows and message context
 
 New installations start at 780 × 880; subsequent launches restore the saved base window size and position, constrained to a connected display. The minimum remains 780 × 680. Window preferences are stored atomically in a separate window-preferences.json file under Application Support, outside the Keybase cache. Resize/move saves are debounced and flushed on close/quit; fullscreen and maximized bounds are excluded. Opening a thread/profile pane expands a narrow window and remembers its previous width; closing it restores that width. Already-wide windows use existing space, manual resizing updates the base size while preserving only the actual app-added width, and switching pane content does not repeatedly expand the window. Native size changes are submitted after the current frame. While expansion is pending, the chat retains its existing layout and the pane waits for the content-size update; while shrinking, the chat pins both its width and flex basis to avoid a minimum-width text-layout pass, and a snapshot keeps the previous pane contents visible until the smaller native size arrives. Repeated activation of the same profile or thread closes it; a different target replaces its content. Files, Search, Details, and Members use the same toggle/close path. A requested pane uses an overlay when screen/fullscreen constraints prevent enough expansion.
@@ -80,7 +82,7 @@ Thread replies retain their message text and link interactions in the main chat.
 
 ## Validation
 
-The latest full run passed all 244 tests: 242 app tests and 2 protocol inventory tests. One opt-in live test is ignored by default. The suite runs with:
+The latest full run passed all 245 tests: 243 app tests and 2 protocol inventory tests. One opt-in live test is ignored by default. The suite runs with:
 
 ```sh
 cargo test --all-targets --features gpui/runtime_shaders

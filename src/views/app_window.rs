@@ -11,7 +11,7 @@ use crate::{
         channel_details::{ChannelDetails, ChannelMemberPreview, NotificationLevel},
         conversation::{ConversationKind, ConversationSummary},
         ids::{ConversationId, MessageId, SidebarSectionId, UserId, WorkspaceId},
-        message::{ChatEvent, LinkPreview, MessageFragment, MessageRecord},
+        message::{ChatEvent, LinkPreview, MessageFragment, MessageRecord, MessageSendState},
         profile::SocialGraphListType,
         route::Route,
         search::SearchFilter,
@@ -3691,9 +3691,9 @@ impl AppWindow {
 
             for message in &timeline_messages {
                 if !unread_divider_inserted
-                    && unread_marker
-                        .as_ref()
-                        .is_some_and(|marker| message_id_is_after(&message.id, marker))
+                    && unread_marker.as_ref().is_some_and(|marker| {
+                        message_starts_unread_region(message, marker, current_user_id.as_ref())
+                    })
                 {
                     rows.push(crate::models::timeline_model::TimelineRow::UnreadDivider(
                         "Unread messages".to_string(),
@@ -10199,6 +10199,18 @@ fn conversation_id_from_navigated_route(route: &Route) -> Option<ConversationId>
     }
 }
 
+fn message_starts_unread_region(
+    message: &MessageRecord,
+    read_upto: &MessageId,
+    current_user: Option<&UserId>,
+) -> bool {
+    message.send_state == MessageSendState::Sent
+        && !current_user.is_some_and(|user| user.0.eq_ignore_ascii_case(&message.author_id.0))
+        && !is_non_text_placeholder_message(message)
+        && !matches!(message.event, Some(ChatEvent::MessageDeleted { .. }))
+        && message_id_is_after(&message.id, read_upto)
+}
+
 fn message_id_is_after(candidate: &MessageId, baseline: &MessageId) -> bool {
     match (
         candidate.0.parse::<u64>().ok(),
@@ -10367,6 +10379,49 @@ mod tests {
             send_state: MessageSendState::Sent,
             edited: None,
         }
+    }
+
+    #[test]
+    fn own_messages_never_start_an_unread_region_but_incoming_messages_still_do() {
+        let current = UserId::new("ALICE");
+        let marker = MessageId::new("42");
+        let mut message = test_message("local-pending-send", None);
+        for state in [
+            MessageSendState::Pending,
+            MessageSendState::Failed,
+            MessageSendState::Sent,
+        ] {
+            message.send_state = state;
+            assert!(!super::message_starts_unread_region(
+                &message,
+                &marker,
+                Some(&current)
+            ));
+        }
+        message.id = MessageId::new("43");
+        assert!(
+            !super::message_starts_unread_region(&message, &marker, Some(&current)),
+            "the confirmed self-message must not create the divider either"
+        );
+        message.author_id = UserId::new("bob");
+        assert!(
+            super::message_starts_unread_region(&message, &marker, Some(&current)),
+            "an incoming message after an outgoing one still starts the unread region"
+        );
+        message.id = marker.clone();
+        assert!(!super::message_starts_unread_region(
+            &message,
+            &marker,
+            Some(&current)
+        ));
+        message.id = MessageId::new("44");
+        message.event = Some(ChatEvent::MessageDeleted {
+            target_message_id: None,
+        });
+        assert!(
+            !super::message_starts_unread_region(&message, &marker, Some(&current)),
+            "hidden deleted messages must not leave an orphan divider"
+        );
     }
 
     fn test_overlay() -> OverlayModel {
