@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -29,6 +29,8 @@ use crate::{
 };
 
 use super::{
+    MessageChanges,
+    message_changes::MessageWrites,
     paths,
     schema::{
         CachedConversationBinding, CachedConversationEmoji, CachedConversationSummary,
@@ -135,21 +137,6 @@ impl StoredCrawlCheckpoint {
             updated_ms: self.updated_ms,
         }
     }
-}
-
-#[derive(Clone, Debug)]
-pub enum MessageChange {
-    Upsert(MessageRecord),
-    Deleted {
-        conversation_id: ConversationId,
-        message_id: MessageId,
-    },
-    Reset,
-}
-
-#[derive(Default)]
-struct MessageWrites {
-    subscribers: Vec<mpsc::Sender<MessageChange>>,
 }
 
 pub struct LocalStore {
@@ -459,16 +446,13 @@ impl LocalStore {
         if self.is_message_deleted(&message.conversation_id, &message.id)? {
             return Ok(None);
         }
-        let canonical = match self.get_message_for_write(&message.conversation_id, &message.id)? {
+        let canonical = match self.get_canonical_message(&message.conversation_id, &message.id)? {
             Some(existing) => merge_message_version(&existing, message),
             None => message.clone(),
         };
-        self.write_message(&canonical)?;
-        writes.subscribers.retain(|sender| {
-            sender
-                .send(MessageChange::Upsert(canonical.clone()))
-                .is_ok()
-        });
+        if self.write_message(&canonical)? {
+            writes.changed(&canonical.conversation_id, &canonical.id);
+        }
         Ok(Some(canonical))
     }
 
@@ -482,35 +466,34 @@ impl LocalStore {
             .message_writes
             .lock()
             .map_err(|_| io::Error::other("message write lock poisoned"))?;
-        let Some(mut latest) = self.get_message_for_write(conversation_id, message_id)? else {
+        let Some(mut latest) = self.get_canonical_message(conversation_id, message_id)? else {
             return Ok(None);
         };
         if self.is_message_deleted(conversation_id, message_id)? {
             return Ok(None);
         }
         apply_attachment_paths(&mut latest, attachments);
-        self.write_message(&latest)?;
-        writes
-            .subscribers
-            .retain(|sender| sender.send(MessageChange::Upsert(latest.clone())).is_ok());
+        if self.write_message(&latest)? {
+            writes.changed(&latest.conversation_id, &latest.id);
+        }
         Ok(Some(latest))
     }
 
     /// Subscribe and take a consistent database snapshot under the write lock.
     /// Replay happens after releasing the lock, so a large history does not block
-    /// live writes. Buffered changes are applied after the snapshot in write order.
+    /// live writes. Bounded identity invalidations follow the snapshot; overflow
+    /// requires a fresh replay instead of retaining an unbounded write backlog.
     pub fn replay_messages_and_subscribe(
         &self,
         mut visit: impl FnMut(MessageRecord) -> io::Result<()>,
-    ) -> io::Result<mpsc::Receiver<MessageChange>> {
-        let (sender, receiver) = mpsc::channel();
-        let snapshot = {
+    ) -> io::Result<MessageChanges> {
+        let (snapshot, changes) = {
             let mut writes = self
                 .message_writes
                 .lock()
                 .map_err(|_| io::Error::other("message write lock poisoned"))?;
-            writes.subscribers.push(sender);
-            self.db.snapshot()
+            let changes = writes.subscribe();
+            (self.db.snapshot(), changes)
         };
         let messages_cf = self.cf(CF_MESSAGES)?;
         for entry in snapshot.iterator_cf(
@@ -524,18 +507,30 @@ impl LocalStore {
             let message: CachedMessageRecord = decode(&value)?;
             visit(message.to_domain())?;
         }
-        Ok(receiver)
+        Ok(changes)
     }
 
-    fn write_message(&self, message: &MessageRecord) -> io::Result<()> {
+    fn write_message(&self, message: &MessageRecord) -> io::Result<bool> {
         let messages_cf = self.cf(CF_MESSAGES)?;
         let cached = CachedMessageRecord::from_domain(message);
-        let existing = self.get_message_for_write(&message.conversation_id, &message.id)?;
+        let encoded = encode(&cached)?;
+        let existing_bytes = self
+            .db
+            .get_cf(&messages_cf, message_key(&message.conversation_id, &message.id))
+            .map_err(io::Error::other)?;
+        if existing_bytes.as_deref() == Some(encoded.as_slice()) {
+            return Ok(false);
+        }
+        let existing = existing_bytes
+            .as_deref()
+            .map(decode::<CachedMessageRecord>)
+            .transpose()?
+            .map(|cached| cached.to_domain());
         let mut batch = WriteBatch::default();
         batch.put_cf(
             &messages_cf,
             message_key(&message.conversation_id, &message.id),
-            encode(&cached)?,
+            encoded,
         );
         if let Some(previous) = existing.as_ref() {
             if previous.thread_root_id != message.thread_root_id
@@ -564,7 +559,8 @@ impl LocalStore {
             }
         }
         write_thread_index_entries(&mut batch, &messages_cf, message)?;
-        self.db.write(batch).map_err(io::Error::other)
+        self.db.write(batch).map_err(io::Error::other)?;
+        Ok(true)
     }
 
     pub fn persist_thread_index_entry(
@@ -593,7 +589,7 @@ impl LocalStore {
             .lock()
             .map_err(|_| io::Error::other("message write lock poisoned"))?;
         let messages_cf = self.cf(CF_MESSAGES)?;
-        let existing = self.get_message_for_write(conversation_id, message_id)?;
+        let existing = self.get_canonical_message(conversation_id, message_id)?;
         let mut batch = WriteBatch::default();
         batch.put_cf(
             &self.cf(CF_META)?,
@@ -620,14 +616,7 @@ impl LocalStore {
             }
         }
         self.db.write(batch).map_err(io::Error::other)?;
-        writes.subscribers.retain(|sender| {
-            sender
-                .send(MessageChange::Deleted {
-                    conversation_id: conversation_id.clone(),
-                    message_id: message_id.clone(),
-                })
-                .is_ok()
-        });
+        writes.changed(conversation_id, message_id);
         Ok(())
     }
 
@@ -721,14 +710,14 @@ impl LocalStore {
             .map_err(io::Error::other)
     }
 
-    fn get_message_for_write(
+    pub fn get_canonical_message(
         &self,
         conversation_id: &ConversationId,
         message_id: &MessageId,
     ) -> io::Result<Option<MessageRecord>> {
         let messages_cf = self.cf(CF_MESSAGES)?;
-        // Writes always use canonical keys. A miss during a history crawl must
-        // not scan every previously cached message in the conversation.
+        // Writes and index invalidations use canonical keys. Missing/deleted
+        // records must not trigger a scan of the conversation's history.
         self.db
             .get_cf(&messages_cf, message_key(conversation_id, message_id))
             .map_err(io::Error::other)?
@@ -1773,9 +1762,7 @@ impl LocalStore {
             }
         }
         self.db.write(batch).map_err(io::Error::other)?;
-        writes
-            .subscribers
-            .retain(|sender| sender.send(MessageChange::Reset).is_ok());
+        writes.reset();
         Ok(())
     }
 
@@ -2377,13 +2364,133 @@ mod tests {
             .unwrap();
         assert_eq!(replayed, vec![MessageId::new("1")]);
         assert!(
-            matches!(changes.try_recv().unwrap(), MessageChange::Upsert(message) if message.id == MessageId::new("2"))
+            matches!(changes.recv_timeout(std::time::Duration::ZERO).unwrap(), crate::services::local_store::MessageChange::Dirty { message_id, .. } if message_id == MessageId::new("2"))
         );
         store
             .delete_message(&conversation, &MessageId::new("1"))
             .unwrap();
         assert!(
-            matches!(changes.try_recv().unwrap(), MessageChange::Deleted { message_id, .. } if message_id == MessageId::new("1"))
+            matches!(changes.recv_timeout(std::time::Duration::ZERO).unwrap(), crate::services::local_store::MessageChange::Dirty { message_id, .. } if message_id == MessageId::new("1"))
+        );
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn snapshot_overflow_recovers_latest_truth_without_blocking_writes() {
+        use crate::services::local_store::MessageChange;
+        use std::time::Duration;
+        let path = temp_rocks_path("replay-overflow");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let conversation = ConversationId::new("conversation");
+        store
+            .persist_message(&sample_message(&conversation, 1))
+            .unwrap();
+        let changes = store
+            .replay_messages_and_subscribe(|_| {
+                // The consumer is paused in snapshot replay while catch-up exceeds
+                // the subscription's capacity. None of these writes may block.
+                for id in 2..=4097 {
+                    store.persist_message(&sample_message(&conversation, id))?;
+                }
+                store.delete_message(&conversation, &MessageId::new("1"))?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(matches!(
+            changes.recv_timeout(Duration::ZERO).unwrap(),
+            MessageChange::ReplayRequired
+        ));
+        drop(changes);
+        let mut replayed = Vec::new();
+        let fresh = store
+            .replay_messages_and_subscribe(|message| {
+                replayed.push(message.id);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(replayed.len(), 4096);
+        assert!(!replayed.contains(&MessageId::new("1")));
+        assert!(replayed.contains(&MessageId::new("4097")));
+        assert!(fresh.recv_timeout(Duration::ZERO).is_err());
+        drop(fresh);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn identical_upserts_do_not_publish_redundant_invalidations() {
+        use std::time::Duration;
+        let path = temp_rocks_path("identical-upsert");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let message = sample_message(&ConversationId::new("conversation"), 1);
+        store.persist_message(&message).unwrap();
+        let changes = store.replay_messages_and_subscribe(|_| Ok(())).unwrap();
+        store.persist_message(&message).unwrap();
+        assert!(changes.recv_timeout(Duration::ZERO).is_err());
+        drop(changes);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn canonical_attachment_merge_handles_reordering_replacement_and_source_precedence() {
+        use crate::domain::attachment::{AttachmentPreview, AttachmentSource};
+        let path = temp_rocks_path("attachment-identity");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let assets = path.join("test-attachments");
+        std::fs::create_dir_all(&assets).unwrap();
+        for name in ["first", "second", "first-preview", "second-preview", "new-first"] {
+            std::fs::write(assets.join(name), b"attachment").unwrap();
+        }
+        let mut original = sample_message(&ConversationId::new("conversation"), 1);
+        let mut second = original.attachments[0].clone();
+        second.name = "second.txt".into();
+        original.attachments.push(second);
+        for (attachment, name) in original.attachments.iter_mut().zip(["first", "second"]) {
+            attachment.source = Some(AttachmentSource::LocalPath(assets.join(name).to_string_lossy().into_owned()));
+            attachment.preview = Some(AttachmentPreview {
+                source: AttachmentSource::LocalPath(assets.join(format!("{name}-preview")).to_string_lossy().into_owned()),
+                width: None,
+                height: None,
+            });
+        }
+        store.persist_message(&original).unwrap();
+        let mut incoming = original.clone();
+        incoming.attachments.reverse();
+        for attachment in &mut incoming.attachments {
+            attachment.source = None;
+            attachment.preview = None;
+        }
+        let reordered = store.upsert_message(&incoming).unwrap().unwrap();
+        assert!(
+            matches!(&reordered.attachments[0].source, Some(AttachmentSource::LocalPath(path)) if path.ends_with("/second"))
+        );
+        assert!(
+            matches!(&reordered.attachments[1].preview.as_ref().unwrap().source, AttachmentSource::LocalPath(path) if path.ends_with("/first-preview"))
+        );
+        incoming.attachments[0].name = "replacement.txt".into();
+        incoming.attachments[0].size_bytes = 42;
+        incoming.attachments[1].source =
+            Some(AttachmentSource::LocalPath(assets.join("new-first").to_string_lossy().into_owned()));
+        let replaced = store.upsert_message(&incoming).unwrap().unwrap();
+        assert!(replaced.attachments[0].source.is_none());
+        assert!(replaced.attachments[0].preview.is_none());
+        assert!(
+            matches!(&replaced.attachments[1].source, Some(AttachmentSource::LocalPath(path)) if path.ends_with("/new-first"))
+        );
+        // A late download for the replaced identity cannot attach its old file.
+        let patched = store
+            .patch_attachment_paths(
+                &incoming.conversation_id,
+                &incoming.id,
+                &original.attachments,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(patched.attachments[0].source.is_none());
+        assert!(
+            matches!(&patched.attachments[1].source, Some(AttachmentSource::LocalPath(path)) if path.ends_with("/new-first"))
         );
         drop(store);
         std::fs::remove_dir_all(path).unwrap();

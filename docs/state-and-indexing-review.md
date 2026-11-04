@@ -38,7 +38,7 @@ Message writes and deletion checks are serialized in the local store. Edit revis
 
 Deletion markers persist across restarts and prevent old message pages or download completions from restoring deleted messages. The reducer also tracks deletions so delayed in-memory pages cannot restore them.
 
-Downloads patch only local attachment paths onto the latest matching attachment by name, kind, and byte size. They do not replace text, reactions, thread fields, or whole message records. Completion for a deleted message is ignored. The UI receives an attachment-only event.
+One canonical merge owns attachment path preservation in the cache, timeline, and thread. Downloads patch only local attachment paths onto the latest matching attachment by name, kind, and byte size. A nonempty incoming local path wins over older cached paths; replacement and reordered attachments never inherit paths by position. Full source paths and previews round-trip through the cache; the appended source field remains compatible with older records. They do not replace text, reactions, thread fields, or whole message records. Completion for a deleted message is ignored. The UI receives an attachment-only event.
 
 The original historical-download bug remains fixed: the common ingestion function does not schedule media hydration. Actual live notifications and explicit conversation loads retain their existing media behavior.
 
@@ -52,11 +52,11 @@ Store error notifications are drained into the visible toast model rather than a
 
 ### Search and missed-message recovery
 
-RocksDB is the source for search. A background observer replays a consistent local database snapshot, then consumes changes in write order. Snapshot creation and subscription registration are coordinated with message writes, so writes during replay are not lost. The index queue is bounded; replay does not read attachment files or call Keybase.
+RocksDB is the source for search. A background observer replays a consistent local database snapshot, then consumes a bounded feed of message-ID invalidations, resolving each ID from the current cache. Snapshot creation and subscription registration are coordinated with message writes, so writes during replay are not lost. Overflow invalidates the subscription and triggers a fresh snapshot; cache writes never wait for indexing and unchanged canonical upserts emit no invalidation. Both the invalidation and index-writer queues are bounded; replay does not read attachment files or call Keybase.
 
 Replaying the cache repairs schema rebuilds, interrupted commits, and stale deleted index entries. Message edits and deletions update the index directly from committed cache changes. Continuous ingestion no longer postpones commits until the queue becomes idle. Cache schema resets notify the observer too.
 
-Network catch-up uses a separate durable position per conversation, independent of Tantivy and historical crawl checkpoints. It reads raw message operations after that position with attachment hydration and automatic read marking disabled, applies messages/edits/reactions/deletions in order, and advances only after the page is saved. Offline responses and failures do not advance the position. Progress uses raw operation IDs, since an edit's visible message ID refers to its original message.
+Network catch-up uses a separate durable position per conversation, independent of Tantivy and historical crawl checkpoints. It reads raw message operations after that position with attachment hydration and automatic read marking disabled, applies messages/edits/reactions/deletions in order, and advances only after the page is saved. Offline responses and failures do not advance the position. Progress uses transport operation IDs, since an edit's visible message ID refers to its original message. Hidden placeholders and expired ephemeral envelopes advance progress without creating visible messages. Transient unboxing failures, unresolved placeholders, and malformed/non-progressing pages retry without advancing the checkpoint or reporting completed sync.
 
 For existing installations, the new position initially starts at zero. Establishing it requires a one-time pass over message metadata, including conversations that the old crawler marked complete. Later catch-up reads only operations after the saved position. This also recovers messages received while zBase was closed. Search rebuilds need only the local database.
 
@@ -64,7 +64,7 @@ Canonical cache writes use direct key lookups rather than scanning a conversatio
 
 ## Validation
 
-The latest full run passed all 211 tests: 209 app tests and 2 protocol inventory tests. One opt-in live test is ignored by default. The suite runs with:
+The latest full run passed all 221 tests: 219 app tests and 2 protocol inventory tests. One opt-in live test is ignored by default. The suite runs with:
 
 ```sh
 cargo test --all-targets --features gpui/runtime_shaders

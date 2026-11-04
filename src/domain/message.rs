@@ -157,11 +157,13 @@ pub fn message_revision(message: &MessageRecord) -> (bool, u64, i64) {
 
 /// A completed download can enrich only the matching attachment, never the text,
 /// reactions, thread state, or existence of its original message snapshot.
+/// An incoming nonempty local path wins; cached paths only fill missing local data.
 pub fn apply_attachment_paths(
     message: &mut MessageRecord,
     downloaded: &[crate::domain::attachment::AttachmentSummary],
 ) {
     use crate::domain::attachment::AttachmentSource;
+    let local = |source: Option<&AttachmentSource>| matches!(source, Some(AttachmentSource::LocalPath(path)) if !path.trim().is_empty());
     for attachment in &mut message.attachments {
         let Some(patch) = downloaded.iter().find(|patch| {
             patch.name == attachment.name
@@ -170,13 +172,11 @@ pub fn apply_attachment_paths(
         }) else {
             continue;
         };
-        if matches!(&patch.source, Some(AttachmentSource::LocalPath(_))) {
+        if !local(attachment.source.as_ref()) && local(patch.source.as_ref()) {
             attachment.source = patch.source.clone();
         }
-        if patch
-            .preview
-            .as_ref()
-            .is_some_and(|preview| matches!(&preview.source, AttachmentSource::LocalPath(_)))
+        if !local(attachment.preview.as_ref().map(|preview| &preview.source))
+            && local(patch.preview.as_ref().map(|preview| &preview.source))
         {
             attachment.preview = patch.preview.clone();
         }

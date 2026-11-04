@@ -209,35 +209,39 @@ impl SearchIndex {
         let shutdown = Arc::clone(&self.shutdown);
         thread::spawn(move || {
             let sync = || -> io::Result<()> {
-                sender.send(IndexCommand::Reset).map_err(io::Error::other)?;
-                let changes = store.replay_messages_and_subscribe(|message| {
-                    if shutdown.load(Ordering::Relaxed) {
-                        return Err(io::Error::other("search closed"));
+                'replay: while !shutdown.load(Ordering::Relaxed) {
+                    sender.send(IndexCommand::Reset).map_err(io::Error::other)?;
+                    let changes = store.replay_messages_and_subscribe(|message| {
+                        if shutdown.load(Ordering::Relaxed) {
+                            return Err(io::Error::other("search closed"));
+                        }
+                        sender
+                            .send(IndexCommand::Upsert(SearchDocument::from_message(
+                                &workspace_id,
+                                &message,
+                            )))
+                            .map_err(io::Error::other)
+                    })?;
+                    while !shutdown.load(Ordering::Relaxed) {
+                        let command = match changes.recv_timeout(Duration::from_millis(250)) {
+                            Ok(MessageChange::Dirty {
+                                conversation_id,
+                                message_id,
+                            }) => match store.get_canonical_message(&conversation_id, &message_id)? {
+                                Some(message) => IndexCommand::Upsert(
+                                    SearchDocument::from_message(&workspace_id, &message),
+                                ),
+                                None => IndexCommand::Delete(format!(
+                                    "{workspace_id}|{}|{}",
+                                    conversation_id.0, message_id.0
+                                )),
+                            },
+                            Ok(MessageChange::ReplayRequired) => continue 'replay,
+                            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break 'replay,
+                        };
+                        sender.send(command).map_err(io::Error::other)?;
                     }
-                    sender
-                        .send(IndexCommand::Upsert(SearchDocument::from_message(
-                            &workspace_id,
-                            &message,
-                        )))
-                        .map_err(io::Error::other)
-                })?;
-                while !shutdown.load(Ordering::Relaxed) {
-                    let command = match changes.recv_timeout(Duration::from_millis(250)) {
-                        Ok(MessageChange::Upsert(message)) => IndexCommand::Upsert(
-                            SearchDocument::from_message(&workspace_id, &message),
-                        ),
-                        Ok(MessageChange::Reset) => IndexCommand::Reset,
-                        Ok(MessageChange::Deleted {
-                            conversation_id,
-                            message_id,
-                        }) => IndexCommand::Delete(format!(
-                            "{workspace_id}|{}|{}",
-                            conversation_id.0, message_id.0
-                        )),
-                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    };
-                    sender.send(command).map_err(io::Error::other)?;
                 }
                 Ok(())
             };

@@ -1,3 +1,4 @@
+use super::history_progress::{EnvelopeDisposition, PageProgress};
 use crate::{
     domain::{
         affinity::Affinity,
@@ -4351,15 +4352,12 @@ fn run_background_full_history_crawl(
                                 "Keybase is offline; history sync will resume later",
                             ));
                         }
-                        let next = page
-                            .raw_message_ids
-                            .iter()
-                            .copied()
-                            .max()
-                            .unwrap_or(position);
-                        if next <= position {
+                        let Some(next) = page
+                            .progress
+                            .next_position(position, page.last && page.next_cursor.is_none())?
+                        else {
                             break;
-                        }
+                        };
                         persist_sync_page(&sender, &local_store, &conversation_id, page)?;
                         local_store.save_sync_position(&conversation_id, next)?;
                         position = next;
@@ -6383,7 +6381,6 @@ fn ingest_message_record(
         spawn_sync_message_emoji_sources(sender, message);
     }
     hydrate_thread_metadata(local_store, message);
-    merge_cached_attachment_paths(local_store, message);
     if !persist_canonical_message(sender, local_store, message) {
         return;
     }
@@ -6429,55 +6426,7 @@ fn ingest_message_record_for_timeline_load(
         spawn_sync_message_emoji_sources(sender, message);
     }
     hydrate_thread_metadata(local_store, message);
-    merge_cached_attachment_paths(local_store, message);
     persist_canonical_message(sender, local_store, message);
-}
-
-/// Carry forward locally hydrated attachment paths from a previously cached
-/// message so that a fresh fetch from the service doesn't discard them.
-fn merge_cached_attachment_paths(local_store: &LocalStore, message: &mut MessageRecord) {
-    let cached = match local_store.get_message(&message.conversation_id, &message.id) {
-        Ok(Some(cached)) => cached,
-        _ => return,
-    };
-    if cached.attachments.len() != message.attachments.len() {
-        return;
-    }
-    for (fresh, cached) in message
-        .attachments
-        .iter_mut()
-        .zip(cached.attachments.iter())
-    {
-        if fresh.kind != cached.kind {
-            continue;
-        }
-        let fresh_has_local_source = fresh
-            .source
-            .as_ref()
-            .is_some_and(|s| matches!(s, AttachmentSource::LocalPath(p) if !p.trim().is_empty()));
-        if !fresh_has_local_source {
-            if let Some(AttachmentSource::LocalPath(ref p)) = cached.source {
-                if !p.trim().is_empty() && Path::new(p).exists() {
-                    fresh.source = cached.source.clone();
-                }
-            }
-        }
-        let fresh_has_local_preview = fresh
-            .preview
-            .as_ref()
-            .is_some_and(|preview| {
-                matches!(&preview.source, AttachmentSource::LocalPath(p) if !p.trim().is_empty())
-            });
-        if !fresh_has_local_preview {
-            if let Some(ref preview) = cached.preview {
-                if let AttachmentSource::LocalPath(ref p) = preview.source {
-                    if !p.trim().is_empty() && Path::new(p).exists() {
-                        fresh.preview = cached.preview.clone();
-                    }
-                }
-            }
-        }
-    }
 }
 
 fn resolve_thread_root_for_message(
@@ -11877,7 +11826,7 @@ async fn fetch_thread_messages(
 struct ThreadPage {
     messages: Vec<MessageRecord>,
     deletions: Vec<MessageRecord>,
-    raw_message_ids: Vec<u64>,
+    progress: PageProgress,
     offline: bool,
     reaction_deltas: Vec<MessageReactionDelta>,
     next_cursor: Option<Vec<u8>>,
@@ -12912,12 +12861,46 @@ fn conversation_mention_count(conversation: &Value, reader_info: &Value) -> u32 
     .max(0) as u32
 }
 
+fn history_envelope_disposition(item: &Value) -> EnvelopeDisposition {
+    let id = extract_message_id_from_unboxed_message(item)
+        .and_then(|id| id.0.parse::<u64>().ok())
+        .filter(|id| *id > 0);
+    let Some(id) = id else {
+        return EnvelopeDisposition::Retry;
+    };
+    if extract_valid_message(item).is_some() {
+        return EnvelopeDisposition::Available(id);
+    }
+    if let Some(placeholder) = map_get(item, "placeholder") {
+        return if map_get(placeholder, "hidden").and_then(as_bool) == Some(true) {
+            EnvelopeDisposition::PermanentlyUnavailable(id)
+        } else {
+            // A visible placeholder can represent a message still being fetched.
+            EnvelopeDisposition::Retry
+        };
+    }
+    if let Some(error) = map_get(item, "error") {
+        let ephemeral = map_get(error, "isEphemeral").and_then(as_bool) == Some(true);
+        let expired = map_get(error, "etime")
+            .and_then(as_i64)
+            .is_some_and(|etime| etime <= now_unix_ms());
+        let exploded =
+            map_get(error, "explodedBy").is_some_and(|value| !matches!(value, Value::Nil));
+        let ephemeral_error = matches!(map_get(error, "errType").and_then(as_i64), Some(4 | 5));
+        if ephemeral && ephemeral_error && (expired || exploded) {
+            return EnvelopeDisposition::PermanentlyUnavailable(id);
+        }
+    }
+    EnvelopeDisposition::Retry
+}
+
 fn parse_thread_page(value: &Value, conversation_id: &ConversationId) -> ThreadPage {
     let mut page = ThreadPage::default();
     page.offline = map_get_any(value, &["offline"])
         .and_then(as_bool)
         .unwrap_or(false);
     let Some(thread) = map_get_any(value, &["thread", "t"]) else {
+        page.progress.observe(EnvelopeDisposition::Retry);
         return page;
     };
     if let Some(pagination) = map_get_any(thread, &["pagination", "p"]) {
@@ -12929,23 +12912,25 @@ fn parse_thread_page(value: &Value, conversation_id: &ConversationId) -> ThreadP
             .and_then(as_bool)
             .unwrap_or(false);
     }
-    let Some(items) = map_get_any(thread, &["messages", "m"]).and_then(as_array) else {
-        return page;
+    let items: &[Value] = match map_get_any(thread, &["messages", "m"]) {
+        Some(Value::Array(items)) => items,
+        Some(Value::Nil) => &[],
+        _ => {
+            page.progress.observe(EnvelopeDisposition::Retry);
+            return page;
+        }
     };
+    if items.is_empty() && page.next_cursor.is_some() {
+        page.progress.observe(EnvelopeDisposition::Retry);
+    }
 
     let permalink_base = extract_permalink_base(value);
 
     for item in items {
+        page.progress.observe(history_envelope_disposition(item));
         let Some(valid) = extract_valid_message(item) else {
             continue;
         };
-        if let Some(id) = map_get_any(valid, &["serverHeader", "s"])
-            .and_then(|header| map_get_any(header, &["messageID", "messageId", "m"]))
-            .and_then(as_i64)
-            .filter(|id| *id >= 0)
-        {
-            page.raw_message_ids.push(id as u64);
-        }
         let message_body = map_get_any(valid, &["messageBody", "b"]);
         let message_type = message_body.and_then(message_type_from_message_body);
         if message_type == Some(MESSAGE_TYPE_REACTION) {
@@ -13051,7 +13036,10 @@ fn extract_message_id_from_unboxed_message(value: &Value) -> Option<MessageId> {
     if matches!(value, Value::Nil) {
         return None;
     }
-    let valid = map_get_any(value, &["valid", "v"]).unwrap_or(value);
+    let valid = map_get_any(value, &["valid", "v"])
+        .or_else(|| map_get(value, "error"))
+        .or_else(|| map_get(value, "placeholder"))
+        .unwrap_or(value);
     map_get_any(valid, &["serverHeader", "s"])
         .and_then(|header| map_get_any(header, &["messageID", "messageId", "m"]))
         .or_else(|| map_get_any(valid, &["messageID", "messageId", "m"]))
@@ -16694,6 +16682,95 @@ mod tests {
         std::fs::remove_dir_all(path).unwrap();
     }
 
+    fn history_envelope_page(items: Vec<Value>) -> ThreadPage {
+        parse_thread_page(
+            &Value::Map(vec![(
+                "thread".into(),
+                Value::Map(vec![
+                    ("messages".into(), Value::Array(items)),
+                    (
+                        "pagination".into(),
+                        Value::Map(vec![("last".into(), false.into())]),
+                    ),
+                ]),
+            )]),
+            &ConversationId::new("conversation"),
+        )
+    }
+
+    #[test]
+    fn history_pages_of_hidden_placeholders_or_expired_errors_advance_transport_position() {
+        for variant in ["placeholder", "error"] {
+            let items = (1..=200)
+                .map(|id| {
+                    Value::Map(vec![(
+                        variant.into(),
+                        Value::Map(vec![
+                            ("messageID".into(), id.into()),
+                            ("hidden".into(), true.into()),
+                            ("errType".into(), 4.into()),
+                            ("isEphemeral".into(), true.into()),
+                            ("etime".into(), 1.into()),
+                        ]),
+                    )])
+                })
+                .collect();
+            let page = history_envelope_page(items);
+            assert!(page.messages.is_empty());
+            assert_eq!(
+                page.progress.next_position(0, page.last).unwrap(),
+                Some(200)
+            );
+        }
+    }
+
+    #[test]
+    fn history_transient_errors_block_checkpoint_even_when_valid_messages_follow() {
+        let valid = Value::Map(vec![(
+            "valid".into(),
+            Value::Map(vec![(
+                "serverHeader".into(),
+                Value::Map(vec![("messageID".into(), 201.into())]),
+            )]),
+        )]);
+        for variant in ["error", "placeholder"] {
+            let unavailable = Value::Map(vec![(
+                variant.into(),
+                Value::Map(vec![
+                    ("messageID".into(), 200.into()),
+                    ("hidden".into(), false.into()),
+                    ("errType".into(), 0.into()),
+                ]),
+            )]);
+            for items in [vec![unavailable.clone()], vec![unavailable, valid.clone()]] {
+                let page = history_envelope_page(items);
+                assert!(page.progress.next_position(199, true).is_err());
+            }
+        }
+        let malformed = parse_thread_page(&Value::Nil, &ConversationId::new("conversation"));
+        assert!(malformed.progress.next_position(199, true).is_err());
+        let empty = history_envelope_page(vec![]);
+        assert_eq!(empty.progress.next_position(201, false).unwrap(), None);
+        let response = Value::Map(vec![(
+            "thread".into(),
+            Value::Map(vec![("messages".into(), Value::Nil)]),
+        )]);
+        let empty_nil = parse_thread_page(&response, &ConversationId::new("conversation"));
+        assert_eq!(empty_nil.progress.next_position(201, false).unwrap(), None);
+        let continuation = Value::Map(vec![(
+            "thread".into(),
+            Value::Map(vec![
+                ("messages".into(), Value::Array(vec![])),
+                (
+                    "pagination".into(),
+                    Value::Map(vec![("next".into(), Value::Binary(vec![1]))]),
+                ),
+            ]),
+        )]);
+        let stalled = parse_thread_page(&continuation, &ConversationId::new("conversation"));
+        assert!(stalled.progress.next_position(201, false).is_err());
+    }
+
     #[test]
     fn history_sync_applies_edits_and_deletes_in_operation_order() {
         let path = temp_emoji_asset_dir("history-sync-mutations");
@@ -16723,7 +16800,6 @@ mod tests {
             ThreadPage {
                 messages: vec![edited],
                 deletions: vec![deleted],
-                raw_message_ids: vec![2, 3],
                 ..Default::default()
             },
         )

@@ -385,6 +385,8 @@ pub struct CachedAttachment {
     pub preview_height: Option<u32>,
     #[serde(default)]
     pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 impl CachedAttachment {
@@ -410,6 +412,10 @@ impl CachedAttachment {
             preview_width,
             preview_height,
             duration_ms: attachment.duration_ms,
+            source: attachment
+                .source
+                .as_ref()
+                .map(cached_attachment_source_to_string),
         }
     }
 
@@ -433,7 +439,14 @@ impl CachedAttachment {
             preview,
             duration_ms: self.duration_ms,
             waveform: None,
-            source: None,
+            source: self
+                .source
+                .as_deref()
+                .and_then(cached_attachment_source_from_string)
+                .filter(|source| match source {
+                    AttachmentSource::LocalPath(path) => std::path::Path::new(path).is_file(),
+                    AttachmentSource::Url(_) => true,
+                }),
         }
     }
 }
@@ -883,6 +896,34 @@ mod tests {
                 edited_at_ms: Some(1_711_000_123_000),
             }),
         }
+    }
+
+    #[test]
+    fn attachment_sources_roundtrip_and_legacy_records_remain_readable() {
+        let path = std::env::temp_dir().join(format!("zbase-source-roundtrip-{}.txt", std::process::id()));
+        std::fs::write(&path, b"cached attachment").unwrap();
+        let attachment = AttachmentSummary {
+            name: "file.txt".into(),
+            size_bytes: 42,
+            source: Some(AttachmentSource::LocalPath(path.to_string_lossy().into_owned())),
+            ..AttachmentSummary::default()
+        };
+        let bytes = rmp_serde::to_vec(&CachedAttachment::from_domain(&attachment)).unwrap();
+        let cached: CachedAttachment = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(cached.to_domain().source, attachment.source);
+        // Old sequence-encoded structs end before the newly appended source.
+        let mut legacy = rmpv::decode::read_value(&mut bytes.as_slice()).unwrap();
+        let rmpv::Value::Array(fields) = &mut legacy else {
+            panic!("Expected sequence encoding");
+        };
+        fields.pop();
+        let mut legacy_bytes = Vec::new();
+        rmpv::encode::write_value(&mut legacy_bytes, &legacy).unwrap();
+        let restored: CachedAttachment = rmp_serde::from_slice(&legacy_bytes).unwrap();
+        assert!(restored.to_domain().source.is_none());
+        assert_eq!(restored.to_domain().name, attachment.name);
+        std::fs::remove_file(path).unwrap();
+        assert!(cached.to_domain().source.is_none(), "deleted cache files must be eligible for rehydration");
     }
 
     #[test]
