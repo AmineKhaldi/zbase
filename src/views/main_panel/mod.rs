@@ -57,7 +57,12 @@ impl MainPanelHost {
 
         div()
             .flex_1()
-            .when_some(fixed_width, |panel, width| panel.flex_none().w(px(width)))
+            .when_some(fixed_width, |panel, width| {
+                // GPUI's flex_none leaves flex_1's zero basis in place. Set
+                // the basis too, or this frame collapses to the minimum width
+                // and briefly rewraps long messages before native resizing.
+                panel.flex_none().flex_basis(px(width)).w(px(width))
+            })
             .min_w(px(MAIN_PANEL_MIN_WIDTH_PX))
             .h_full()
             .flex()
