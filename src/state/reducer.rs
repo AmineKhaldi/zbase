@@ -633,6 +633,15 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             })],
         },
         UiAction::LoadSocialGraphList { user_id, list_type } => {
+            if state
+                .backend
+                .profile_panel
+                .social_lists
+                .get(&(user_id.clone(), list_type))
+                == Some(&SocialListLoadState::Loading)
+            {
+                return ReducerOutput::default();
+            }
             state
                 .backend
                 .profile_panel
@@ -1150,6 +1159,15 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             if let Some(presence) = presence_for_user(&state.backend.user_presences, &user_id) {
                 profile.presence = presence;
             }
+            // Profile metadata and social rosters arrive independently. Missing
+            // roster fields mean "not included", not an empty refreshed list.
+            let needs_social_load = profile.sections.iter().any(|section| {
+                matches!(section, ProfileSection::SocialGraph(graph)
+                    if graph.followers.is_none() && graph.following.is_none())
+            });
+            if let Some(previous) = state.backend.profile_panel.profiles.get(&user_id) {
+                preserve_social_lists(&mut profile, previous);
+            }
             state.backend.profile_panel.loading.remove(&user_id);
             state
                 .backend
@@ -1174,13 +1192,6 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 account.avatar = profile.avatar_asset.clone();
             }
 
-            let needs_social_load = profile.sections.iter().any(|section| {
-                matches!(
-                    section,
-                    ProfileSection::SocialGraph(graph)
-                        if graph.followers.is_none() && graph.following.is_none()
-                )
-            });
             if needs_social_load
                 && !state
                     .backend
@@ -1854,6 +1865,32 @@ fn update_follow_status(
             }
         }
     }
+}
+
+fn preserve_social_lists(profile: &mut UserProfile, previous: &UserProfile) {
+    if profile.user_id != previous.user_id {
+        return;
+    }
+    let Some(old) = previous.sections.iter().find_map(|section| match section {
+        ProfileSection::SocialGraph(graph) => Some(graph),
+        _ => None,
+    }) else {
+        return;
+    };
+    for section in &mut profile.sections {
+        if let ProfileSection::SocialGraph(graph) = section {
+            if graph.followers.is_none() {
+                graph.followers = old.followers.clone();
+            }
+            if graph.following.is_none() {
+                graph.following = old.following.clone();
+            }
+            return;
+        }
+    }
+    profile
+        .sections
+        .push(ProfileSection::SocialGraph(old.clone()));
 }
 
 fn merge_social_graph_entries(
@@ -3560,6 +3597,93 @@ mod tests {
             state.backend.user_profiles[&other].avatar_asset.as_deref(),
             Some("/cache/other.png")
         );
+    }
+
+    #[test]
+    fn profile_refresh_retains_loaded_rosters_until_authoritative_list_response() {
+        let mut state = UiState::default();
+        let user = UserId::new("alice");
+        let mut cached = profile_with_follow_status("alice", false);
+        let entry = SocialGraphEntry {
+            user_id: UserId::new("bob"),
+            display_name: "Bob".into(),
+            avatar_asset: None,
+            affinity: Affinity::None,
+        };
+        merge_social_graph_entries(
+            &mut cached,
+            SocialGraphListType::Followers,
+            vec![entry.clone()],
+        );
+        merge_social_graph_entries(
+            &mut cached,
+            SocialGraphListType::Following,
+            vec![entry.clone()],
+        );
+        state
+            .backend
+            .profile_panel
+            .profiles
+            .insert(user.clone(), cached);
+        let mut fresh = profile_with_follow_status("alice", true);
+        if let ProfileSection::SocialGraph(graph) = &mut fresh.sections[0] {
+            graph.followers = None;
+            graph.following = None;
+            graph.followers_count = Some(2);
+        }
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::UserProfileLoaded {
+                account_id: AccountId::new("account"),
+                profile: fresh,
+            },
+        );
+        let graph = match &state.backend.profile_panel.profiles[&user].sections[0] {
+            ProfileSection::SocialGraph(graph) => graph,
+            _ => panic!("missing social graph"),
+        };
+        assert_eq!(graph.followers.as_deref(), Some([entry.clone()].as_slice()));
+        assert_eq!(graph.following.as_deref(), Some([entry].as_slice()));
+        assert_eq!(
+            graph.followers_count,
+            Some(2),
+            "metadata counts still refresh"
+        );
+        assert!(graph.you_are_following);
+        assert_eq!(
+            state.backend.profile_panel.social_lists
+                [&(user.clone(), SocialGraphListType::Followers)],
+            SocialListLoadState::Loading
+        );
+        let duplicate = reduce_ui_action(
+            &mut state,
+            UiAction::LoadSocialGraphList {
+                user_id: user.clone(),
+                list_type: SocialGraphListType::Followers,
+            },
+        );
+        assert!(
+            duplicate.effects.is_empty(),
+            "coalesce an in-flight refresh"
+        );
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::SocialGraphListLoaded {
+                user_id: user.clone(),
+                list_type: SocialGraphListType::Followers,
+                entries: vec![],
+            },
+        );
+        let graph = match &state.backend.profile_panel.profiles[&user].sections[0] {
+            ProfileSection::SocialGraph(graph) => graph,
+            _ => panic!("missing social graph"),
+        };
+        assert_eq!(
+            graph.followers.as_deref(),
+            Some([].as_slice()),
+            "an authoritative empty list must replace cached entries"
+        );
+        assert_eq!(graph.following.as_ref().unwrap().len(), 1);
     }
 
     #[test]

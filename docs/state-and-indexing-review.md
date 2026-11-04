@@ -52,6 +52,8 @@ The original historical-download bug remains fixed: the common ingestion functio
 
 The router handles every effect independently, keeping successful events and running later commands after a failure. Routing/backend errors become command-specific failure events. Primary asynchronous bootstrap, profile, social-list, and conversation loads also settle on early failure.
 
+Profile metadata refreshes retain independently loaded social lists, including known-empty lists, until authoritative roster responses replace them. Cached profiles and lists refresh silently; loading/retry placeholders are reserved for lists without cached data. Duplicate in-flight roster requests are coalesced.
+
 Failed searches settle their loading state; failed conversation creation retains the dialog and shows an error; failed sends retain a failed pending message. Failed history paging preserves its cursor for retry. Reaction operations carry operation IDs for confirmation/rollback; an old failure cannot roll back a newer operation. Deletes remain visible until the backend accepts them. Edit/delete RPC work runs off the UI thread.
 
 Store error notifications are drained into the visible toast model rather than accumulating invisibly in reducer state.
@@ -78,7 +80,7 @@ Thread replies retain their message text and link interactions in the main chat.
 
 ## Validation
 
-The latest full run passed all 240 tests: 238 app tests and 2 protocol inventory tests. One opt-in live test is ignored by default. The suite runs with:
+The latest full run passed all 241 tests: 239 app tests and 2 protocol inventory tests. One opt-in live test is ignored by default. The suite runs with:
 
 ```sh
 cargo test --all-targets --features gpui/runtime_shaders
