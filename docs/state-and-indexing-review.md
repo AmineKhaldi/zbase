@@ -78,11 +78,11 @@ New installations start at 780 × 880; subsequent launches restore the saved bas
 
 The reaction strip shares one placement policy across timeline messages, thread replies, and right-click activation. Its measured footprint includes recent-reaction and delete buttons. Placement tries the right, above, then below with a pointer gap; it never clamps a right-hand candidate underneath the pointer. Hidden strips are absent from the element tree and cannot intercept clicks.
 
-Thread replies retain their message text and link interactions in the main chat. A cached parent-author/text preview gives context without extra history or file reads, and thread actions show reply counts. Group DMs use the same participant-avatar projection and overlapping-avatar component in the sidebar and conversation header; missing photos use individual initials rather than a channel hash icon.
+Thread replies retain their message text and link interactions in the main chat. A cached parent-author/text preview gives context without extra history or file reads, and thread actions show reply counts. Simple-team conversation rows use the same team-icon source as the conversation header, and asynchronous icon updates invalidate the sidebar cache. Ordinary channel rows keep their hash icon. Group DMs use the same participant-avatar projection and overlapping-avatar component in the sidebar and conversation header; missing photos use individual initials rather than a channel hash icon.
 
 ## Validation
 
-The latest full run passed all 251 tests: 249 app tests and 2 protocol inventory tests. One opt-in live test is ignored by default. The suite runs with:
+The latest full run passed all 252 tests: 250 app tests and 2 protocol inventory tests. One opt-in live test is ignored by default. The suite runs with:
 
 ```sh
 cargo test --all-targets --features gpui/runtime_shaders

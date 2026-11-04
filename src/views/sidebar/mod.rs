@@ -1,9 +1,8 @@
-use crate::models::conversation_model::AvatarParticipant;
 use crate::{
     domain::{ids::SidebarSectionId, route::Route},
     models::{
         app_model::Connectivity,
-        sidebar_model::{SidebarModel, SidebarRow, SidebarSection},
+        sidebar_model::{SidebarAvatar, SidebarModel, SidebarRow, SidebarSection},
     },
     views::{
         accent, avatar::Avatar, chevron_down_icon, chevron_right_icon, glass_surface_dark,
@@ -74,7 +73,7 @@ impl Sidebar {
         connectivity: &Connectivity,
         current_user_display_name: &str,
         current_user_avatar_asset: Option<&str>,
-        dm_avatar_assets: &HashMap<String, Vec<AvatarParticipant>>,
+        conversation_avatars: &HashMap<String, SidebarAvatar>,
         current_route: &Route,
         hovered_row: Option<&str>,
         scroll_handle: &ScrollHandle,
@@ -119,7 +118,7 @@ impl Sidebar {
                         Self::render_section(
                             section,
                             &section.rows,
-                            dm_avatar_assets,
+                            conversation_avatars,
                             current_route,
                             hovered_row,
                             cx,
@@ -281,7 +280,7 @@ impl Sidebar {
     fn render_section<H: SidebarHost>(
         section: &SidebarSection,
         visible_rows: &[SidebarRow],
-        dm_avatar_assets: &HashMap<String, Vec<AvatarParticipant>>,
+        conversation_avatars: &HashMap<String, SidebarAvatar>,
         current_route: &Route,
         hovered_row: Option<&str>,
         cx: &mut Context<H>,
@@ -347,7 +346,14 @@ impl Sidebar {
             )
             .when(is_unread_section || !section.collapsed, |div| {
                 div.children(visible_rows.iter().map(|row| {
-                    Self::render_row(&section.id, row, dm_avatar_assets, current_route, hovered_row, cx)
+                    Self::render_row(
+                        &section.id,
+                        row,
+                        conversation_avatars,
+                        current_route,
+                        hovered_row,
+                        cx,
+                    )
                 }))
             })
             .into_any_element()
@@ -356,7 +362,7 @@ impl Sidebar {
     fn render_row<H: SidebarHost>(
         section_id: &SidebarSectionId,
         row: &SidebarRow,
-        dm_avatar_assets: &HashMap<String, Vec<AvatarParticipant>>,
+        conversation_avatars: &HashMap<String, SidebarAvatar>,
         current_route: &Route,
         hovered_row: Option<&str>,
         cx: &mut Context<H>,
@@ -410,7 +416,7 @@ impl Sidebar {
                     .child(Self::leading_element(
                         row,
                         &route_label,
-                        dm_avatar_assets,
+                        conversation_avatars,
                         selected,
                     ))
                     .child(row.label.clone()),
@@ -429,25 +435,37 @@ impl Sidebar {
     fn leading_element(
         row: &SidebarRow,
         route_label: &str,
-        dm_avatar_assets: &HashMap<String, Vec<AvatarParticipant>>,
+        conversation_avatars: &HashMap<String, SidebarAvatar>,
         selected: bool,
     ) -> AnyElement {
         match &row.route {
-            Route::Channel { .. } => div()
-                .w(px(16.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(hash_icon(if selected {
-                    accent()
+            Route::Channel { .. } => {
+                if let Some(SidebarAvatar::Team(asset)) = conversation_avatars.get(route_label) {
+                    Avatar::render_square(
+                        &row.label,
+                        Some(asset),
+                        20.,
+                        crate::views::accent_soft(),
+                        accent(),
+                    )
                 } else {
-                    text_secondary()
-                }))
-                .into_any_element(),
+                    div()
+                        .w(px(16.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(hash_icon(if selected {
+                            accent()
+                        } else {
+                            text_secondary()
+                        }))
+                        .into_any_element()
+                }
+            }
             Route::DirectMessage { .. } => Avatar::render_participants(
-                dm_avatar_assets
+                conversation_avatars
                     .get(route_label)
-                    .map(Vec::as_slice)
+                    .map(SidebarAvatar::participants)
                     .unwrap_or_default(),
                 &row.label,
                 20.,

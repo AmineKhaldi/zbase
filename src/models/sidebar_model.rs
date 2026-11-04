@@ -23,3 +23,19 @@ pub struct SidebarModel {
     pub highlighted_route: Option<Route>,
     pub width_px: f32,
 }
+
+/// Conversation rows may represent people or a simple team's general channel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SidebarAvatar {
+    Participants(Vec<super::conversation_model::AvatarParticipant>),
+    Team(String),
+}
+
+impl SidebarAvatar {
+    pub fn participants(&self) -> &[super::conversation_model::AvatarParticipant] {
+        match self {
+            Self::Participants(people) => people,
+            Self::Team(_) => &[],
+        }
+    }
+}

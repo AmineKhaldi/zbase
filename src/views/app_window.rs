@@ -28,7 +28,7 @@ use crate::{
         notifications_model::ToastAction,
         profile_panel_model::SocialTab,
         quick_switcher_model::QuickSwitcherResultKind,
-        sidebar_model::SidebarModel,
+        sidebar_model::{SidebarAvatar, SidebarModel},
         timeline_model::TeamAuthorRole,
     },
     services::{
@@ -268,7 +268,7 @@ pub struct AppWindow {
     jump_to_message_active: bool,
     last_thread_reply_count: usize,
     pending_thread_scroll_to_bottom: bool,
-    sidebar_dm_avatar_assets: HashMap<String, Vec<AvatarParticipant>>,
+    sidebar_conversation_avatars: HashMap<String, SidebarAvatar>,
     sidebar_view: Option<Entity<CachedSidebarView>>,
     keybase_inspector: KeybaseInspectorState,
     perf_harness: PerfHarness,
@@ -370,7 +370,7 @@ struct SyncCache {
     projected_conversation_id: Option<ConversationId>,
     workspace_sig: Option<u64>,
     sidebar_sections_sig: Option<u64>,
-    dm_avatar_sig: Option<u64>,
+    sidebar_avatar_sig: Option<u64>,
     timeline_rows_sig: Option<u64>,
     timeline_link_previews_sig: Option<u64>,
     timeline_emoji_sig: Option<u64>,
@@ -385,7 +385,7 @@ struct SidebarViewState {
     connectivity: Connectivity,
     current_user_display_name: String,
     current_user_avatar_asset: Option<String>,
-    dm_avatar_assets: HashMap<String, Vec<AvatarParticipant>>,
+    conversation_avatars: HashMap<String, SidebarAvatar>,
     current_route: Route,
     theme: crate::app::theme::ThemeVariant,
 }
@@ -506,7 +506,7 @@ impl Render for CachedSidebarView {
                 &self.state.connectivity,
                 &self.state.current_user_display_name,
                 self.state.current_user_avatar_asset.as_deref(),
-                &self.state.dm_avatar_assets,
+                &self.state.conversation_avatars,
                 &self.state.current_route,
                 self.hovered_row.as_deref(),
                 &self.scroll_handle,
@@ -745,7 +745,7 @@ impl AppWindow {
             jump_to_message_active: false,
             last_thread_reply_count,
             pending_thread_scroll_to_bottom: false,
-            sidebar_dm_avatar_assets: HashMap::new(),
+            sidebar_conversation_avatars: HashMap::new(),
             sidebar_view: None,
             keybase_inspector: KeybaseInspectorState::default(),
             perf_harness: PerfHarness::from_env(),
@@ -2692,7 +2692,7 @@ impl AppWindow {
             connectivity: self.models.app.connectivity.clone(),
             current_user_display_name: self.models.app.current_user_display_name.clone(),
             current_user_avatar_asset: self.models.app.current_user_avatar_asset.clone(),
-            dm_avatar_assets: self.sidebar_dm_avatar_assets.clone(),
+            conversation_avatars: self.sidebar_conversation_avatars.clone(),
             current_route: self.models.navigation.current.clone(),
             theme: self.resolved_theme,
         }
@@ -3259,12 +3259,13 @@ impl AppWindow {
             self.models.expand_section_for_route(&next_route);
         }
 
-        let dm_avatar_sig = dm_avatar_inputs_signature(
+        let sidebar_avatar_sig = sidebar_avatar_inputs_signature(
             &self.models.sidebar.sections,
             &snapshot.workspace.direct_messages,
+            &snapshot.workspace.channels,
             &snapshot.backend.user_profiles,
         );
-        if self.sync_cache.dm_avatar_sig != Some(dm_avatar_sig) {
+        if self.sync_cache.sidebar_avatar_sig != Some(sidebar_avatar_sig) {
             let dm_conversation_avatar_assets = snapshot
                 .workspace
                 .direct_messages
@@ -3272,12 +3273,24 @@ impl AppWindow {
                 .map(|summary| {
                     (
                         summary.id.0.clone(),
-                        dm_participant_avatars(summary, &snapshot.backend.user_profiles),
+                        SidebarAvatar::Participants(dm_participant_avatars(
+                            summary,
+                            &snapshot.backend.user_profiles,
+                        )),
                     )
                 })
                 .collect::<HashMap<_, _>>();
 
-            let mut dm_avatar_assets = HashMap::new();
+            let team_avatars = snapshot
+                .workspace
+                .channels
+                .iter()
+                .filter_map(|summary| {
+                    simple_team_avatar_asset(summary, &snapshot.backend.user_profiles)
+                        .map(|asset| (summary.id.0.clone(), asset))
+                })
+                .collect::<HashMap<_, _>>();
+            let mut conversation_avatars = HashMap::new();
             for row in self
                 .models
                 .sidebar
@@ -3288,17 +3301,23 @@ impl AppWindow {
                 if let Route::DirectMessage { dm_id, .. } = &row.route
                     && let Some(avatar_asset) = dm_conversation_avatar_assets.get(&dm_id.0)
                 {
-                    dm_avatar_assets.insert(row.route.label(), avatar_asset.clone());
+                    conversation_avatars.insert(row.route.label(), avatar_asset.clone());
+                }
+                if let Route::Channel { channel_id, .. } = &row.route
+                    && let Some(asset) = team_avatars.get(&channel_id.0)
+                {
+                    conversation_avatars
+                        .insert(row.route.label(), SidebarAvatar::Team(asset.clone()));
                 }
             }
-            self.sidebar_dm_avatar_assets = dm_avatar_assets;
-            self.sync_cache.dm_avatar_sig = Some(dm_avatar_sig);
+            self.sidebar_conversation_avatars = conversation_avatars;
+            self.sync_cache.sidebar_avatar_sig = Some(sidebar_avatar_sig);
         }
 
         self.models.conversation.participant_avatars = self
-            .sidebar_dm_avatar_assets
+            .sidebar_conversation_avatars
             .get(&next_route.label())
-            .cloned()
+            .map(|avatar| avatar.participants().to_vec())
             .unwrap_or_default();
 
         // Compare with the last store projection, not a view model that navigation
@@ -3537,25 +3556,13 @@ impl AppWindow {
                 .cloned()
             {
                 self.models.conversation.summary = active_conversation.clone();
-                self.models.composer.conversation_id = active_conversation.id;
+                self.models.composer.conversation_id = active_conversation.id.clone();
                 self.models.conversation.can_post = true;
                 self.models.conversation.is_archived = false;
                 self.models.conversation.avatar_asset = match active_conversation.kind {
-                    crate::domain::conversation::ConversationKind::Channel => active_conversation
-                        .group
-                        .as_ref()
-                        .and_then(|group| {
-                            let team_name = group.id.trim();
-                            if team_name.is_empty() {
-                                None
-                            } else {
-                                snapshot
-                                    .backend
-                                    .user_profiles
-                                    .get(&UserId::new(format!("team:{team_name}")))
-                            }
-                        })
-                        .and_then(|profile| profile.avatar_asset.clone()),
+                    crate::domain::conversation::ConversationKind::Channel => {
+                        team_avatar_asset(&active_conversation, &snapshot.backend.user_profiles)
+                    }
                     crate::domain::conversation::ConversationKind::DirectMessage => {
                         let username = first_dm_username(&active_conversation.title)
                             .unwrap_or("")
@@ -8487,7 +8494,7 @@ impl Render for AppWindow {
                                 &self.models.app.connectivity,
                                 &self.models.app.current_user_display_name,
                                 self.models.app.current_user_avatar_asset.as_deref(),
-                                &self.sidebar_dm_avatar_assets,
+                                &self.sidebar_conversation_avatars,
                                 &self.models.navigation.current,
                                 None,
                                 &self.sidebar_scroll_handle,
@@ -9194,19 +9201,53 @@ fn dm_participant_avatars(
         .collect()
 }
 
-fn dm_avatar_inputs_signature(
+fn team_avatar_asset(
+    summary: &ConversationSummary,
+    profiles: &HashMap<UserId, crate::state::state::UserProfileState>,
+) -> Option<String> {
+    let team = summary.group.as_ref()?.id.trim();
+    if team.is_empty() {
+        return None;
+    }
+    profiles
+        .get(&UserId::new(format!("team:{team}")))?
+        .avatar_asset
+        .clone()
+}
+
+fn simple_team_avatar_asset(
+    summary: &ConversationSummary,
+    profiles: &HashMap<UserId, crate::state::state::UserProfileState>,
+) -> Option<String> {
+    summary
+        .is_simple_team()
+        .then(|| team_avatar_asset(summary, profiles))
+        .flatten()
+}
+
+fn sidebar_avatar_inputs_signature(
     sections: &[crate::models::sidebar_model::SidebarSection],
     direct_messages: &[crate::domain::conversation::ConversationSummary],
+    channels: &[crate::domain::conversation::ConversationSummary],
     user_profiles: &HashMap<UserId, crate::state::state::UserProfileState>,
 ) -> u64 {
     let mut sig = SIG_SEED;
     for row in sections.iter().flat_map(|section| section.rows.iter()) {
-        if let Route::DirectMessage { dm_id, .. } = &row.route {
-            mix_sig_str(&mut sig, &dm_id.0);
-            mix_sig_str(&mut sig, &row.label);
-        }
+        mix_sig_str(&mut sig, &row.route.label());
+        mix_sig_str(&mut sig, &row.label);
     }
 
+    for summary in channels {
+        if summary.is_simple_team() {
+            mix_sig_str(&mut sig, &summary.id.0);
+            if let Some(group) = &summary.group {
+                mix_sig_str(&mut sig, &group.id);
+            }
+            if let Some(asset) = team_avatar_asset(summary, user_profiles) {
+                mix_sig_str(&mut sig, &asset);
+            }
+        }
+    }
     for summary in direct_messages {
         mix_sig_str(&mut sig, &summary.id.0);
         mix_sig_str(&mut sig, &summary.title);
@@ -10324,12 +10365,66 @@ mod tests {
         assert_eq!(avatars.len(), 2);
         assert_eq!(avatars[0].display_name, "Alice");
         assert_eq!(avatars[1].asset.as_deref(), Some("/cache/bob.png"));
-        let before = super::dm_avatar_inputs_signature(&[], &[summary.clone()], &profiles);
+        let before =
+            super::sidebar_avatar_inputs_signature(&[], &[summary.clone()], &[], &profiles);
         profiles.get_mut(&UserId::new("bob")).unwrap().avatar_asset =
             Some("/cache/bob-new.png".into());
         assert_ne!(
             before,
-            super::dm_avatar_inputs_signature(&[], &[summary], &profiles)
+            super::sidebar_avatar_inputs_signature(&[], &[summary], &[], &profiles)
+        );
+    }
+
+    #[test]
+    fn simple_team_sidebar_icons_share_header_assets_and_invalidate_when_loaded() {
+        use crate::domain::conversation::{
+            ConversationGroup, ConversationKind, ConversationSummary, ConversationTeamType,
+        };
+        let mut summary = ConversationSummary {
+            id: ConversationId::new("annar-general"),
+            title: "general".into(),
+            kind: ConversationKind::Channel,
+            topic: String::new(),
+            group: Some(ConversationGroup {
+                id: "annar".into(),
+                display_name: "annar".into(),
+                team_type: ConversationTeamType::Simple,
+            }),
+            unread_count: 0,
+            mention_count: 0,
+            muted: false,
+            last_activity_ms: 0,
+        };
+        let mut profiles = std::collections::HashMap::new();
+        let missing =
+            super::sidebar_avatar_inputs_signature(&[], &[], &[summary.clone()], &profiles);
+        assert_eq!(super::simple_team_avatar_asset(&summary, &profiles), None);
+        profiles.insert(
+            UserId::new("team:annar"),
+            crate::state::state::UserProfileState {
+                display_name: "annar".into(),
+                avatar_asset: Some("/cache/annar.png".into()),
+                updated_ms: 1,
+            },
+        );
+        assert_eq!(
+            super::simple_team_avatar_asset(&summary, &profiles),
+            super::team_avatar_asset(&summary, &profiles)
+        );
+        assert_eq!(
+            super::simple_team_avatar_asset(&summary, &profiles).as_deref(),
+            Some("/cache/annar.png")
+        );
+        assert_ne!(
+            missing,
+            super::sidebar_avatar_inputs_signature(&[], &[], &[summary.clone()], &profiles),
+            "an asynchronously loaded team icon must invalidate the sidebar cache"
+        );
+        summary.group.as_mut().unwrap().team_type = ConversationTeamType::Complex;
+        assert_eq!(
+            super::simple_team_avatar_asset(&summary, &profiles),
+            None,
+            "ordinary channel rows keep their hash icon"
         );
     }
 
