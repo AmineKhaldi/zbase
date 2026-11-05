@@ -97,6 +97,28 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_rejoin_clears_pending_leave_and_error() {
+        let mut state = UiState::default();
+        state.workspace.channels.push(channel("dev"));
+        let id = ConversationId::new("channel");
+        request_leave(&mut state, id.clone());
+        state
+            .workspace
+            .leave_channel_errors
+            .insert(id.clone(), "old error".into());
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::ChannelJoined {
+                workspace_id: WorkspaceId::new("ws"),
+                conversation_id: id.clone(),
+            },
+        );
+        assert!(!state.workspace.leaving_conversation_ids.contains(&id));
+        assert!(!state.workspace.leave_channel_errors.contains_key(&id));
+        assert!(!state.workspace.left_conversation_ids.contains(&id));
+    }
+
+    #[test]
     fn leave_is_pending_until_confirmed_and_failure_allows_retry() {
         let mut state = UiState::default();
         state.workspace.channels.push(channel("dev"));

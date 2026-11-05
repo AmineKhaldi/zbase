@@ -6,13 +6,39 @@ static NEXT_TOKEN: AtomicU64 = AtomicU64::new(0);
 
 impl LocalStore {
     pub fn set_conversation_left(&self, id: &ConversationId, left: bool) -> io::Result<()> {
-        let _guard = self
+        self.transition_conversation_membership(id, left, None, || {})
+            .map(|_| ())
+    }
+
+    /// Capture before starting an RPC. Notifications supersede its completion.
+    pub fn conversation_membership_generation(&self, id: &ConversationId) -> io::Result<u64> {
+        let generations = self
             .membership_writes
             .lock()
             .map_err(|_| io::Error::other("membership lock poisoned"))?;
+        Ok(*generations.get(id).unwrap_or(&0))
+    }
+
+    /// Serialize persistence and publication so accepted transitions reach the UI
+    /// in the same order. The callback must not start another membership write.
+    pub fn transition_conversation_membership(
+        &self,
+        id: &ConversationId,
+        left: bool,
+        expected_generation: Option<u64>,
+        publish: impl FnOnce(),
+    ) -> io::Result<bool> {
+        let mut generations = self
+            .membership_writes
+            .lock()
+            .map_err(|_| io::Error::other("membership lock poisoned"))?;
+        let generation = *generations.get(id).unwrap_or(&0);
+        if expected_generation.is_some_and(|expected| expected != generation) {
+            return Ok(false);
+        }
         let meta = self.cf(CF_META)?;
         let key = format!("{LEFT_PREFIX}{}", id.0);
-        if left {
+        let result = if left {
             let token = format!(
                 "{:?}:{}",
                 SystemTime::now(),
@@ -23,7 +49,12 @@ impl LocalStore {
                 .map_err(io::Error::other)
         } else {
             self.db.delete_cf(&meta, key).map_err(io::Error::other)
-        }
+        };
+        // Even a failed persistence attempt supersedes older RPC completions.
+        generations.insert(id.clone(), generation.wrapping_add(1));
+        result?;
+        publish();
+        Ok(true)
     }
 
     pub fn is_conversation_left(&self, id: &ConversationId) -> io::Result<bool> {
@@ -60,7 +91,7 @@ impl LocalStore {
         snapshot: &HashMap<ConversationId, Vec<u8>>,
         active_ids: impl IntoIterator<Item = ConversationId>,
     ) -> io::Result<Vec<ConversationId>> {
-        let _guard = self
+        let mut generations = self
             .membership_writes
             .lock()
             .map_err(|_| io::Error::other("membership lock poisoned"))?;
@@ -79,6 +110,8 @@ impl LocalStore {
                 == Some(token)
             {
                 self.db.delete_cf(&meta, key).map_err(io::Error::other)?;
+                let generation = generations.entry(id.clone()).or_default();
+                *generation = generation.wrapping_add(1);
                 joined.push(id);
             }
         }

@@ -145,7 +145,7 @@ pub struct LocalStore {
     db: DBWithThreadMode<MultiThreaded>,
     message_writes: Mutex<MessageWrites>,
     profile_writes: Mutex<()>,
-    membership_writes: Mutex<()>,
+    membership_writes: Mutex<HashMap<ConversationId, u64>>,
     conversation_badges: Mutex<ConversationBadgeState>,
 }
 
@@ -2386,6 +2386,44 @@ mod tests {
     }
 
     #[test]
+    fn attachment_download_replaces_thumbnail_and_missing_local_file() {
+        use crate::domain::attachment::{AttachmentPreview, AttachmentSource};
+        let path = temp_rocks_path("attachment-upgrade");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let mut message = sample_message(&ConversationId::new("conversation"), 1);
+        let thumbnail = AttachmentSource::LocalPath("/cache/thumbnail.png".into());
+        message.attachments[0].source = Some(thumbnail.clone());
+        message.attachments[0].preview = Some(AttachmentPreview {
+            source: thumbnail, width: Some(32), height: Some(32),
+        });
+        store.persist_message(&message).unwrap();
+        let mut downloaded = message.attachments.clone();
+        downloaded[0].source = Some(AttachmentSource::LocalPath("/cache/full.png".into()));
+        downloaded[0].preview.as_mut().unwrap().source =
+            AttachmentSource::LocalPath("/cache/repaired-preview.png".into());
+        let patched = store
+            .patch_attachment_paths(&message.conversation_id, &message.id, &downloaded)
+            .unwrap()
+            .unwrap();
+        assert_eq!(patched.attachments, downloaded);
+        downloaded[0].source = Some(AttachmentSource::LocalPath("/cache/repaired-full.png".into()));
+        let repaired = store
+            .patch_attachment_paths(&message.conversation_id, &message.id, &downloaded)
+            .unwrap()
+            .unwrap();
+        assert_eq!(repaired.attachments, downloaded);
+        // A metadata refresh cannot undo successful hydration.
+        message.attachments[0].source = None;
+        message.attachments[0].preview = None;
+        assert_eq!(
+            store.upsert_message(&message).unwrap().unwrap().attachments,
+            downloaded
+        );
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn attachment_completion_preserves_newer_edits_and_durable_deletions() {
         use crate::domain::attachment::AttachmentSource;
         use crate::domain::message::EditMeta;
@@ -2613,7 +2651,7 @@ mod tests {
             .patch_attachment_paths(
                 &incoming.conversation_id,
                 &incoming.id,
-                &original.attachments,
+                &original.attachments[1..],
             )
             .unwrap()
             .unwrap();

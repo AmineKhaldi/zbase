@@ -157,10 +157,18 @@ pub fn message_revision(message: &MessageRecord) -> (bool, u64, i64) {
 
 /// A completed download can enrich only the matching attachment, never the text,
 /// reactions, thread state, or existence of its original message snapshot.
-/// An incoming nonempty local path wins; cached paths only fill missing local data.
+/// Downloaded paths replace older local paths, including thumbnails and missing files.
 pub fn apply_attachment_paths(
     message: &mut MessageRecord,
     downloaded: &[crate::domain::attachment::AttachmentSummary],
+) {
+    merge_attachment_paths(message, downloaded, true);
+}
+
+fn merge_attachment_paths(
+    message: &mut MessageRecord,
+    downloaded: &[crate::domain::attachment::AttachmentSummary],
+    replace_local: bool,
 ) {
     use crate::domain::attachment::AttachmentSource;
     let local = |source: Option<&AttachmentSource>| matches!(source, Some(AttachmentSource::LocalPath(path)) if !path.trim().is_empty());
@@ -172,10 +180,10 @@ pub fn apply_attachment_paths(
         }) else {
             continue;
         };
-        if !local(attachment.source.as_ref()) && local(patch.source.as_ref()) {
+        if (replace_local || !local(attachment.source.as_ref())) && local(patch.source.as_ref()) {
             attachment.source = patch.source.clone();
         }
-        if !local(attachment.preview.as_ref().map(|preview| &preview.source))
+        if (replace_local || !local(attachment.preview.as_ref().map(|preview| &preview.source)))
             && local(patch.preview.as_ref().map(|preview| &preview.source))
         {
             attachment.preview = patch.preview.clone();
@@ -195,6 +203,7 @@ pub fn merge_message_version(existing: &MessageRecord, incoming: &MessageRecord)
         merged.reply_to = existing.reply_to.clone().or(merged.reply_to);
         merged.thread_root_id = existing.thread_root_id.clone().or(merged.thread_root_id);
     }
-    apply_attachment_paths(&mut merged, &existing.attachments);
+    // Server snapshots retain their own local paths; cached data only fills gaps.
+    merge_attachment_paths(&mut merged, &existing.attachments, false);
     merged
 }

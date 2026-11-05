@@ -14,7 +14,8 @@ pub(super) fn start_leave(
             conversation_id: id.clone(),
         };
         let mut outcome = BackendTaskOutcome::new(&sender, command.clone());
-        let result = (|| -> io::Result<()> {
+        let result = (|| -> io::Result<u64> {
+            let generation = store.conversation_membership_generation(&id)?;
             if !store
                 .get_conversation(&id)?
                 .is_some_and(|summary| summary.can_leave_channel())
@@ -34,12 +35,20 @@ pub(super) fn start_leave(
                 })
                 .await
                 .map_err(|_| io::Error::other("Leaving the channel timed out. Please try again."))?
-            })
+            })?;
+            Ok(generation)
         })();
         match result {
-            Ok(()) => {
-                // Keep cached history. Only membership is removed from the inbox.
-                if let Err(error) = store.set_conversation_left(&id, true) {
+            Ok(generation) => {
+                // A newer notification owns membership, even if this RPC succeeded.
+                if let Err(error) =
+                    store.transition_conversation_membership(&id, true, Some(generation), || {
+                        let _ = sender.send(BackendEvent::ChannelLeft {
+                            workspace_id,
+                            conversation_id: id.clone(),
+                        });
+                    })
+                {
                     let _ = sender.send(BackendEvent::CommandFailed {
                         command: Box::new(command),
                         error: format!(
@@ -47,10 +56,6 @@ pub(super) fn start_leave(
                         ),
                     });
                 }
-                let _ = sender.send(BackendEvent::ChannelLeft {
-                    workspace_id,
-                    conversation_id: id,
-                });
             }
             Err(error) => {
                 let _ = sender.send(BackendEvent::CommandFailed {
@@ -131,23 +136,26 @@ pub(super) fn handle_notify(
         return;
     };
     let conversation_id = ConversationId::new(format!("kb_conv:{}", hex_encode(&raw_id)));
-    if let Err(error) = store.set_conversation_left(&conversation_id, left) {
+    if let Err(error) =
+        store.transition_conversation_membership(&conversation_id, left, None, || {
+            let workspace_id = WorkspaceId::new(WORKSPACE_ID);
+            let _ = sender.send(if left {
+                BackendEvent::ChannelLeft {
+                    workspace_id,
+                    conversation_id: conversation_id.clone(),
+                }
+            } else {
+                BackendEvent::ChannelJoined {
+                    workspace_id,
+                    conversation_id: conversation_id.clone(),
+                }
+            });
+            if !left && let Some(event) = cached_join_event(store, &conversation_id) {
+                let _ = sender.send(event);
+            }
+        })
+    {
         tracing::warn!("Could not persist channel membership notification: {error}");
-    }
-    let workspace_id = WorkspaceId::new(WORKSPACE_ID);
-    let _ = sender.send(if left {
-        BackendEvent::ChannelLeft {
-            workspace_id,
-            conversation_id: conversation_id.clone(),
-        }
-    } else {
-        BackendEvent::ChannelJoined {
-            workspace_id,
-            conversation_id: conversation_id.clone(),
-        }
-    });
-    if !left && let Some(event) = cached_join_event(store, &conversation_id) {
-        let _ = sender.send(event);
     }
 }
 
@@ -219,6 +227,7 @@ mod tests {
             .persist_conversation_binding(&id, &ProviderConversationRef::new("kb_conv:abcd"))
             .unwrap();
         let (sender, receiver) = mpsc::channel();
+        let leave_generation = store.conversation_membership_generation(&id).unwrap();
         for (method, left) in [
             ("chat.1.NotifyChat.ChatLeftConversation", true),
             ("chat.1.NotifyChat.ChatJoinedConversation", false),
@@ -242,6 +251,40 @@ mod tests {
         assert!(
             matches!(receiver.try_recv().unwrap(), BackendEvent::WorkspaceConversationsExtended { channels, .. } if channels.len() == 1)
         );
+        // Deterministic interleaving: an older leave RPC completes after the
+        // notification pair above. It must neither persist nor publish a leave.
+        assert!(
+            !store
+                .transition_conversation_membership(&id, true, Some(leave_generation), || {
+                    sender
+                        .send(BackendEvent::ChannelLeft {
+                            workspace_id: WorkspaceId::new(WORKSPACE_ID),
+                            conversation_id: id.clone(),
+                        })
+                        .unwrap();
+                })
+                .unwrap()
+        );
+        assert!(!store.is_conversation_left(&id).unwrap());
+        assert!(receiver.try_recv().is_err());
+        let generation = store.conversation_membership_generation(&id).unwrap();
+        assert!(
+            store
+                .transition_conversation_membership(&id, true, Some(generation), || {
+                    sender
+                        .send(BackendEvent::ChannelLeft {
+                            workspace_id: WorkspaceId::new(WORKSPACE_ID),
+                            conversation_id: id.clone(),
+                        })
+                        .unwrap();
+                })
+                .unwrap()
+        );
+        assert!(store.is_conversation_left(&id).unwrap());
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            BackendEvent::ChannelLeft { .. }
+        ));
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }

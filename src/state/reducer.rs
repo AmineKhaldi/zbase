@@ -1594,6 +1594,15 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
         BackendEvent::ChannelJoined {
             conversation_id, ..
         } => {
+            // A confirmed join supersedes any in-flight leave completion.
+            state
+                .workspace
+                .leaving_conversation_ids
+                .remove(&conversation_id);
+            state
+                .workspace
+                .leave_channel_errors
+                .remove(&conversation_id);
             state
                 .workspace
                 .left_conversation_ids

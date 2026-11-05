@@ -46,7 +46,7 @@ fn plan(
     body_size: Pixels,
     line_height: Pixels,
     wrap_width: Pixels,
-    mut measure: impl FnMut(Range<usize>, usize, Pixels) -> Pixels,
+    mut advances: impl FnMut(Range<usize>, usize, Pixels) -> Vec<(usize, Pixels)>,
 ) -> Plan {
     let mut styled = Vec::new();
     let mut start = 0;
@@ -83,44 +83,33 @@ fn plan(
             .iter()
             .filter_map(|(range, run, font_size)| {
                 let range = range.start.max(word_start)..range.end.min(word_end);
-                (range.start < range.end).then_some((range, *run, *font_size))
+                (range.start < range.end).then(|| {
+                    let measured = advances(range.clone(), *run, *font_size);
+                    (range, *run, *font_size, measured)
+                })
             })
             .collect::<Vec<_>>();
         let total = pieces
             .iter()
-            .map(|(range, run, font_size)| measure(range.clone(), *run, *font_size))
+            .map(|(_, _, _, advances)| advances.last().map_or(px(0.), |(_, x)| *x))
             .fold(px(0.), |sum, value| sum + value);
         if x > px(0.) && x + total > width {
             result.line_starts.push(word_start);
             x = px(0.);
             y += line_height;
         }
-        for (range, run, font_size) in pieces {
+        for (range, run, font_size, advances) in pieces {
             let mut start = range.start;
-            while start < range.end {
-                let full_width = measure(start..range.end, run, font_size);
-                let (end, measured) = if full_width <= width - x {
-                    (range.end, full_width)
-                } else {
-                    // Split an overlong token at grapheme boundaries, keeping UTF-8,
-                    // selection and keyboard navigation in the original byte space.
-                    let ends = text[start..range.end]
-                        .grapheme_indices(true)
-                        .map(|(index, grapheme)| start + index + grapheme.len())
-                        .collect::<Vec<_>>();
-                    let mut low = 0;
-                    let mut high = ends.len();
-                    while low < high {
-                        let mid = (low + high) / 2;
-                        if measure(start..ends[mid], run, font_size) <= width - x {
-                            low = mid + 1;
-                        } else {
-                            high = mid;
-                        }
-                    }
-                    let end = ends[low.saturating_sub(1)];
-                    (end, measure(start..end, run, font_size))
-                };
+            let mut first = 0;
+            let mut consumed = px(0.);
+            while first < advances.len() {
+                // Shape the piece once. Break by cumulative grapheme advances rather
+                // than repeatedly shaping the remaining suffix on every line.
+                let fitting = advances[first..]
+                    .partition_point(|(_, advance)| *advance - consumed <= width - x);
+                let last = first + fitting.max(1) - 1;
+                let (end, advance) = advances[last];
+                let measured = advance - consumed;
                 result.spans.push(Span {
                     range: start..end,
                     run,
@@ -131,6 +120,8 @@ fn plan(
                 x += measured;
                 result.width = result.width.max(x);
                 start = end;
+                first = last + 1;
+                consumed = advance;
                 if start < range.end {
                     result.line_starts.push(start);
                     x = px(0.);
@@ -179,7 +170,27 @@ impl MixedLayout {
             body_size,
             line_height,
             wrap_width,
-            |range, run, size| shape(range, run, size).width,
+            |range, run, size| {
+                let line = shape(range.clone(), run, size);
+                let mut glyphs = line
+                    .runs
+                    .iter()
+                    .flat_map(|run| run.glyphs.iter())
+                    .peekable();
+                text[range.clone()]
+                    .grapheme_indices(true)
+                    .map(|(offset, grapheme)| {
+                        let end = offset + grapheme.len();
+                        // x_for_index scans from the first glyph. Walk forward once
+                        // instead, so collecting advances is linear for long tokens.
+                        while glyphs.peek().is_some_and(|glyph| glyph.index < end) {
+                            glyphs.next();
+                        }
+                        let x = glyphs.peek().map_or(line.width, |glyph| glyph.position.x);
+                        (range.start + end, x)
+                    })
+                    .collect()
+            },
         );
         let body_baseline = runs
             .first()
@@ -339,6 +350,42 @@ impl MixedLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn fixed_advances(text: &str, range: Range<usize>, size: Pixels) -> Vec<(usize, Pixels)> {
+        text[range.clone()]
+            .grapheme_indices(true)
+            .enumerate()
+            .map(|(index, (offset, grapheme))| {
+                (
+                    range.start + offset + grapheme.len(),
+                    size * (index + 1) as f32 / 2.,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn long_tokens_are_measured_once_regardless_of_wrapping() {
+        for length in [1000, 2000, 4000, 8000] {
+            let text = "x".repeat(length);
+            let mut measured_bytes = 0;
+            let result = plan(
+                &text,
+                &runs(&[length]),
+                &[0..length],
+                px(14.),
+                px(22.),
+                px(30.),
+                |range, _, size| {
+                    measured_bytes += range.len();
+                    fixed_advances(&text, range, size)
+                },
+            );
+            assert_eq!(measured_bytes, length);
+            assert!(result.line_starts.len() > 100);
+            assert_eq!(result.spans.last().unwrap().range.end, length);
+        }
+    }
+
     fn runs(lengths: &[usize]) -> Vec<TextRun> {
         lengths
             .iter()
@@ -362,7 +409,7 @@ mod tests {
             px(14.),
             px(22.),
             px(200.),
-            |range, _, size| size * text[range].graphemes(true).count() as f32 / 2.,
+            |range, _, size| fixed_advances(text, range, size),
         );
         assert_eq!(
             result.line_starts,
@@ -402,7 +449,7 @@ mod tests {
             px(14.),
             px(22.),
             px(80.),
-            |range, _, size| size * text[range].chars().count() as f32 / 2.,
+            |range, _, size| fixed_advances(text, range, size),
         );
         let copied = result
             .spans

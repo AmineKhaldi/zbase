@@ -193,7 +193,6 @@ impl KeybaseBackend {
             });
         }
         let local_store = Arc::clone(&self.local_store);
-        let search_index = Arc::clone(&self.search_index);
         let pending_outbox_sends = Arc::clone(&self.pending_outbox_sends);
         let shutdown = Arc::clone(&self.listener_shutdown);
         let account_id = self.account_id.clone();
@@ -201,7 +200,6 @@ impl KeybaseBackend {
             run_listener(
                 sender,
                 local_store,
-                search_index,
                 pending_outbox_sends,
                 account_id,
                 shutdown,
@@ -472,7 +470,6 @@ impl ChatBackend for KeybaseBackend {
 
                 if let Some(sender) = self.inbound_sender.clone() {
                     let local_store = Arc::clone(&self.local_store);
-                    let search_index = Arc::clone(&self.search_index);
                     let dedupe_key = format!("load_conversation:{}", conversation_id.0);
                     let sender_for_stats = sender.clone();
                     let queued_at = Instant::now();
@@ -484,7 +481,6 @@ impl ChatBackend for KeybaseBackend {
                                 sender,
                                 conversation,
                                 local_store,
-                                search_index,
                                 queued_at,
                             )
                         },
@@ -606,7 +602,6 @@ impl ChatBackend for KeybaseBackend {
                         let warm_recent_started_at = Instant::now();
                         let _ = warm_recent_conversation_messages_for_thread(
                             &self.local_store,
-                            &self.search_index,
                             &conversation_id,
                             &raw_conversation_id,
                             &path,
@@ -689,7 +684,6 @@ impl ChatBackend for KeybaseBackend {
                     && let Some(sender) = self.inbound_sender.clone()
                 {
                     let local_store = Arc::clone(&self.local_store);
-                    let search_index = Arc::clone(&self.search_index);
                     let conversation_for_backfill = conversation_id.clone();
                     let root_for_backfill = requested_root.clone();
                     let sender_for_stats = sender.clone();
@@ -702,7 +696,6 @@ impl ChatBackend for KeybaseBackend {
                             run_backfill_thread_history(
                                 sender,
                                 local_store,
-                                search_index,
                                 conversation_for_backfill,
                                 root_for_backfill,
                                 raw_conversation_id,
@@ -746,7 +739,6 @@ impl ChatBackend for KeybaseBackend {
                     && let Some(sender) = self.inbound_sender.clone()
                 {
                     let local_store = Arc::clone(&self.local_store);
-                    let search_index = Arc::clone(&self.search_index);
                     let conversation_id_for_fetch = conversation_id.clone();
                     let before_id_for_fetch = before_id.clone();
                     let sender_for_stats = sender.clone();
@@ -759,7 +751,6 @@ impl ChatBackend for KeybaseBackend {
                             run_load_older_messages(
                                 sender,
                                 local_store,
-                                search_index,
                                 conversation_id_for_fetch,
                                 before_id_for_fetch,
                                 raw_conversation_id,
@@ -832,7 +823,6 @@ impl ChatBackend for KeybaseBackend {
                             ingest_message_record(
                                 self.inbound_sender.as_ref(),
                                 &self.local_store,
-                                &self.search_index,
                                 &mut message,
                             );
                             hydrated.push(message);
@@ -957,7 +947,6 @@ impl ChatBackend for KeybaseBackend {
                             ingest_message_record(
                                 self.inbound_sender.as_ref(),
                                 &self.local_store,
-                                &self.search_index,
                                 &mut message,
                             );
                             match compare_message_ids(&message.id, &target_id) {
@@ -1992,7 +1981,6 @@ fn reconnect_delay(attempt: u32) -> Duration {
 fn run_listener(
     sender: Sender<BackendEvent>,
     local_store: Arc<LocalStore>,
-    search_index: Arc<SearchIndex>,
     pending_outbox_sends: Arc<Mutex<HashMap<String, PendingSendMeta>>>,
     account_id: AccountId,
     shutdown: Arc<AtomicBool>,
@@ -2011,7 +1999,6 @@ fn run_listener(
     runtime.block_on(listen_with_reconnect(
         &sender,
         &local_store,
-        &search_index,
         &pending_outbox_sends,
         &account_id,
         &shutdown,
@@ -2022,7 +2009,6 @@ fn run_listener(
 async fn listen_with_reconnect(
     sender: &Sender<BackendEvent>,
     local_store: &Arc<LocalStore>,
-    search_index: &Arc<SearchIndex>,
     pending_outbox_sends: &Arc<Mutex<HashMap<String, PendingSendMeta>>>,
     account_id: &AccountId,
     shutdown: &AtomicBool,
@@ -2037,7 +2023,6 @@ async fn listen_with_reconnect(
                     &path,
                     sender,
                     local_store,
-                    search_index,
                     pending_outbox_sends,
                     account_id,
                     shutdown,
@@ -2078,7 +2063,6 @@ async fn run_listener_session(
     path: &Path,
     sender: &Sender<BackendEvent>,
     local_store: &Arc<LocalStore>,
-    search_index: &Arc<SearchIndex>,
     pending_outbox_sends: &Arc<Mutex<HashMap<String, PendingSendMeta>>>,
     account_id: &AccountId,
     shutdown: &AtomicBool,
@@ -2279,7 +2263,6 @@ async fn run_listener_session(
                 ingest_message_record(
                     Some(&sender),
                     &local_store,
-                    &search_index,
                     &mut live_message,
                 );
                 spawn_live_attachment_hydration(&sender, &local_store, &live_message);
@@ -4664,7 +4647,6 @@ fn run_load_conversation(
     sender: Sender<BackendEvent>,
     conversation_ref: ProviderConversationRef,
     local_store: Arc<LocalStore>,
-    search_index: Arc<SearchIndex>,
     queued_at: Instant,
 ) {
     let queue_wait_ms = queued_at.elapsed().as_millis();
@@ -4847,7 +4829,6 @@ fn run_load_conversation(
                 ingest_message_record_for_timeline_load(
                     Some(&sender),
                     &local_store,
-                    &search_index,
                     &mut message,
                 );
                 timeline_messages.push(message);
@@ -5124,7 +5105,6 @@ fn run_hydrate_timeline_attachments(
 fn run_load_older_messages(
     sender: Sender<BackendEvent>,
     local_store: Arc<LocalStore>,
-    search_index: Arc<SearchIndex>,
     conversation_id: ConversationId,
     before_id: MessageId,
     raw_conversation_id: Vec<u8>,
@@ -5190,7 +5170,7 @@ fn run_load_older_messages(
             let mut hydrated = Vec::with_capacity(fetched_messages.len());
             for mut message in fetched_messages {
                 message.reactions = domain_message_reactions(loaded_reactions.get(&message.id));
-                ingest_message_record(Some(&sender), &local_store, &search_index, &mut message);
+                ingest_message_record(Some(&sender), &local_store, &mut message);
                 hydrated.push(message);
             }
             messages = hydrated;
@@ -5234,7 +5214,6 @@ fn run_load_older_messages(
 fn run_backfill_thread_history(
     sender: Sender<BackendEvent>,
     local_store: Arc<LocalStore>,
-    search_index: Arc<SearchIndex>,
     conversation_id: ConversationId,
     requested_root_id: MessageId,
     raw_conversation_id: Vec<u8>,
@@ -5310,7 +5289,7 @@ fn run_backfill_thread_history(
             .unwrap_or_default();
         for mut message in page.messages {
             message.reactions = domain_message_reactions(loaded_reactions.get(&message.id));
-            ingest_message_record(Some(&sender), &local_store, &search_index, &mut message);
+            ingest_message_record(Some(&sender), &local_store, &mut message);
         }
 
         let Some(oldest_id) = oldest_id else {
@@ -5405,7 +5384,7 @@ fn run_backfill_thread_history(
             .unwrap_or_default();
         for mut message in page_messages {
             message.reactions = domain_message_reactions(loaded_reactions.get(&message.id));
-            ingest_message_record(Some(&sender), &local_store, &search_index, &mut message);
+            ingest_message_record(Some(&sender), &local_store, &mut message);
         }
 
         let Some(newest_id) = newest_id else {
@@ -5995,7 +5974,6 @@ fn reply_ancestor_chain_cached(
 fn maybe_schedule_reply_ancestor_backfill(
     sender: Option<Sender<BackendEvent>>,
     local_store: Arc<LocalStore>,
-    search_index: Arc<SearchIndex>,
     message: &MessageRecord,
 ) {
     let Some(reply_to) = message.reply_to.clone() else {
@@ -6026,7 +6004,6 @@ fn maybe_schedule_reply_ancestor_backfill(
         run_reply_ancestor_backfill(
             sender,
             local_store,
-            search_index,
             conversation_id,
             child_message_id,
             reply_to,
@@ -6046,7 +6023,6 @@ fn maybe_schedule_reply_ancestor_backfill(
 fn run_reply_ancestor_backfill(
     sender: Option<Sender<BackendEvent>>,
     local_store: Arc<LocalStore>,
-    search_index: Arc<SearchIndex>,
     conversation_id: ConversationId,
     child_message_id: MessageId,
     required_parent_id: MessageId,
@@ -6113,7 +6089,7 @@ fn run_reply_ancestor_backfill(
             .unwrap_or_default();
         for mut message in page.messages {
             message.reactions = domain_message_reactions(loaded_reactions.get(&message.id));
-            ingest_message_record(sender.as_ref(), &local_store, &search_index, &mut message);
+            ingest_message_record(sender.as_ref(), &local_store, &mut message);
             if let Some(sender_ref) = sender.as_ref() {
                 let _ = sender_ref.send(BackendEvent::MessageUpserted(message));
             }
@@ -6139,7 +6115,7 @@ fn run_reply_ancestor_backfill(
     if reply_ancestor_chain_cached(&local_store, &conversation_id, &required_parent_id)
         && let Ok(Some(mut child)) = local_store.get_message(&conversation_id, &child_message_id)
     {
-        ingest_message_record(sender.as_ref(), &local_store, &search_index, &mut child);
+        ingest_message_record(sender.as_ref(), &local_store, &mut child);
         if let Some(sender_ref) = sender.as_ref() {
             let _ = sender_ref.send(BackendEvent::MessageUpserted(child));
         }
@@ -6240,7 +6216,6 @@ fn should_replace_duplicate_record(existing: &MessageRecord, incoming: &MessageR
 fn reconcile_descendant_thread_roots(
     sender: Option<&Sender<BackendEvent>>,
     local_store: &Arc<LocalStore>,
-    _search_index: &Arc<SearchIndex>,
     conversation_id: &ConversationId,
     ancestor_id: &MessageId,
 ) {
@@ -6276,7 +6251,6 @@ fn reconcile_descendant_thread_roots(
 fn refresh_root_descendant_reply_count(
     sender: Option<&Sender<BackendEvent>>,
     local_store: &Arc<LocalStore>,
-    _search_index: &Arc<SearchIndex>,
     conversation_id: &ConversationId,
     root_id: &MessageId,
 ) {
@@ -6431,7 +6405,6 @@ fn persist_canonical_message(
 fn ingest_message_record(
     sender: Option<&Sender<BackendEvent>>,
     local_store: &Arc<LocalStore>,
-    search_index: &Arc<SearchIndex>,
     message: &mut MessageRecord,
 ) {
     if let Some(sender) = sender {
@@ -6446,13 +6419,11 @@ fn ingest_message_record(
     maybe_schedule_reply_ancestor_backfill(
         sender.cloned(),
         Arc::clone(local_store),
-        Arc::clone(search_index),
         message,
     );
     reconcile_descendant_thread_roots(
         sender,
         local_store,
-        search_index,
         &message.conversation_id,
         &message.id,
     );
@@ -6463,7 +6434,6 @@ fn ingest_message_record(
     refresh_root_descendant_reply_count(
         sender,
         local_store,
-        search_index,
         &message.conversation_id,
         &root_id,
     );
@@ -6472,7 +6442,6 @@ fn ingest_message_record(
 fn ingest_message_record_for_timeline_load(
     sender: Option<&Sender<BackendEvent>>,
     local_store: &Arc<LocalStore>,
-    _search_index: &Arc<SearchIndex>,
     message: &mut MessageRecord,
 ) {
     // Keep conversation-open latency low by deferring expensive reply-graph repair
@@ -6549,7 +6518,6 @@ fn rebuild_thread_index_from_cached_messages(
 
 fn warm_recent_conversation_messages_for_thread(
     local_store: &Arc<LocalStore>,
-    search_index: &Arc<SearchIndex>,
     conversation_id: &ConversationId,
     raw_conversation_id: &[u8],
     socket_path: &Path,
@@ -6581,7 +6549,7 @@ fn warm_recent_conversation_messages_for_thread(
         .unwrap_or_default();
     for mut message in page.messages {
         message.reactions = domain_message_reactions(loaded_reactions.get(&message.id));
-        ingest_message_record(None, local_store, search_index, &mut message);
+        ingest_message_record(None, local_store, &mut message);
     }
 
     Ok(())
@@ -16247,7 +16215,6 @@ mod tests {
                 }
             });
             let store = Arc::new(LocalStore::open_at(path.join("store")).unwrap());
-            let index = Arc::new(SearchIndex::open_at(path.join("index")).unwrap());
             let pending = Arc::new(Mutex::new(HashMap::new()));
             let account = AccountId::new("test-account");
             let shutdown = Arc::new(AtomicBool::new(false));
@@ -16285,7 +16252,6 @@ mod tests {
                 listen_with_reconnect(
                     &sender,
                     &store,
-                    &index,
                     &pending,
                     &account,
                     &shutdown,
@@ -16332,13 +16298,11 @@ mod tests {
                         .unwrap();
                 });
                 let store = Arc::new(LocalStore::open_at(path.join("store")).unwrap());
-                let index = Arc::new(SearchIndex::open_at(path.join("index")).unwrap());
                 let (sender, receiver) = mpsc::channel();
                 let result = run_listener_session(
                     &socket,
                     &sender,
                     &store,
-                    &index,
                     &Arc::new(Mutex::new(HashMap::new())),
                     &AccountId::new("test-account"),
                     &AtomicBool::new(false),
