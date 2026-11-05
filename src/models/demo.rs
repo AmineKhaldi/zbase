@@ -225,6 +225,8 @@ impl AppModels {
                 right_pane: RightPaneMode::Thread,
             },
             sidebar: SidebarModel {
+                mode: Default::default(),
+                recent_rows: Vec::new(),
                 sections: vec![
                     SidebarSection {
                         id: SidebarSectionId::new("team_acme"),

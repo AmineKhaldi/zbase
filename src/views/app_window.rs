@@ -28,6 +28,8 @@ use crate::{
         notifications_model::ToastAction,
         profile_panel_model::SocialTab,
         quick_switcher_model::QuickSwitcherResultKind,
+        recent_sidebar::build_recent_rows,
+        settings_model::SidebarMode,
         sidebar_model::{SidebarAvatar, SidebarModel, team_avatar_key},
         timeline_model::TeamAuthorRole,
     },
@@ -73,7 +75,7 @@ use gpui::{
     ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement, PathPromptOptions, Render, RenderImage, ScrollDelta, ScrollHandle,
     ScrollWheelEvent, StatefulInteractiveElement, StyleRefinement, Styled, Subscription,
-    WeakEntity, Window, canvas, div, px, rgb,
+    UniformListScrollHandle, WeakEntity, Window, canvas, div, px, rgb,
 };
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -318,6 +320,7 @@ pub struct AppWindow {
     splash_boot_ready: bool,
     pending_file_upload_caption_focus: bool,
     sidebar_scroll_handle: ScrollHandle,
+    sidebar_recent_scroll: UniformListScrollHandle,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -383,6 +386,7 @@ struct CachedSidebarView {
     state: SidebarViewState,
     hovered_row: Option<String>,
     scroll_handle: ScrollHandle,
+    recent_scroll: UniformListScrollHandle,
 }
 
 #[derive(Clone)]
@@ -468,12 +472,17 @@ impl BenchScriptConfig {
 }
 
 impl CachedSidebarView {
-    fn new(owner: WeakEntity<AppWindow>, state: SidebarViewState) -> Self {
+    fn new(
+        owner: WeakEntity<AppWindow>,
+        state: SidebarViewState,
+        recent_scroll: UniformListScrollHandle,
+    ) -> Self {
         Self {
             owner,
             state,
             hovered_row: None,
             scroll_handle: ScrollHandle::new(),
+            recent_scroll,
         }
     }
 
@@ -498,6 +507,7 @@ impl Render for CachedSidebarView {
                 &self.state.current_route,
                 self.hovered_row.as_deref(),
                 &self.scroll_handle,
+                &self.recent_scroll,
                 cx,
             )
         })
@@ -505,6 +515,13 @@ impl Render for CachedSidebarView {
 }
 
 impl SidebarHost for CachedSidebarView {
+    fn sidebar_set_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>) {
+        let owner = self.owner.clone();
+        cx.defer(move |cx| {
+            let _ = owner.update(cx, |owner, cx| owner.set_sidebar_mode(mode, cx));
+        });
+    }
+
     fn sidebar_toggle_quick_switcher(&mut self, cx: &mut Context<Self>) {
         let owner = self.owner.clone();
         cx.defer(move |cx| {
@@ -599,6 +616,10 @@ impl SidebarHost for CachedSidebarView {
 }
 
 impl SidebarHost for AppWindow {
+    fn sidebar_set_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>) {
+        self.set_sidebar_mode(mode, cx);
+    }
+
     fn sidebar_toggle_quick_switcher(&mut self, cx: &mut Context<Self>) {
         self.toggle_quick_switcher(cx);
     }
@@ -783,6 +804,7 @@ impl AppWindow {
             splash_boot_ready: false,
             pending_file_upload_caption_focus: false,
             sidebar_scroll_handle: ScrollHandle::new(),
+            sidebar_recent_scroll: UniformListScrollHandle::new(),
         }
     }
 
@@ -2690,8 +2712,13 @@ impl AppWindow {
         let sidebar_state = self.sidebar_view_state();
         if self.sidebar_view.is_none() {
             let owner = cx.entity().downgrade();
-            self.sidebar_view =
-                Some(cx.new(|_| CachedSidebarView::new(owner, sidebar_state.clone())));
+            self.sidebar_view = Some(cx.new(|_| {
+                CachedSidebarView::new(
+                    owner,
+                    sidebar_state.clone(),
+                    self.sidebar_recent_scroll.clone(),
+                )
+            }));
         }
         if let Some(sidebar_view) = self.sidebar_view.as_ref() {
             sidebar_view.update(cx, |view, cx| {
@@ -3263,6 +3290,20 @@ impl AppWindow {
         }
         if route_changed {
             self.models.expand_section_for_route(&next_route);
+        }
+
+        self.models.restore_sidebar_mode();
+        if sidebar_sections_changed || workspace_changed || active_workspace_changed {
+            self.models.sidebar.recent_rows = build_recent_rows(
+                &snapshot.workspace.channels,
+                &snapshot.workspace.direct_messages,
+                &self.models.sidebar.sections,
+                &self.models.app.active_workspace_id,
+            );
+        }
+
+        if route_changed {
+            self.reveal_recent_sidebar_route(&next_route);
         }
 
         let sidebar_avatar_sig = sidebar_avatar_inputs_signature(
@@ -5674,6 +5715,26 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         self.dispatch_ui_action(UiAction::ToggleSearchFilter(filter));
+        self.refresh(cx);
+    }
+
+    fn reveal_recent_sidebar_route(&self, route: &Route) {
+        if self.models.sidebar.mode == SidebarMode::Recent
+            && let Some(index) = self
+                .models
+                .sidebar
+                .visible_recent_rows()
+                .position(|recent| &recent.row.route == route)
+        {
+            self.sidebar_recent_scroll
+                .scroll_to_item(index, gpui::ScrollStrategy::Center);
+        }
+    }
+
+    fn set_sidebar_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>) {
+        self.models.set_sidebar_mode(mode);
+        self.reveal_recent_sidebar_route(&self.models.navigation.current);
+        self.persist_settings();
         self.refresh(cx);
     }
 
@@ -8136,6 +8197,9 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         self.models.move_sidebar_highlight(-1);
+        if let Some(route) = self.models.sidebar.highlighted_route.as_ref() {
+            self.reveal_recent_sidebar_route(route);
+        }
         self.refresh(cx);
     }
 
@@ -8146,6 +8210,9 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         self.models.move_sidebar_highlight(1);
+        if let Some(route) = self.models.sidebar.highlighted_route.as_ref() {
+            self.reveal_recent_sidebar_route(route);
+        }
         self.refresh(cx);
     }
 
@@ -8548,6 +8615,7 @@ impl Render for AppWindow {
                                 &self.models.navigation.current,
                                 None,
                                 &self.sidebar_scroll_handle,
+                                &self.sidebar_recent_scroll,
                                 cx,
                             )
                         },
@@ -9141,6 +9209,7 @@ fn mix_sig_conversation_summary(
         },
     );
     mix_sig_str(sig, &summary.topic);
+    mix_sig(sig, summary.last_activity_ms as u64);
     mix_sig(sig, summary.unread_count as u64);
     mix_sig(sig, summary.mention_count as u64);
     mix_sig_bool(sig, summary.muted);

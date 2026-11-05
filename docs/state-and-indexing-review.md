@@ -26,6 +26,12 @@ Team metadata distinguishes simple teams from complex teams. Simple teams join D
 
 Internal Keybase topics, including EMOJI and EMOJICROSS, are excluded from normal conversation ingestion. A metadata-only cache repair records older entries' topic types, hides internal entries without deleting their messages, and prevents late cache snapshots from restoring them. This fixes hidden emoji-support conversations appearing as duplicate DMs.
 
+### Sidebar modes
+
+The Recent / Grouped control preserves the grouped baseline and adds a single activity-sorted list of channels, DMs and simple teams. Recent has no separate Unread section; reading a conversation clears its styling while retaining its row. Stable conversation-ID tie breaking resolves equal timestamps, and incoming/sent activity invalidates the workspace projection even when unread counts do not change. The selected mode is saved per workspace and signed-in username, independently of grouped section order and collapse preferences.
+
+Recent uses compact single-line rows. Complex-team channels show their name first, then a muted shortest unique team suffix; names truncate with an ellipsis and expose the full identity on hover. Team suffixes are calculated across the full inbox, with parent components retained to distinguish collisions. Team icons and DM/group avatars reuse the existing identity sources. A virtualized list renders visible rows only and keeps its own scroll position; keyboard navigation uses the same filtered order and brings its highlighted row into view. This projection reads existing inbox metadata without loading conversation histories or media. Deferred row rendering and tooltips retain the selected theme.
+
 ### Profile refresh and social lists
 
 Cached avatars are published even for accounts whose display name is their username. Missing refresh fields preserve known cached images, stale results cannot replace newer images, and a changed avatar URL invalidates the old local image. Profile summaries and the open profile share avatar enrichment.

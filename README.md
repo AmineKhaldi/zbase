@@ -31,6 +31,7 @@ zBase is a from-scratch replacement for the official Keybase desktop app. It tal
 - Pinned messages per conversation
 
 ### Navigation
+- **Recent / Grouped sidebar** — switch between one activity-sorted list and team/channel groups; the choice is saved per account. Recent keeps read conversations in place and shows shortened team names inline.
 - **Quick Switcher** (`Cmd+K`) — fuzzy search across all conversations, ranked by usage affinity
 - **Find in Chat** (`Cmd+F`) — search within the current conversation with match-by-match navigation
 - **Global Search** (`Cmd+J`) — full-text search across workspaces with filters (by user, channel, has file, has link, mentions me) and highlighted snippets

@@ -1,7 +1,10 @@
+mod recent;
+
 use crate::{
     domain::{conversation::ConversationGroup, ids::SidebarSectionId, route::Route},
     models::{
         app_model::Connectivity,
+        settings_model::SidebarMode,
         sidebar_model::{SidebarAvatar, SidebarModel, SidebarRow, SidebarSection, team_avatar_key},
     },
     views::{
@@ -15,7 +18,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, AppContext, ClickEvent, Context, DragMoveEvent, FontWeight, InteractiveElement,
     IntoElement, MouseMoveEvent, ParentElement, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px, rgb,
+    StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, div, px, rgb,
 };
 use std::collections::HashMap;
 
@@ -41,21 +44,30 @@ impl Render for DragPreview {
 }
 
 /// GPUI supplies the hover delay and removes this tooltip on pointer exit.
-struct SidebarTooltip(String);
+struct SidebarTooltip(String, crate::app::theme::ThemeVariant);
+
+impl SidebarTooltip {
+    fn builder(text: String) -> impl Fn(&mut Window, &mut gpui::App) -> gpui::AnyView + 'static {
+        let theme = crate::views::current_theme();
+        move |_, cx| cx.new(|_| Self(text.clone(), theme)).into()
+    }
+}
 
 impl Render for SidebarTooltip {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .max_w(px(360.))
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .bg(rgb(panel_bg()))
-            .border_1()
-            .border_color(shell_border_strong())
-            .text_xs()
-            .text_color(rgb(text_primary()))
-            .child(self.0.clone())
+        crate::views::with_theme(self.1, || {
+            div()
+                .max_w(px(360.))
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .bg(rgb(panel_bg()))
+                .border_1()
+                .border_color(shell_border_strong())
+                .text_xs()
+                .text_color(rgb(text_primary()))
+                .child(self.0.clone())
+        })
     }
 }
 
@@ -63,6 +75,7 @@ impl Render for SidebarTooltip {
 pub struct Sidebar;
 
 pub trait SidebarHost: Sized + 'static {
+    fn sidebar_set_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>);
     fn sidebar_toggle_quick_switcher(&mut self, cx: &mut Context<Self>);
     fn sidebar_open_new_chat(&mut self, window: &mut Window, cx: &mut Context<Self>);
     fn sidebar_open_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>);
@@ -97,6 +110,7 @@ impl Sidebar {
         current_route: &Route,
         hovered_row: Option<&str>,
         scroll_handle: &ScrollHandle,
+        recent_scroll: &UniformListScrollHandle,
         cx: &mut Context<H>,
     ) -> AnyElement {
         let connectivity_tint = match connectivity {
@@ -122,35 +136,88 @@ impl Sidebar {
             .overflow_hidden()
             .text_color(rgb(text_primary()))
             .child(Self::render_title_bar_row(cx))
-            .child(
-                div()
-                    .flex_1()
-                    .id("sidebar-sections-scroll")
-                    .overflow_y_scroll()
-                    .scrollbar_width(px(8.))
-                    .track_scroll(scroll_handle)
-                    .on_drag_move::<DraggedSection>(move |event, _, _| {
-                        Self::auto_scroll_during_drag(event, &drag_scroll_handle);
-                    })
-                    .pr_2()
-                    .pt_2()
-                    .children(sidebar.sections.iter().map(|section| {
-                        Self::render_section(
-                            section,
-                            &section.rows,
-                            conversation_avatars,
-                            current_route,
-                            hovered_row,
-                            cx,
-                        )
-                    })),
-            )
+            .child(Self::render_mode_switch(sidebar.mode, cx))
+            .when(sidebar.mode == SidebarMode::Recent, |root| {
+                root.child(recent::render(
+                    sidebar,
+                    conversation_avatars,
+                    current_route,
+                    hovered_row,
+                    recent_scroll,
+                    cx,
+                ))
+            })
+            .when(sidebar.mode == SidebarMode::Grouped, |root| {
+                root.child(
+                    div()
+                        .flex_1()
+                        .id("sidebar-sections-scroll")
+                        .overflow_y_scroll()
+                        .scrollbar_width(px(8.))
+                        .track_scroll(scroll_handle)
+                        .on_drag_move::<DraggedSection>(move |event, _, _| {
+                            Self::auto_scroll_during_drag(event, &drag_scroll_handle);
+                        })
+                        .pr_2()
+                        .pt_2()
+                        .children(sidebar.sections.iter().map(|section| {
+                            Self::render_section(
+                                section,
+                                &section.rows,
+                                conversation_avatars,
+                                current_route,
+                                hovered_row,
+                                cx,
+                            )
+                        })),
+                )
+            })
             .child(Self::render_profile_footer(
                 connectivity_tint,
                 current_user_display_name,
                 current_user_avatar_asset,
                 cx,
             ))
+            .into_any_element()
+    }
+
+    fn render_mode_switch<H: SidebarHost>(mode: SidebarMode, cx: &mut Context<H>) -> AnyElement {
+        div()
+            .flex()
+            .mx_1()
+            .mt_1()
+            .mb_1()
+            .p(px(2.))
+            .rounded_md()
+            .bg(subtle_surface())
+            .children(
+                [
+                    (SidebarMode::Recent, "Recent"),
+                    (SidebarMode::Grouped, "Grouped"),
+                ]
+                .map(|(value, label)| {
+                    div()
+                        .id(SharedString::from(format!("sidebar-mode-{label}")))
+                        .flex_1()
+                        .py_1()
+                        .text_xs()
+                        .text_center()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_color(rgb(if value == mode {
+                            text_primary()
+                        } else {
+                            text_secondary()
+                        }))
+                        .when(value == mode, |button| {
+                            button.bg(rgb(panel_bg())).font_weight(FontWeight::SEMIBOLD)
+                        })
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.sidebar_set_mode(value, cx)),
+                        )
+                        .child(label)
+                }),
+            )
             .into_any_element()
     }
 
@@ -432,7 +499,7 @@ impl Sidebar {
             .pb_0p5()
             .text_xs()
             .text_color(rgb(text_secondary()))
-            .tooltip(move |_, cx| cx.new(|_| SidebarTooltip(tooltip.clone())).into())
+            .tooltip(SidebarTooltip::builder(tooltip))
             .child(Avatar::render_square(
                 &team.display_name,
                 asset,
@@ -506,7 +573,7 @@ impl Sidebar {
                     cx,
                 );
             }))
-            .tooltip(move |_, cx| cx.new(|_| SidebarTooltip(tooltip.clone())).into())
+            .tooltip(SidebarTooltip::builder(tooltip))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.sidebar_hide_hover_tooltip(cx);
                 this.sidebar_navigate_to(route.clone(), window, cx);

@@ -21,6 +21,8 @@ pub struct SidebarSection {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SidebarModel {
     pub sections: Vec<SidebarSection>,
+    pub recent_rows: Vec<super::recent_sidebar::RecentSidebarRow>,
+    pub mode: super::settings_model::SidebarMode,
     pub filter: String,
     pub highlighted_route: Option<Route>,
     pub width_px: f32,
@@ -57,6 +59,18 @@ pub fn team_avatar_key(team_id: &str) -> String {
 }
 
 impl SidebarModel {
+    pub fn visible_recent_rows(
+        &self,
+    ) -> impl Iterator<Item = &super::recent_sidebar::RecentSidebarRow> {
+        let filter = self.filter.trim().to_lowercase();
+        self.recent_rows.iter().filter(move |recent| {
+            filter.is_empty()
+                || recent.row.full_label().to_lowercase().contains(&filter)
+                || recent.secondary.to_lowercase().contains(&filter)
+                || recent.row.route.label().to_lowercase().contains(&filter)
+        })
+    }
+
     /// Keep the flat navigation order identical to the grouped visual order. Stable
     /// sorting preserves the reducer's recency order within each team and for DMs.
     pub fn order_unread_groups(&mut self) {
@@ -128,6 +142,8 @@ mod tests {
         let mut retained = row("alpha-retained", Some("alpha"));
         retained.unread_count = 0;
         let mut sidebar = SidebarModel {
+            mode: Default::default(),
+            recent_rows: Vec::new(),
             sections: vec![
                 SidebarSection {
                     id: SidebarSectionId::new("unread"),

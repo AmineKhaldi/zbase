@@ -14,6 +14,7 @@ pub mod notifications_model;
 pub mod overlay_model;
 pub mod profile_panel_model;
 pub mod quick_switcher_model;
+pub mod recent_sidebar;
 pub mod search_model;
 pub mod settings_model;
 pub mod sidebar_model;
@@ -209,6 +210,8 @@ impl AppModels {
                 right_pane: RightPaneMode::Hidden,
             },
             sidebar: SidebarModel {
+                mode: Default::default(),
+                recent_rows: Vec::new(),
                 sections: vec![],
                 filter: String::new(),
                 highlighted_route: Some(route),
@@ -440,6 +443,33 @@ impl AppModels {
 
     pub fn set_thread_width(&mut self, width_px: f32) {
         self.thread_pane.width_px = width_px.clamp(280.0, 520.0);
+    }
+
+    fn sidebar_mode_key(&self) -> String {
+        match &self.app.current_user_id {
+            Some(user) => format!(
+                "{}:{}",
+                self.app.active_workspace_id.0,
+                user.0.to_ascii_lowercase()
+            ),
+            None => self.app.active_workspace_id.0.clone(),
+        }
+    }
+
+    pub fn set_sidebar_mode(&mut self, mode: settings_model::SidebarMode) {
+        self.settings
+            .sidebar_modes
+            .insert(self.sidebar_mode_key(), mode);
+        self.sidebar.mode = mode;
+    }
+
+    pub fn restore_sidebar_mode(&mut self) {
+        self.sidebar.mode = self
+            .settings
+            .sidebar_modes
+            .get(&self.sidebar_mode_key())
+            .copied()
+            .unwrap_or_default();
     }
 
     pub fn set_sidebar_width(&mut self, width_px: f32) {
@@ -2011,6 +2041,12 @@ impl AppModels {
                 }
             }
         }
+        for recent in &mut self.sidebar.recent_rows {
+            if conversation_id_for_route(&recent.row.route).as_ref() == Some(conversation_id) {
+                recent.row.unread_count = 0;
+                recent.row.mention_count = 0;
+            }
+        }
     }
 
     fn refresh_notification_counts(&mut self) {
@@ -2063,11 +2099,18 @@ impl AppModels {
 
     fn visible_sidebar_routes(&self) -> Vec<Route> {
         let filter = self.sidebar.filter.trim().to_lowercase();
+        if self.sidebar.mode == settings_model::SidebarMode::Recent {
+            return self
+                .sidebar
+                .visible_recent_rows()
+                .map(|recent| recent.row.route.clone())
+                .collect();
+        }
         self.sidebar
             .sections
             .iter()
             .filter(|section| !section.collapsed)
-            .flat_map(|section| section.rows.iter())
+            .flat_map(|section| &section.rows)
             .filter(|row| {
                 filter.is_empty()
                     || row.full_label().to_lowercase().contains(&filter)
