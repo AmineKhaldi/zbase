@@ -47,6 +47,8 @@ mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
 cp "${BIN_PATH}" "${MACOS_DIR}/zbase"
 chmod +x "${MACOS_DIR}/zbase"
 cp "${ICON_PATH}" "${RESOURCES_DIR}/AppIcon.icns"
+mkdir -p "${RESOURCES_DIR}/Licenses"
+cp "${ROOT_DIR}/assets/emoji/LICENSE.keybase" "${RESOURCES_DIR}/Licenses/Keybase.txt"
 
 cat > "${PLIST_PATH}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

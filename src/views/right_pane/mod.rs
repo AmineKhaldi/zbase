@@ -1,3 +1,4 @@
+use crate::util::emoji_aliases::standard_emoji_for_alias;
 use crate::{
     domain::{
         affinity::Affinity,
@@ -51,7 +52,7 @@ use gpui::{
 };
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, OnceLock},
+    sync::Arc,
 };
 
 #[derive(Default)]
@@ -2760,57 +2761,6 @@ fn custom_emoji_size_px(emoji_only: bool) -> f32 {
     } else {
         CUSTOM_EMOJI_INLINE_SIZE_PX
     }
-}
-
-fn standard_emoji_for_alias(alias: &str) -> Option<&'static str> {
-    let normalized = normalize_emoji_alias(alias);
-    if normalized.is_empty() {
-        return None;
-    }
-    static LOOKUP: OnceLock<HashMap<String, &'static str>> = OnceLock::new();
-    let lookup = LOOKUP.get_or_init(|| {
-        let mut map = HashMap::new();
-        for emoji in emojis::iter() {
-            map.entry(normalize_emoji_alias(emoji.name()))
-                .or_insert(emoji.as_str());
-            for shortcode in emoji.shortcodes() {
-                map.entry(normalize_emoji_alias(shortcode))
-                    .or_insert(emoji.as_str());
-            }
-        }
-        map
-    });
-    lookup.get(&normalized).copied()
-}
-
-fn normalize_emoji_alias(alias: &str) -> String {
-    let mut out = String::with_capacity(alias.len());
-    let mut previous_underscore = false;
-    for ch in alias.trim().trim_matches(':').chars() {
-        let normalized = if ch.is_ascii_alphanumeric() {
-            previous_underscore = false;
-            Some(ch.to_ascii_lowercase())
-        } else if ch == '+' {
-            previous_underscore = false;
-            Some('+')
-        } else if matches!(ch, '_' | '-' | ' ') {
-            if previous_underscore {
-                None
-            } else {
-                previous_underscore = true;
-                Some('_')
-            }
-        } else {
-            None
-        };
-        if let Some(normalized) = normalized {
-            out.push(normalized);
-        }
-    }
-    while out.ends_with('_') {
-        out.pop();
-    }
-    out
 }
 
 fn build_thread_message_rows(

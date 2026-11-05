@@ -1,3 +1,4 @@
+use crate::util::emoji_aliases::{normalize_emoji_alias, standard_emoji_for_alias};
 mod reply_context;
 use reply_context::cached_reply_context;
 use super::quick_react_placement::{BUTTON_SIZE, HoverGeometry, toolbar_size};
@@ -41,11 +42,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, StyledImage, Window, deferred, div, img, list, px,
     relative, rgb,
 };
-use std::{
-    borrow::Cow,
-    collections::HashMap,
-    sync::{Arc, OnceLock},
-};
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 #[derive(Clone)]
 struct HoveredMessageBoundsReporter {
@@ -3295,57 +3292,6 @@ fn inline_text_segments(text: &str) -> Vec<InlineTextSegment> {
     segments
 }
 
-fn standard_emoji_for_alias(alias: &str) -> Option<&'static str> {
-    let normalized = normalize_emoji_alias(alias);
-    if normalized.is_empty() {
-        return None;
-    }
-    static LOOKUP: OnceLock<HashMap<String, &'static str>> = OnceLock::new();
-    let lookup = LOOKUP.get_or_init(|| {
-        let mut map = HashMap::new();
-        for emoji in emojis::iter() {
-            map.entry(normalize_emoji_alias(emoji.name()))
-                .or_insert(emoji.as_str());
-            for shortcode in emoji.shortcodes() {
-                map.entry(normalize_emoji_alias(shortcode))
-                    .or_insert(emoji.as_str());
-            }
-        }
-        map
-    });
-    lookup.get(&normalized).copied()
-}
-
-fn normalize_emoji_alias(alias: &str) -> String {
-    let mut out = String::with_capacity(alias.len());
-    let mut previous_underscore = false;
-    for ch in alias.trim().trim_matches(':').chars() {
-        let normalized = if ch.is_ascii_alphanumeric() {
-            previous_underscore = false;
-            Some(ch.to_ascii_lowercase())
-        } else if ch == '+' {
-            previous_underscore = false;
-            Some('+')
-        } else if matches!(ch, '_' | '-' | ' ') {
-            if previous_underscore {
-                None
-            } else {
-                previous_underscore = true;
-                Some('_')
-            }
-        } else if previous_underscore {
-            None
-        } else {
-            previous_underscore = true;
-            Some('_')
-        };
-        if let Some(value) = normalized {
-            out.push(value);
-        }
-    }
-    out.trim_matches('_').to_string()
-}
-
 fn reaction_hover_text(reaction: &MessageReactionRender) -> Option<String> {
     if reaction.actors.is_empty() {
         return None;
@@ -3467,6 +3413,29 @@ fn has_prefix(chars: &[char], start: usize, prefix: &[char]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keybase_alert_emoji_renders_without_custom_assets_and_preserves_custom_precedence() {
+        let mut index = HashMap::new();
+        let sources = HashMap::new();
+        assert_eq!(
+            TimelineList::inline_emoji_text("large_green_circle", None, &index, &sources),
+            "🟢"
+        );
+        index.insert(
+            "large_green_circle".into(),
+            InlineEmojiRender {
+                alias: "large_green_circle".into(),
+                unicode: Some("✅".into()),
+                asset_path: None,
+            },
+        );
+        assert_eq!(
+            TimelineList::inline_emoji_text("large_green_circle", None, &index, &sources),
+            "✅",
+            "conversation-specific emoji still take precedence over standard aliases"
+        );
+    }
 
     #[test]
     fn standard_emoji_alias_resolves_cldr_name_variant() {

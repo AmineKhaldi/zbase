@@ -1433,7 +1433,9 @@ impl AppModels {
             if builtin.contains(alias) {
                 return true;
             }
-            if let Some(stock) = emojis::get_by_shortcode(&lower) {
+            if let Some(stock) =
+                crate::util::emoji_aliases::standard_emoji_for_alias(&lower).and_then(emojis::get)
+            {
                 builtin.contains(&stock.to_string())
             } else {
                 false
@@ -1456,7 +1458,9 @@ impl AppModels {
                         unicode: render.unicode.clone(),
                         asset_path: render.asset_path.clone(),
                     })
-                } else if let Some(stock) = emojis::get_by_shortcode(bare) {
+                } else if let Some(stock) =
+                    crate::util::emoji_aliases::standard_emoji_for_alias(bare).and_then(emojis::get)
+                {
                     Some(QuickReactRecent {
                         alias: bare.to_string(),
                         unicode: Some(stock.to_string()),

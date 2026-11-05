@@ -537,7 +537,9 @@ fn resolve_frequent_items(
             items.push(custom.clone());
             continue;
         }
-        if let Some(stock) = emojis::get_by_shortcode(&key) {
+        if let Some(stock) =
+            crate::util::emoji_aliases::standard_emoji_for_alias(&key).and_then(emojis::get)
+        {
             items.push(EmojiPickerItem::Stock(stock));
         }
     }

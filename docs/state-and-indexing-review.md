@@ -36,7 +36,7 @@ Social-list loading and failure states are keyed by user and list type. A Follow
 
 Production view models start empty and project canonical store data. Navigation clears transient state and never fills loading gaps with sample messages, typing indicators, search results, or participants. Fixture constructors and synthetic timeline inflation compile only for tests or the explicit `demo-fixtures` feature; runtime demo mode also requires backend isolation and a dedicated data directory.
 
-Dark mode uses Keybase's neutral surfaces and semantic colors. Selectable text captures link and selection colors when configured, so deferred rendering keeps the parent theme. The emoji picker uses an opaque panel background.
+Dark mode uses Keybase's neutral surfaces and semantic colors. Selectable text captures link and selection colors when configured, so deferred rendering keeps the parent theme. The emoji picker uses an opaque panel background. A shared standard-emoji resolver includes Keybase’s alias table alongside library shortcodes and CLDR names, so aliases such as :large_green_circle: resolve consistently in chat, threads, reactions, and recent emoji. Conversation-scoped custom emoji retain priority. The generated alias data includes provenance, a regeneration script, and the upstream license shipped in macOS bundles.
 
 ### Message and attachment consistency
 
@@ -82,7 +82,7 @@ Thread replies retain their message text and link interactions in the main chat.
 
 ## Validation
 
-The latest full run passed all 252 tests: 250 app tests and 2 protocol inventory tests. One opt-in live test is ignored by default. The suite runs with:
+The latest full run passed all 255 tests: 253 app tests and 2 protocol inventory tests. One opt-in live test is ignored by default. The suite runs with:
 
 ```sh
 cargo test --all-targets --features gpui/runtime_shaders
