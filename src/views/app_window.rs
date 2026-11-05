@@ -2785,15 +2785,14 @@ impl AppWindow {
         is_list_near_top(&self.timeline_list_state)
     }
 
-    pub(crate) fn anchor_timeline_for_viewport_resize(&self, next_height: gpui::Pixels) {
+    pub(crate) fn anchor_timeline_before_layout(&self) {
         let previous_height = self.timeline_list_state.viewport_bounds().size.height;
         let explicit_scroll_pending = self.jump_to_message_active
             || self.models.timeline.pending_scroll_target.is_some()
             || self.pending_older_scroll_anchor.is_some()
             || self.suppress_next_timeline_bottom_snap;
-        if crate::views::timeline::viewport_anchor::should_follow_latest(
+        if crate::views::timeline::layout_anchor::should_follow_latest(
             previous_height,
-            next_height,
             self.timeline_is_near_bottom(),
             explicit_scroll_pending,
         ) {

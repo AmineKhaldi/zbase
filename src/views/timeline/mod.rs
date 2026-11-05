@@ -1,4 +1,4 @@
-pub(crate) mod viewport_anchor;
+pub(crate) mod layout_anchor;
 use crate::util::emoji_aliases::{normalize_emoji_alias, standard_emoji_for_alias};
 mod reply_context;
 use reply_context::cached_reply_context;
@@ -269,13 +269,14 @@ impl TimelineList {
                     .relative()
                     .size_full()
                     .min_h(px(0.))
-                    // This must prepaint before the list, while its bounds and
-                    // bottom-distance still describe the previous viewport.
+                    // Anchor before the list remeasures rows, while bottom-distance
+                    // still describes the previous layout. This also covers async
+                    // preview/image growth with an unchanged viewport.
                     .child(
                         canvas(
-                            move |bounds, _, cx| {
+                            move |_, _, cx| {
                                 let _ = owner.update(cx, |this, _| {
-                                    this.anchor_timeline_for_viewport_resize(bounds.size.height);
+                                    this.anchor_timeline_before_layout();
                                 });
                             },
                             |_, _, _, _| (),
