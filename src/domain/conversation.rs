@@ -65,6 +65,16 @@ pub struct ConversationGroup {
 }
 
 impl ConversationSummary {
+    /// Keybase only supports leaving individual non-general channels in big teams.
+    pub fn can_leave_channel(&self) -> bool {
+        self.kind == ConversationKind::Channel
+            && !self.title.eq_ignore_ascii_case("general")
+            && self
+                .group
+                .as_ref()
+                .is_some_and(|group| group.team_type == ConversationTeamType::Complex)
+    }
+
     pub fn compare_recency(&self, other: &Self) -> std::cmp::Ordering {
         other
             .last_activity_ms

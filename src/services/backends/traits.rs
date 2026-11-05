@@ -204,6 +204,11 @@ pub enum RoutedBackendCommand {
         conversation: ProviderConversationRef,
         workspace_id: WorkspaceId,
     },
+    LeaveChannel {
+        account_id: AccountId,
+        conversation: ProviderConversationRef,
+        workspace_id: WorkspaceId,
+    },
 }
 
 pub trait ChatBackend: Send {

@@ -1,3 +1,5 @@
+mod channel_membership;
+
 use crate::domain::{
     affinity::Affinity,
     attachment::{
@@ -47,6 +49,9 @@ pub fn reduce(state: &mut UiState, event: AppEvent) -> ReducerOutput {
 
 fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
     match action {
+        UiAction::LeaveChannel { conversation_id } => {
+            channel_membership::request_leave(state, conversation_id)
+        }
         UiAction::StartApp => {
             state.app.boot_phase = BootPhase::HydratingLocalState;
             ReducerOutput {
@@ -771,7 +776,11 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             );
 
             if initialize_selection {
-                if let Some(conversation_id) = payload.selected_conversation_id.clone() {
+                if let Some(conversation_id) = payload
+                    .selected_conversation_id
+                    .clone()
+                    .filter(|id| !state.workspace.left_conversation_ids.contains(id))
+                {
                     state.timeline.conversation_id = Some(conversation_id.clone());
                     if let Some(route) = route_for_conversation_id(
                         &conversation_id,
@@ -1576,7 +1585,20 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             );
         }
         BackendEvent::ChannelResolveFailed { .. } => {}
-        BackendEvent::ChannelJoined { .. } => {}
+        BackendEvent::ChannelLeft {
+            workspace_id,
+            conversation_id,
+        } => {
+            return channel_membership::channel_left(state, workspace_id, conversation_id);
+        }
+        BackendEvent::ChannelJoined {
+            conversation_id, ..
+        } => {
+            state
+                .workspace
+                .left_conversation_ids
+                .remove(&conversation_id);
+        }
         BackendEvent::ConversationCreated {
             op_id: _,
             workspace_id,
@@ -1663,6 +1685,16 @@ fn reduce_command_failure(
 ) -> ReducerOutput {
     let mut effects = Vec::new();
     match command {
+        BackendCommand::LeaveChannel {
+            conversation_id, ..
+        } => {
+            state.workspace.leave_channel_errors
+                .insert(conversation_id.clone(), error.clone());
+            state
+                .workspace
+                .leaving_conversation_ids
+                .remove(&conversation_id);
+        }
         BackendCommand::SendMessage {
             client_message_id, ..
         }
@@ -2495,7 +2527,9 @@ fn merge_workspace_conversations(
         .chain(channels)
         .chain(direct_messages)
     {
-        if workspace.excluded_conversation_ids.contains(&summary.id) {
+        if workspace.excluded_conversation_ids.contains(&summary.id)
+            || workspace.left_conversation_ids.contains(&summary.id)
+        {
             continue;
         }
         if let Some(index) = index_by_id.get(&summary.id).copied() {

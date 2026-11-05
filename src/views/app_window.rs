@@ -3200,6 +3200,11 @@ impl AppWindow {
             .unwrap_or_else(|| self.models.navigation.current.clone());
         let route_changed = self.models.navigation.current != next_route;
         if route_changed {
+            if conversation_id_from_navigated_route(&self.models.navigation.current)
+                != conversation_id_from_navigated_route(&next_route)
+            {
+                self.models.navigation.right_pane = RightPaneMode::Hidden;
+            }
             self.models.navigation.current = next_route.clone();
         }
 
@@ -3720,14 +3725,30 @@ impl AppWindow {
             .as_ref()
             .filter(|conversation_id| **conversation_id == self.models.conversation.summary.id)
             .map(|_| {
-                build_channel_details(
+                let mut details = build_channel_details(
                     &self.models.conversation.summary,
                     self.models.conversation.member_count,
                     self.models.conversation.can_post,
                     self.models.conversation.is_archived,
                     &snapshot.backend,
                     current_user_id.as_ref(),
-                )
+                );
+                details.can_leave &= snapshot
+                    .workspace
+                    .channels
+                    .iter()
+                    .any(|channel| channel.id == details.conversation_id)
+                    && !self
+                        .preview_summaries
+                        .contains_key(&details.conversation_id);
+                details.leave_error = snapshot.workspace.leave_channel_errors
+                    .get(&details.conversation_id)
+                    .cloned();
+                details.is_leaving = snapshot
+                    .workspace
+                    .leaving_conversation_ids
+                    .contains(&details.conversation_id);
+                details
             });
         let has_pinned_banner = self.models.conversation.pinned_message.is_some();
         let pinned_banner_visibility_changed = previous_has_pinned_banner != has_pinned_banner;
@@ -4313,6 +4334,13 @@ impl AppWindow {
         }
     }
 
+    pub(crate) fn leave_current_channel(&mut self, cx: &mut Context<Self>) {
+        self.capture_live_inputs(cx);
+        let conversation_id = self.models.conversation.summary.id.clone();
+        self.dispatch_ui_action(UiAction::LeaveChannel { conversation_id });
+        self.refresh(cx);
+    }
+
     pub(crate) fn join_current_channel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(conversation_id) = conversation_id_from_navigated_route(&self.models.navigation.current)
         else {
@@ -4340,7 +4368,17 @@ impl AppWindow {
             cx.notify();
             return;
         }
-        tracing::info!("join_current_channel: successfully joined {}", conversation_id.0);
+        tracing::info!(
+            "join_current_channel: successfully joined {}",
+            conversation_id.0
+        );
+        self.apply_backend_events_inline(events);
+        self.apply_backend_events_inline(vec![BackendEvent::WorkspaceConversationsExtended {
+            workspace_id: workspace_id.clone(),
+            channels: vec![self.models.conversation.summary.clone()],
+            direct_messages: Vec::new(),
+            conversation_bindings: Vec::new(),
+        }]);
         self.preview_summaries.remove(&conversation_id);
 
         if let Ok(workspace_events) = self
@@ -9046,7 +9084,9 @@ fn build_channel_details(
         can_edit_topic: can_manage_members,
         can_manage_members,
         can_archive: can_manage_members,
-        can_leave: matches!(summary.kind, ConversationKind::Channel),
+        can_leave: summary.can_leave_channel(),
+        is_leaving: false,
+        leave_error: None,
         can_post,
         created_at: None,
         description: (!topic.is_empty()).then_some(topic),

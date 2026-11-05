@@ -159,6 +159,10 @@ pub enum BackendCommand {
         workspace_id: WorkspaceId,
         conversation_id: ConversationId,
     },
+    LeaveChannel {
+        workspace_id: WorkspaceId,
+        conversation_id: ConversationId,
+    },
 }
 
 #[derive(Clone, Debug)]

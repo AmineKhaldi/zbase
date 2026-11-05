@@ -601,6 +601,24 @@ impl BackendRouter {
                     workspace_id,
                 })
             }
+            BackendCommand::LeaveChannel {
+                workspace_id,
+                conversation_id,
+            } => {
+                let binding = self
+                    .conversation_bindings
+                    .get(&conversation_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        BackendError::MissingConversationBinding(conversation_id.0.clone())
+                    })?;
+                let backend = self.backend_for_binding(&binding.backend_id)?;
+                backend.execute(RoutedBackendCommand::LeaveChannel {
+                    account_id: binding.account_id,
+                    conversation: binding.provider_conversation_ref,
+                    workspace_id,
+                })
+            }
         }
     }
 

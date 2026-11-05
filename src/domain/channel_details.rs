@@ -39,6 +39,8 @@ pub struct ChannelDetails {
     pub can_manage_members: bool,
     pub can_archive: bool,
     pub can_leave: bool,
+    pub is_leaving: bool,
+    pub leave_error: Option<String>,
     pub can_post: bool,
     pub created_at: Option<String>,
     pub description: Option<String>,

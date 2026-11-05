@@ -1,3 +1,5 @@
+mod membership;
+
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io,
@@ -143,6 +145,7 @@ pub struct LocalStore {
     db: DBWithThreadMode<MultiThreaded>,
     message_writes: Mutex<MessageWrites>,
     profile_writes: Mutex<()>,
+    membership_writes: Mutex<()>,
     conversation_badges: Mutex<ConversationBadgeState>,
 }
 
@@ -221,6 +224,7 @@ impl LocalStore {
             db,
             message_writes: Mutex::default(),
             profile_writes: Mutex::default(),
+            membership_writes: Mutex::default(),
             conversation_badges: Mutex::default(),
         };
         // Validate before a search observer can snapshot an incompatible cache.
@@ -291,7 +295,7 @@ impl LocalStore {
             .as_ref()
             .map(|value| ConversationId::new(value.clone()))
             .filter(|id| {
-                self.is_internal_conversation(id)
+                self.is_excluded_conversation(id)
                     .is_ok_and(|internal| !internal)
             })
             .or_else(|| ordered_ids.first().cloned());
@@ -779,8 +783,11 @@ impl LocalStore {
         self.db.write(batch).map_err(io::Error::other)
     }
 
-    fn is_internal_conversation(&self, id: &ConversationId) -> io::Result<bool> {
+    fn is_excluded_conversation(&self, id: &ConversationId) -> io::Result<bool> {
         let meta = self.cf(CF_META)?;
+        if self.is_conversation_left(id)? {
+            return Ok(true);
+        }
         Ok(self
             .db
             .get_cf(&meta, format!("topic_type:{}", id.0))
@@ -792,7 +799,7 @@ impl LocalStore {
         &self,
         conversation_id: &ConversationId,
     ) -> io::Result<Option<ConversationSummary>> {
-        if self.is_internal_conversation(conversation_id)? {
+        if self.is_excluded_conversation(conversation_id)? {
             return Ok(None);
         }
         let conversations_cf = self.cf(CF_CONVERSATIONS)?;
@@ -1659,7 +1666,7 @@ impl LocalStore {
             .map_err(io::Error::other)
     }
 
-    fn get_conversation_binding(
+    pub fn get_conversation_binding(
         &self,
         conversation_id: &ConversationId,
     ) -> io::Result<Option<ProviderConversationRef>> {
@@ -1704,7 +1711,7 @@ impl LocalStore {
             }
             let cached: CachedConversationSummary = decode(&value)?;
             let summary = cached.to_domain();
-            if !self.is_internal_conversation(&summary.id)? {
+            if !self.is_excluded_conversation(&summary.id)? {
                 summaries.push(summary);
             }
         }
@@ -2129,7 +2136,7 @@ mod tests {
         path
     }
 
-    fn sample_message(conversation_id: &ConversationId, id: u64) -> MessageRecord {
+    pub(super) fn sample_message(conversation_id: &ConversationId, id: u64) -> MessageRecord {
         MessageRecord {
             id: MessageId::new(id.to_string()),
             conversation_id: conversation_id.clone(),

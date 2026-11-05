@@ -307,6 +307,10 @@ pub enum BackendEvent {
         workspace_id: WorkspaceId,
         conversation_id: ConversationId,
     },
+    ChannelLeft {
+        workspace_id: WorkspaceId,
+        conversation_id: ConversationId,
+    },
     CallUpdated(CallPatch),
     BootStatus(String),
     KeybaseNotifyStub {

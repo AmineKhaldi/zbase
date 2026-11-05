@@ -1411,6 +1411,40 @@ fn render_details_panel(
                         }),
                 ),
         )
+        .when_some(details.and_then(|details| details.leave_error.clone()), |panel, error| {
+            panel.child(div().text_sm().text_color(rgb(danger())).child(error))
+        })
+        .when(details.is_some_and(|details| details.can_leave), |panel| {
+            let leaving = details.is_some_and(|details| details.is_leaving);
+            panel.child(
+                div()
+                    .id("leave-channel")
+                    .flex_shrink_0()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(border()))
+                    .bg(panel_alt_surface())
+                    .p_3()
+                    .text_sm()
+                    .text_center()
+                    .text_color(rgb(danger()))
+                    .cursor(if leaving {
+                        CursorStyle::Arrow
+                    } else {
+                        CursorStyle::PointingHand
+                    })
+                    .when(!leaving, |button| {
+                        button
+                            .hover(|style| style.bg(subtle_surface()))
+                            .on_click(cx.listener(|this, _, _, cx| this.leave_current_channel(cx)))
+                    })
+                    .child(if leaving {
+                        "Leaving…"
+                    } else {
+                        "Leave Channel"
+                    }),
+            )
+        })
         .into_any_element()
 }
 

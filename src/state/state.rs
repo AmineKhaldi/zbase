@@ -68,6 +68,9 @@ pub struct DraftState {
 
 #[derive(Clone, Debug, Default)]
 pub struct UiWorkspaceState {
+    pub left_conversation_ids: HashSet<ConversationId>,
+    pub leaving_conversation_ids: HashSet<ConversationId>,
+    pub leave_channel_errors: HashMap<ConversationId, String>,
     pub excluded_conversation_ids: HashSet<ConversationId>,
     pub active_workspace_id: Option<WorkspaceId>,
     pub workspace_name: String,

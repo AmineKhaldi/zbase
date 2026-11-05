@@ -1,4 +1,5 @@
 mod attachment_hydration;
+mod channel_membership;
 use attachment_hydration::{
     hydrate_attachment_paths_for_messages, image_attachment_hydration_flags,
     message_needs_file_attachment_hydration, message_needs_image_attachment_hydration,
@@ -356,6 +357,7 @@ impl ChatBackend for KeybaseBackend {
                 | RoutedBackendCommand::PinMessage { .. }
                 | RoutedBackendCommand::UnpinMessage { .. }
                 | RoutedBackendCommand::CreateConversation { .. }
+                | RoutedBackendCommand::LeaveChannel { .. }
                 | RoutedBackendCommand::JoinChannel { .. }
                 | RoutedBackendCommand::FollowUser { .. }
                 | RoutedBackendCommand::UnfollowUser { .. } => {
@@ -1894,6 +1896,23 @@ impl ChatBackend for KeybaseBackend {
                 }
                 Ok(emitted)
             }
+            RoutedBackendCommand::LeaveChannel {
+                conversation,
+                workspace_id,
+                ..
+            } => {
+                self.ensure_listener_started();
+                let sender = self.inbound_sender.clone().ok_or_else(|| {
+                    BackendError::OperationFailed("Keybase connection is unavailable".into())
+                })?;
+                channel_membership::start_leave(
+                    sender,
+                    Arc::clone(&self.local_store),
+                    workspace_id,
+                    conversation,
+                );
+                Ok(Vec::new())
+            }
             RoutedBackendCommand::JoinChannel {
                 conversation,
                 workspace_id,
@@ -1912,13 +1931,16 @@ impl ChatBackend for KeybaseBackend {
                                     "invalid provider conversation reference",
                                 )
                             })?;
-                        call_join_conversation_by_id_local(&mut client, &raw_conversation_id).await?;
+                        let response = call_join_conversation_by_id_local(&mut client, &raw_conversation_id).await?;
+                        channel_membership::ensure_online(&response)?;
                         Ok::<_, io::Error>(raw_conversation_id)
                     });
                     match join_result {
                         Ok(raw_conversation_id) => {
                             let conversation_id =
                                 ConversationId::new(format!("kb_conv:{}", hex_encode(&raw_conversation_id)));
+                            self.local_store.set_conversation_left(&conversation_id, false)
+                                .map_err(|error| BackendError::OperationFailed(error.to_string()))?;
                             tracing::info!("JoinChannel: successfully joined {}", conversation_id.0);
                             return Ok(vec![BackendEvent::ChannelJoined {
                                 workspace_id,
@@ -2128,6 +2150,7 @@ async fn run_listener_session(
         maybe_handle_profile_notify(&event, &sender, &local_store);
         maybe_handle_emoji_notify(&event, &sender, &local_store);
         maybe_handle_team_role_notify(&event, &sender, &local_store);
+        channel_membership::handle_notify(&event, &sender, &local_store);
         maybe_handle_new_conversation_notify(&event, &sender, &local_store);
         maybe_handle_team_type_notify(&event, &sender, &local_store);
         let mut should_refresh_inbox = notify_should_refresh_inbox(&event);
@@ -2546,6 +2569,16 @@ fn run_bootstrap(
     send_internal(&sender, "zbase.internal.bootstrap_starting", Value::Nil);
     let _ = sender.send(BackendEvent::BootStatus("Loading local data…".to_string()));
 
+    for conversation_id in local_store
+        .left_conversation_snapshot()
+        .unwrap_or_default()
+        .into_keys()
+    {
+        let _ = sender.send(BackendEvent::ChannelLeft {
+            workspace_id: WorkspaceId::new(WORKSPACE_ID),
+            conversation_id,
+        });
+    }
     match local_store.load_bootstrap_seed(
         CACHED_BOOTSTRAP_INITIAL_CONVERSATION_LIMIT,
         CACHED_BOOTSTRAP_SELECTED_MESSAGE_LIMIT,
@@ -2629,6 +2662,7 @@ fn run_bootstrap(
         "Loading conversations…".to_string(),
     ));
 
+    let left_snapshot = local_store.left_conversation_snapshot().unwrap_or_default();
     let account_for_bootstrap = account_id.clone();
     let backend_for_bootstrap = backend_id.clone();
     let result = runtime.block_on(async move {
@@ -2658,6 +2692,19 @@ fn run_bootstrap(
 
     match result {
         Ok(mut payload) => {
+            // Reconcile rejoins performed in Keybase while zBase was closed, without
+            // letting an inbox request started before a leave undo that newer leave.
+            if let Ok(joined) = local_store.reconcile_joined_conversations(
+                &left_snapshot,
+                payload.channels.iter().map(|summary| summary.id.clone()),
+            ) {
+                for conversation_id in joined {
+                    let _ = sender.send(BackendEvent::ChannelJoined {
+                        workspace_id: WorkspaceId::new(WORKSPACE_ID),
+                        conversation_id,
+                    });
+                }
+            }
             let crawl_refs = payload
                 .conversation_bindings
                 .iter()
@@ -7907,6 +7954,17 @@ fn maybe_handle_new_conversation_notify(
         return;
     };
     let conversation_id = parsed.summary.id.clone();
+    // Metadata updates are not membership changes. Inactive/stale payloads must not
+    // resurrect a channel; explicit join notifications clear the local leave marker.
+    if map_get(conv_value, "memberStatus")
+        .and_then(as_i64)
+        .is_some_and(|status| status != CONVERSATION_MEMBER_STATUS_ACTIVE)
+        || local_store
+            .is_conversation_left(&conversation_id)
+            .unwrap_or(true)
+    {
+        return;
+    }
     if let Some(existing) = local_store
         .get_conversation(&conversation_id)
         .ok()
@@ -10704,7 +10762,9 @@ fn parse_typing_updates_from_notify(
 fn notify_should_refresh_inbox(event: &KeybaseNotifyEvent) -> bool {
     matches!(
         event.method_name(),
-        "chat.1.NotifyChat.ChatInboxStale" | "chat.1.NotifyChat.ChatInboxSynced"
+        "chat.1.NotifyChat.ChatInboxStale"
+            | "chat.1.NotifyChat.ChatInboxSynced"
+            | "chat.1.NotifyChat.ChatJoinedConversation"
     )
 }
 
@@ -10917,6 +10977,7 @@ fn refresh_inbox_unread_state(sender: &Sender<BackendEvent>, local_store: &Local
             return;
         }
     };
+    let left_snapshot = local_store.left_conversation_snapshot().unwrap_or_default();
     let refreshed = runtime.block_on(async {
         let transport = FramedMsgpackTransport::connect(&path).await?;
         let mut client = KeybaseRpcClient::new(transport);
@@ -10940,6 +11001,20 @@ fn refresh_inbox_unread_state(sender: &Sender<BackendEvent>, local_store: &Local
             return;
         }
     };
+    if let Ok(joined) = local_store.reconcile_joined_conversations(
+        &left_snapshot,
+        conversations.iter().map(|conversation| conversation.summary.id.clone()),
+    ) {
+        for conversation_id in joined {
+            let _ = sender.send(BackendEvent::ChannelJoined {
+                workspace_id: WorkspaceId::new(WORKSPACE_ID),
+                conversation_id: conversation_id.clone(),
+            });
+            if let Some(event) = channel_membership::cached_join_event(local_store, &conversation_id) {
+                let _ = sender.send(event);
+            }
+        }
+    }
     let mut new_channels = Vec::new();
     let mut new_direct_messages = Vec::new();
     let mut new_bindings = Vec::new();
@@ -12490,6 +12565,14 @@ fn parse_inbox_ui_item(
 /// The `conv` field appears inside `activity.incomingMessage.conv` or
 /// `activity.newConversation.conv` or `activity.setStatus.conv`.
 fn extract_conv_from_notify(event: &KeybaseNotifyEvent) -> Option<&Value> {
+    if event.method_name() == "chat.1.NotifyChat.ChatJoinedConversation" {
+        let params = match event {
+            KeybaseNotifyEvent::Known { raw_params, .. }
+            | KeybaseNotifyEvent::Unknown { raw_params, .. } => raw_params,
+        };
+        return find_value_for_keys(params, &["conv"], 0);
+    }
+
     if event.method_name() != "chat.1.NotifyChat.NewChatActivity" {
         return None;
     }
@@ -16294,7 +16377,7 @@ fn send_internal(sender: &Sender<BackendEvent>, method: &str, payload: Value) {
 mod tests {
     use super::*;
 
-    fn temp_emoji_asset_dir(label: &str) -> PathBuf {
+    pub(super) fn temp_emoji_asset_dir(label: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
         path.push(format!(
             "zbase-emoji-asset-test-{label}-{}-{}",
