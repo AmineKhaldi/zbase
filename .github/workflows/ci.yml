@@ -98,6 +98,7 @@ jobs:
       - name: Packaging integration tests
         run: python3 -m unittest discover -s scripts/macos -p test_bundle_dylibs.py -v
       - name: Build and verify self-contained app
+        if: github.event_name != 'pull_request'
         run: |
           # Reuse the debug dependencies from Clippy/tests for the development app.
           # The Release workflow still builds and signs the optimized app.
@@ -119,8 +120,10 @@ jobs:
             target
           key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Archive development app
+        if: github.event_name != 'pull_request'
         run: ditto -c -k --sequesterRsrc --keepParent dist/macos/zBase.app dist/macos/zBase-development.zip
       - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'
         with:
           name: macos-development-app
           path: dist/macos/zBase-development.zip
