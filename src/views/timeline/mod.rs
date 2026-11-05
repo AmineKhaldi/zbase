@@ -25,7 +25,7 @@ use crate::{
         badge, clipboard_icon, copy_icon, crown_icon, danger, format_duration_ms,
         glass_surface_dark, hash_icon,
         inline_markdown::{InlineMarkdownConfig, apply_inline_markdown, remap_source_byte_range},
-        mention_soft, mono_font_family, mono_font_size, panel_alt_bg, panel_bg, pin_icon,
+        mono_font_family, mono_font_size, panel_alt_bg, panel_bg, pin_icon,
         play_icon, plus_icon,
         selectable_text::{
             InlineAttachment, LinkRange, SelectableText, StyledRange, resolve_selectable_text,
@@ -2672,12 +2672,12 @@ impl TimelineList {
                     .px_1()
                     .py_0p5()
                     .rounded_sm()
-                    .bg(subtle_surface().opacity(0.6))
+                    .bg(rgb(crate::views::inline_code_background()))
                     .text_sm()
                     .font_family(mono_font_family())
-                    .text_size(mono_font_size())
+                    .text_size(crate::views::inline_code_font_size())
                     .line_height(px(22.))
-                    .text_color(rgb(text_primary()))
+                    .text_color(rgb(crate::views::inline_code_foreground()))
                     .child(selectable)
                     .into_any_element()
             }
@@ -2858,19 +2858,24 @@ impl TimelineList {
                 {
                     let key =
                         crate::views::code_highlight::highlight_key(theme, resolved_lang, code);
-                    if let Some(cached) = code_highlight_cache.get(&key) {
+                    if let Some(cached) = code_highlight_cache.get_for_render(&key, code) {
                         styled_ranges = (*cached).clone();
                     } else if code_highlight_cache.mark_inflight(key) {
                         let code = code.clone();
                         cx.spawn(
                             move |this: gpui::WeakEntity<AppWindow>, cx: &mut gpui::AsyncApp| {
                                 let mut async_app = cx.clone();
+                                let background = cx.background_executor().clone();
                                 async move {
-                                    let ranges = crate::views::code_highlight::highlight(
-                                        &code,
-                                        resolved_lang,
-                                        theme,
-                                    );
+                                    let ranges = background
+                                        .spawn(async move {
+                                            crate::views::code_highlight::highlight(
+                                                &code,
+                                                resolved_lang,
+                                                theme,
+                                            )
+                                        })
+                                        .await;
                                     let _ = this.update(&mut async_app, move |this, cx| {
                                         this.code_highlight_cache.insert(key, ranges);
                                         cx.notify();
@@ -2996,6 +3001,7 @@ impl TimelineList {
                 background_color: Some(background),
                 bold: true,
                 italic: false,
+                monospace: false,
                 strikethrough: false,
             });
         }
@@ -3057,6 +3063,7 @@ impl TimelineList {
                 background_color: Some(background),
                 bold: true,
                 italic: false,
+                monospace: false,
                 strikethrough: false,
             });
         }
@@ -3115,6 +3122,7 @@ impl TimelineList {
                     background_color: Some(warning_soft()),
                     bold: false,
                     italic: false,
+                    monospace: false,
                     strikethrough: false,
                 });
             }
@@ -3142,6 +3150,7 @@ impl TimelineList {
                 background_color: Some(background),
                 bold: true,
                 italic: false,
+                monospace: false,
                 strikethrough: false,
             });
         }
@@ -3156,14 +3165,7 @@ impl TimelineList {
         combined.push_str(code);
         let end = combined.len();
         if start < end {
-            styled_ranges.push(StyledRange {
-                byte_range: start..end,
-                color: Some(text_primary()),
-                background_color: Some(mention_soft()),
-                bold: false,
-                italic: false,
-                strikethrough: false,
-            });
+            styled_ranges.push(StyledRange::inline_code(start..end));
         }
     }
 

@@ -1995,7 +1995,7 @@ fn add_pending_message_to_state(
         (Vec::new(), None)
     } else {
         (
-            vec![MessageFragment::Text(text.to_string())],
+            crate::domain::message_formatting::parse_message_text(text),
             Some(text.to_string()),
         )
     };
@@ -2844,6 +2844,28 @@ fn conversation_id_from_route(route: &Route) -> Option<ConversationId> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pending_json_has_its_final_code_structure_before_server_echo() {
+        let id = crate::domain::ids::ConversationId::new("conv");
+        let mut state = super::UiState::default();
+        state.timeline.conversation_id = Some(id.clone());
+        let source = "```json\n{\"ok\": true}\n```";
+        super::add_pending_message_to_state(
+            &mut state,
+            &id,
+            source,
+            vec![],
+            None,
+            &super::ClientMessageId::new("local-json"),
+        );
+        let pending = &state.timeline.messages[0];
+        assert_eq!(pending.source_text.as_deref(), Some(source));
+        assert!(
+            matches!(&pending.fragments[..], [crate::domain::message::MessageFragment::Code { text, lang }]
+            if text == "{\"ok\": true}" && lang.as_deref() == Some("json"))
+        );
+    }
+
     use super::*;
     use crate::{
         domain::ids::UserId,

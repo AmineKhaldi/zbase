@@ -33,7 +33,7 @@ use crate::{
         format_duration_ms, glass_surface_strong,
         inline_markdown::{InlineMarkdownConfig, apply_inline_markdown, remap_source_byte_range},
         input::TextField,
-        is_dark_theme, mention_colors_for_user, mention_soft, mono_font_family, mono_font_size,
+        is_dark_theme, mention_colors_for_user, mono_font_family, mono_font_size,
         panel_alt_bg,
         panel_alt_surface,
         play_icon,
@@ -1892,12 +1892,12 @@ fn render_fragment(
                 .px_1()
                 .py_0p5()
                 .rounded_sm()
-                .bg(subtle_surface())
+                .bg(rgb(crate::views::inline_code_background()))
                 .text_sm()
                 .font_family(mono_font_family())
-                .text_size(mono_font_size())
+                .text_size(crate::views::inline_code_font_size())
                 .line_height(px(22.))
-                .text_color(rgb(text_primary()))
+                .text_color(rgb(crate::views::inline_code_foreground()))
                 .child(selectable)
                 .into_any_element()
         }
@@ -2086,6 +2086,7 @@ fn render_styled_fragment_text(
             background_color: Some(background),
             bold: true,
             italic: false,
+            monospace: false,
             strikethrough: false,
         });
     }
@@ -2144,6 +2145,7 @@ fn render_linked_styled_fragment_text(
             background_color: Some(background),
             bold: true,
             italic: false,
+            monospace: false,
             strikethrough: false,
         });
     }
@@ -2192,6 +2194,7 @@ fn push_styled_span(
             background_color: Some(background),
             bold: true,
             italic: false,
+            monospace: false,
             strikethrough: false,
         });
     }
@@ -2202,14 +2205,7 @@ fn push_inline_code_span(combined: &mut String, styled_ranges: &mut Vec<StyledRa
     combined.push_str(code);
     let end = combined.len();
     if start < end {
-        styled_ranges.push(StyledRange {
-            byte_range: start..end,
-            color: Some(text_primary()),
-            background_color: Some(mention_soft()),
-            bold: false,
-            italic: false,
-            strikethrough: false,
-        });
+        styled_ranges.push(StyledRange::inline_code(start..end));
     }
 }
 

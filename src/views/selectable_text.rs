@@ -1,3 +1,6 @@
+mod mixed_layout;
+use mixed_layout::MixedLayout;
+
 use crate::{
     app::commands,
     views::{
@@ -33,7 +36,22 @@ pub struct StyledRange {
     pub background_color: Option<u32>,
     pub bold: bool,
     pub italic: bool,
+    pub monospace: bool,
     pub strikethrough: bool,
+}
+
+impl StyledRange {
+    pub fn inline_code(byte_range: Range<usize>) -> Self {
+        Self {
+            byte_range,
+            color: Some(crate::views::inline_code_foreground()),
+            background_color: Some(crate::views::inline_code_background()),
+            bold: false,
+            italic: false,
+            monospace: true,
+            strikethrough: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -575,6 +593,9 @@ fn build_text_runs_for_content(
             if let Some(background) = styled.background_color {
                 run_background = Some(rgb(background).into());
             }
+            if styled.monospace {
+                run_font.family = crate::views::mono_font_family().into();
+            }
             if styled.bold {
                 run_font.weight = FontWeight::BOLD;
             }
@@ -790,6 +811,16 @@ impl Element for SelectableTextElement {
         let content = view.content.clone();
         let runs = view.build_text_runs(text_style.color, text_style.font());
         let fill_width = view.fill_width;
+        let cached_mixed = view
+            .last_layout
+            .as_ref()
+            .and_then(|layout| layout.mixed.clone());
+        let code_ranges = view
+            .styled_ranges
+            .iter()
+            .filter(|range| range.monospace && MixedLayout::supports(&view.content))
+            .map(|range| range.byte_range.clone())
+            .collect::<Vec<_>>();
 
         let mut style = Style::default();
         if fill_width {
@@ -803,6 +834,24 @@ impl Element for SelectableTextElement {
                     _ => None,
                 });
 
+                if !code_ranges.is_empty() {
+                    let width = wrap_width.unwrap_or(Pixels::MAX);
+                    if let Some(cached) = &cached_mixed
+                        && cached.matches(font_size, line_height, width, &runs)
+                    {
+                        return cached.measured();
+                    }
+                    return MixedLayout::shape(
+                        &content,
+                        &runs,
+                        &code_ranges,
+                        font_size,
+                        line_height,
+                        wrap_width.unwrap_or(Pixels::MAX),
+                        window,
+                    )
+                    .measured();
+                }
                 let Some(lines) = window
                     .text_system()
                     .shape_text(content.clone().into(), font_size, &runs, wrap_width, None)
@@ -842,7 +891,33 @@ impl Element for SelectableTextElement {
         let style = window.text_style();
         let font_size = style.font_size.to_pixels(window.rem_size());
         let runs = view.build_text_runs(style.color, style.font());
-        let lines = window
+        let code_ranges = view
+            .styled_ranges
+            .iter()
+            .filter(|range| range.monospace && MixedLayout::supports(&view.content))
+            .map(|range| range.byte_range.clone())
+            .collect::<Vec<_>>();
+        let mixed = (!code_ranges.is_empty()).then(|| {
+            let width = bounds.size.width.max(px(1.));
+            if let Some(cached) = view
+                .last_layout
+                .as_ref()
+                .and_then(|layout| layout.mixed.as_ref())
+                && cached.matches(font_size, window.line_height(), width, &runs)
+            {
+                return cached.clone();
+            }
+            MixedLayout::shape(
+                &view.content,
+                &runs,
+                &code_ranges,
+                font_size,
+                window.line_height(),
+                width,
+                window,
+            )
+        });
+        let lines = if mixed.is_some() { Vec::new() } else { window
             .text_system()
             .shape_text(
                 view.content.clone().into(),
@@ -852,9 +927,10 @@ impl Element for SelectableTextElement {
                 None,
             )
             .map(|lines| lines.into_vec())
-            .unwrap_or_default();
+            .unwrap_or_default() };
 
         let layout = TextLayoutSnapshot {
+            mixed,
             lines,
             line_height: window.line_height(),
             text_len: view.content.len(),
@@ -924,6 +1000,10 @@ impl Element for SelectableTextElement {
             line_origin.y += line.size(prepaint.layout.line_height).height;
         }
 
+        if let Some(mixed) = &prepaint.layout.mixed {
+            mixed.paint(bounds.origin, true, window, cx);
+        }
+
         for quad in prepaint.selection.drain(..) {
             window.paint_quad(quad);
         }
@@ -939,6 +1019,10 @@ impl Element for SelectableTextElement {
                 cx,
             );
             line_origin.y += line.size(prepaint.layout.line_height).height;
+        }
+
+        if let Some(mixed) = &prepaint.layout.mixed {
+            mixed.paint(bounds.origin, false, window, cx);
         }
 
         for attachment in &prepaint.attachments {
@@ -1143,6 +1227,7 @@ fn resolve_selectable_text_with_options(
 
 #[derive(Default)]
 struct TextLayoutSnapshot {
+    mixed: Option<MixedLayout>,
     lines: Vec<WrappedLine>,
     line_height: Pixels,
     text_len: usize,
@@ -1159,6 +1244,9 @@ impl TextLayoutSnapshot {
     }
 
     fn closest_index_for_position(&self, position: Point<Pixels>) -> usize {
+        if let Some(mixed) = &self.mixed {
+            return mixed.closest_index(position);
+        }
         if position.y < px(0.) {
             return 0;
         }
@@ -1186,6 +1274,9 @@ impl TextLayoutSnapshot {
     }
 
     fn position_for_index(&self, index: usize) -> Option<Point<Pixels>> {
+        if let Some(mixed) = &self.mixed {
+            return Some(mixed.position_for_index(index));
+        }
         let mut line_origin_y = px(0.);
         let mut line_start_ix = 0;
 
@@ -1211,6 +1302,13 @@ impl TextLayoutSnapshot {
         origin: Point<Pixels>,
         selection_color: u32,
     ) -> Vec<PaintQuad> {
+        if let Some(mixed) = &self.mixed {
+            return mixed
+                .bounds_for_range(range, origin)
+                .into_iter()
+                .map(|bounds| fill(bounds, rgba(selection_color)))
+                .collect();
+        }
         if range.is_empty() {
             return Vec::new();
         }
@@ -1264,6 +1362,9 @@ impl TextLayoutSnapshot {
     }
 
     fn bounds_for_range(&self, range: Range<usize>, origin: Point<Pixels>) -> Vec<Bounds<Pixels>> {
+        if let Some(mixed) = &self.mixed {
+            return mixed.bounds_for_range(range, origin);
+        }
         if range.is_empty() {
             return Vec::new();
         }
@@ -1498,6 +1599,41 @@ mod tests {
     }
 
     #[test]
+    fn inline_code_keeps_its_font_and_colors_after_markdown_remaps_utf8_ranges() {
+        use crate::views::inline_markdown::{InlineMarkdownConfig, apply_inline_markdown};
+        let source = "**note** λvalue";
+        let code = StyledRange::inline_code(9..source.len());
+        let parsed = apply_inline_markdown(
+            source,
+            &[],
+            &[code.clone()],
+            InlineMarkdownConfig::default(),
+        );
+        assert_eq!(parsed.text, "note λvalue");
+        let runs = build_text_runs_for_content(
+            &parsed.text,
+            &parsed.link_ranges,
+            &parsed.styled_ranges,
+            rgb(0x223344).into(),
+            gpui::font(".SystemUIFont"),
+            link(),
+        );
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[0].font.family, gpui::font(".SystemUIFont").family);
+        assert_eq!(runs[0].font.weight, FontWeight::BOLD);
+        assert_eq!(runs[2].len, "λvalue".len());
+        assert_eq!(
+            runs[2].font.family,
+            gpui::font(crate::views::mono_font_family()).family
+        );
+        assert_eq!(runs[2].color, rgb(code.color.unwrap()).into());
+        assert_eq!(
+            runs[2].background_color,
+            Some(rgb(code.background_color.unwrap()).into())
+        );
+    }
+
+    #[test]
     fn build_text_runs_merges_bold_italic_and_strike_styles() {
         let runs = build_text_runs_for_content(
             "abc",
@@ -1509,6 +1645,7 @@ mod tests {
                     background_color: None,
                     bold: true,
                     italic: false,
+                    monospace: false,
                     strikethrough: false,
                 },
                 StyledRange {
@@ -1517,6 +1654,7 @@ mod tests {
                     background_color: None,
                     bold: false,
                     italic: true,
+                    monospace: false,
                     strikethrough: false,
                 },
                 StyledRange {
@@ -1525,6 +1663,7 @@ mod tests {
                     background_color: None,
                     bold: false,
                     italic: false,
+                    monospace: false,
                     strikethrough: true,
                 },
             ],
@@ -1553,6 +1692,7 @@ mod tests {
                 background_color: Some(0x112233),
                 bold: false,
                 italic: false,
+                monospace: false,
                 strikethrough: false,
             }],
             rgb(0x223344).into(),
@@ -1580,6 +1720,7 @@ mod tests {
                 background_color: Some(0xe9f0f5),
                 bold: true,
                 italic: false,
+                monospace: false,
                 strikethrough: false,
             }],
             rgb(0x223344).into(),
@@ -1605,6 +1746,7 @@ mod tests {
                     background_color: None,
                     bold: false,
                     italic: false,
+                    monospace: false,
                     strikethrough: false,
                 },
                 StyledRange {
@@ -1613,6 +1755,7 @@ mod tests {
                     background_color: None,
                     bold: false,
                     italic: false,
+                    monospace: false,
                     strikethrough: false,
                 },
             ],

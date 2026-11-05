@@ -1,3 +1,4 @@
+pub use crate::domain::message_formatting::CodeLanguage;
 use crate::{
     app::theme::ThemeVariant,
     views::{
@@ -48,20 +49,6 @@ const HIGHLIGHT_NAMES: &[&str] = &[
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum CodeLanguage {
-    Rust,
-    Python,
-    JavaScript,
-    TypeScript,
-    Json,
-    Yaml,
-    Toml,
-    Bash,
-    Sql,
-    Go,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CodeHighlightKey {
     pub theme: ThemeVariant,
     pub lang: CodeLanguage,
@@ -88,6 +75,23 @@ impl CodeHighlightCache {
         let entry = self.entries.get_mut(key)?;
         entry.last_used_tick = tick;
         Some(entry.ranges.clone())
+    }
+
+    /// Small JSON snippets are cheap to color before their first frame. Larger
+    /// blocks and heavier grammars stay on the background path.
+    pub fn get_for_render(
+        &mut self,
+        key: &CodeHighlightKey,
+        code: &str,
+    ) -> Option<Arc<Vec<StyledRange>>> {
+        if let Some(ranges) = self.get(key) {
+            return Some(ranges);
+        }
+        if key.lang == CodeLanguage::Json && code.len() <= 8_192 {
+            self.insert(*key, highlight(code, key.lang, key.theme));
+            return self.get(key);
+        }
+        None
     }
 
     pub fn mark_inflight(&mut self, key: CodeHighlightKey) -> bool {
@@ -127,24 +131,6 @@ impl CodeHighlightCache {
         for (key, _) in by_last_used.into_iter().take(remove_count) {
             self.entries.remove(&key);
             self.inflight.remove(&key);
-        }
-    }
-}
-
-impl CodeLanguage {
-    pub fn from_tag(tag: &str) -> Option<Self> {
-        match tag.trim().to_ascii_lowercase().as_str() {
-            "rs" | "rust" => Some(Self::Rust),
-            "py" | "python" => Some(Self::Python),
-            "js" | "javascript" => Some(Self::JavaScript),
-            "ts" | "typescript" => Some(Self::TypeScript),
-            "json" => Some(Self::Json),
-            "yml" | "yaml" => Some(Self::Yaml),
-            "toml" => Some(Self::Toml),
-            "sh" | "bash" | "shell" | "zsh" => Some(Self::Bash),
-            "sql" => Some(Self::Sql),
-            "go" | "golang" => Some(Self::Go),
-            _ => None,
         }
     }
 }
@@ -322,6 +308,7 @@ pub fn highlight(code: &str, lang: CodeLanguage, theme: ThemeVariant) -> Vec<Sty
                             background_color: None,
                             bold: style.bold,
                             italic: style.italic,
+                            monospace: false,
                             strikethrough: false,
                         },
                     );
@@ -429,6 +416,28 @@ fn style_for_highlight(name: &str, theme: ThemeVariant) -> Option<Style> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn small_json_is_colored_on_first_render_and_then_cached() {
+        let code = "{\"ok\": true, \"count\": 12}";
+        let key = super::highlight_key(
+            crate::app::theme::ThemeVariant::Dark,
+            super::CodeLanguage::Json,
+            code,
+        );
+        let mut cache = super::CodeHighlightCache::default();
+        let first = cache.get_for_render(&key, code).unwrap();
+        assert!(!first.is_empty());
+        let second = cache.get_for_render(&key, code).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        let large = " ".repeat(8_193);
+        let key = super::highlight_key(
+            crate::app::theme::ThemeVariant::Dark,
+            super::CodeLanguage::Json,
+            &large,
+        );
+        assert!(cache.get_for_render(&key, &large).is_none());
+    }
+
     use super::*;
 
     #[test]

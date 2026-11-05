@@ -410,6 +410,7 @@ fn remap_styled_ranges(
                 background_color: range.background_color,
                 bold: range.bold,
                 italic: range.italic,
+                monospace: range.monospace,
                 strikethrough: range.strikethrough,
             })
         })
@@ -443,6 +444,7 @@ fn markdown_ranges_to_styled_ranges(
                 background_color: None,
                 bold: true,
                 italic: false,
+                monospace: false,
                 strikethrough: false,
             },
             MarkdownStyleKind::Italic => StyledRange {
@@ -451,6 +453,7 @@ fn markdown_ranges_to_styled_ranges(
                 background_color: None,
                 bold: false,
                 italic: true,
+                monospace: false,
                 strikethrough: false,
             },
             MarkdownStyleKind::Strike => StyledRange {
@@ -459,6 +462,7 @@ fn markdown_ranges_to_styled_ranges(
                 background_color: None,
                 bold: false,
                 italic: false,
+                monospace: false,
                 strikethrough: true,
             },
             MarkdownStyleKind::Spoiler => StyledRange {
@@ -467,6 +471,7 @@ fn markdown_ranges_to_styled_ranges(
                 background_color: config.spoiler_background,
                 bold: false,
                 italic: false,
+                monospace: false,
                 strikethrough: false,
             },
         })
@@ -561,6 +566,7 @@ mod tests {
                 background_color: Some(0x654321),
                 bold: true,
                 italic: false,
+                monospace: false,
                 strikethrough: false,
             }],
             InlineMarkdownConfig::default(),

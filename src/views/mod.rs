@@ -72,6 +72,8 @@ struct Palette {
     mention_soft: u32,
     mention_you: u32,
     mention_you_soft: u32,
+    inline_code_foreground: u32,
+    inline_code_background: u32,
     selection: u32,
 }
 
@@ -108,8 +110,10 @@ const LIGHT_PALETTE: Palette = Palette {
     affinity_broken_soft: 0xfaf2ed,
     mention: 0x3663ea,
     mention_soft: 0xebf2fc,
-    mention_you: 0x3663ea,
-    mention_you_soft: 0xebf2fc,
+    mention_you: 0x191919,
+    mention_you_soft: 0xffffc0,
+    inline_code_foreground: 0x3663ea,
+    inline_code_background: 0xfaf2ed,
     selection: 0x4c8eff4d,
 };
 
@@ -145,10 +149,12 @@ const DARK_PALETTE: Palette = Palette {
     affinity_positive_soft: 0x193b32,
     affinity_broken: 0xeb253b,
     affinity_broken_soft: 0x3b1b20,
-    mention: 0x3663ea,
+    mention: 0x73a6ff,
     mention_soft: 0x192344,
-    mention_you: 0x3663ea,
-    mention_you_soft: 0x192344,
+    mention_you: 0x191919,
+    mention_you_soft: 0xc3c390,
+    inline_code_foreground: 0x73a6ff,
+    inline_code_background: 0x2d2d2d,
     selection: 0x4c8eff4d,
 };
 
@@ -324,6 +330,18 @@ pub fn mention_you() -> u32 {
 
 pub fn mention_you_soft() -> u32 {
     palette().mention_you_soft
+}
+
+pub fn inline_code_font_size() -> gpui::Pixels {
+    px(12.)
+}
+
+pub fn inline_code_foreground() -> u32 {
+    palette().inline_code_foreground
+}
+
+pub fn inline_code_background() -> u32 {
+    palette().inline_code_background
 }
 
 pub fn selection() -> u32 {
@@ -998,4 +1016,55 @@ pub fn composer_tool(icon: AnyElement, color: u32) -> AnyElement {
         .justify_center()
         .child(div().text_color(rgb(color)).child(icon))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod highlight_color_tests {
+    use super::*;
+    use crate::domain::{affinity::Affinity, ids::UserId};
+    use std::collections::HashMap;
+
+    fn contrast(foreground: u32, background: u32) -> f64 {
+        let luminance = |color: u32| {
+            let channel = |shift: u32| {
+                let value = ((color >> shift) & 255u32) as f64 / 255.;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+        };
+        let a = luminance(foreground);
+        let b = luminance(background);
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn inline_highlights_are_readable_and_self_mentions_are_distinct_in_both_themes() {
+        for theme in [ThemeVariant::Light, ThemeVariant::Dark] {
+            with_theme(theme, || {
+                let me = UserId::new("CameronCooper");
+                let mentioned_me = UserId::new("cameroncooper");
+                let other = UserId::new("someone_else");
+                let following = HashMap::from([(mentioned_me.clone(), Affinity::Positive)]);
+                let own = mention_colors_for_user(&following, Some(&me), &mentioned_me);
+                let ordinary = mention_colors_for_user(&following, Some(&me), &other);
+                assert_ne!(own, ordinary);
+                assert_eq!(own, (mention_you(), mention_you_soft()));
+                for (foreground, background) in [
+                    own,
+                    ordinary,
+                    (inline_code_foreground(), inline_code_background()),
+                ] {
+                    assert!(
+                        contrast(foreground, background) >= 4.5,
+                        "insufficient contrast: {foreground:06x} on {background:06x}"
+                    );
+                }
+                assert_ne!(inline_code_background(), mention_soft());
+            });
+        }
+    }
 }
