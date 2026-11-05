@@ -2573,10 +2573,8 @@ fn build_sidebar_sections(
             label
         } else if is_dm {
             dm_display_label(&summary.title, user_profiles)
-        } else if let Some(group) = &summary.group {
-            format!("{} #{}", group.display_name, summary.title)
         } else {
-            format!("#{}", summary.title)
+            summary.title.clone()
         };
         unread_rows.push((
             summary.last_activity_ms,
@@ -2588,7 +2586,15 @@ fn build_sidebar_sections(
             },
         ));
     }
-    unread_rows.sort_by(|left, right| right.0.cmp(&left.0));
+    unread_rows.sort_by(|left, right| {
+        right.0.cmp(&left.0).then_with(|| {
+            left.1
+                .route
+                .as_ref()
+                .map(Route::label)
+                .cmp(&right.1.route.as_ref().map(Route::label))
+        })
+    });
     let unread_rows = unread_rows
         .into_iter()
         .map(|(_, row)| row)

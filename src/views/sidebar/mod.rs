@@ -1,13 +1,14 @@
 use crate::{
-    domain::{ids::SidebarSectionId, route::Route},
+    domain::{conversation::ConversationGroup, ids::SidebarSectionId, route::Route},
     models::{
         app_model::Connectivity,
-        sidebar_model::{SidebarAvatar, SidebarModel, SidebarRow, SidebarSection},
+        sidebar_model::{SidebarAvatar, SidebarModel, SidebarRow, SidebarSection, team_avatar_key},
     },
     views::{
         accent, avatar::Avatar, chevron_down_icon, chevron_right_icon, glass_surface_dark,
-        hash_icon, is_dark_theme, plus_icon, search_icon, sidebar_bg, subtle_surface, success,
-        success_soft, text_primary, text_secondary, tint, unread_indicator,
+        hash_icon, is_dark_theme, panel_bg, plus_icon, search_icon, shell_border_strong,
+        sidebar_bg, subtle_surface, success, success_soft, text_primary, text_secondary, tint,
+        unread_indicator,
     },
 };
 use gpui::prelude::FluentBuilder;
@@ -36,6 +37,25 @@ impl Render for DragPreview {
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(rgb(text_secondary()))
             .child(self.title.clone())
+    }
+}
+
+/// GPUI supplies the hover delay and removes this tooltip on pointer exit.
+struct SidebarTooltip(String);
+
+impl Render for SidebarTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .max_w(px(360.))
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(rgb(panel_bg()))
+            .border_1()
+            .border_color(shell_border_strong())
+            .text_xs()
+            .text_color(rgb(text_primary()))
+            .child(self.0.clone())
     }
 }
 
@@ -348,18 +368,99 @@ impl Sidebar {
                         })
                     }),
             )
-            .when(is_unread_section || !section.collapsed, |div| {
-                div.children(visible_rows.iter().map(|row| {
-                    Self::render_row(
-                        &section.id,
-                        row,
-                        conversation_avatars,
-                        current_route,
-                        hovered_row,
-                        cx,
-                    )
-                }))
+            .when(is_unread_section || !section.collapsed, |container| {
+                let mut children = Vec::new();
+                let mut has_team_groups = false;
+                for rows in visible_rows.chunk_by(|left, right| {
+                    left.team.as_ref().map(|team| &team.id)
+                        == right.team.as_ref().map(|team| &team.id)
+                }) {
+                    let rendered_rows = rows
+                        .iter()
+                        .map(|row| {
+                            Self::render_row(
+                                &section.id,
+                                row,
+                                conversation_avatars,
+                                current_route,
+                                hovered_row,
+                                cx,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    if is_unread_section && let Some(team) = &rows[0].team {
+                        children.push(Self::render_unread_team_header(team, conversation_avatars));
+                        children.push(
+                            div()
+                                .ml(px(16.))
+                                .pl(px(4.))
+                                .border_l_1()
+                                .border_color(shell_border_strong())
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .children(rendered_rows)
+                                .into_any_element(),
+                        );
+                        has_team_groups = true;
+                    } else {
+                        if is_unread_section && has_team_groups {
+                            children.push(
+                                div()
+                                    .px_2()
+                                    .pt_1()
+                                    .text_xs()
+                                    .text_color(rgb(text_secondary()))
+                                    .child("Conversations")
+                                    .into_any_element(),
+                            );
+                        }
+                        children.extend(rendered_rows);
+                    }
+                }
+                container.children(children)
             })
+            .into_any_element()
+    }
+
+    fn render_unread_team_header(
+        team: &ConversationGroup,
+        conversation_avatars: &HashMap<String, SidebarAvatar>,
+    ) -> AnyElement {
+        let asset = match conversation_avatars.get(&team_avatar_key(&team.id)) {
+            Some(SidebarAvatar::Team(asset)) => Some(asset.as_str()),
+            _ => None,
+        };
+        let tooltip = team.display_name.clone();
+        div()
+            .id(SharedString::from(format!(
+                "sidebar-unread-team-{}",
+                team.id
+            )))
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .px_2()
+            .pt_1()
+            .pb_0p5()
+            .text_xs()
+            .text_color(rgb(text_secondary()))
+            .tooltip(move |_, cx| cx.new(|_| SidebarTooltip(tooltip.clone())).into())
+            .child(Avatar::render_square(
+                &team.display_name,
+                asset,
+                16.,
+                crate::views::accent_soft(),
+                accent(),
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .whitespace_normal()
+                    .text_ellipsis()
+                    .child(team.display_name.clone()),
+            )
             .into_any_element()
     }
 
@@ -378,6 +479,7 @@ impl Sidebar {
         let route = row.route.clone();
         let is_hovered = hovered_row == Some(route_label.as_str());
         let hover_label = route_label.clone();
+        let tooltip = row.full_label();
 
         let row_color = if selected {
             if is_dark_theme() {
@@ -417,12 +519,16 @@ impl Sidebar {
                     cx,
                 );
             }))
+            .tooltip(move |_, cx| cx.new(|_| SidebarTooltip(tooltip.clone())).into())
             .on_click(cx.listener(move |this, _, window, cx| {
+                this.sidebar_hide_hover_tooltip(cx);
                 this.sidebar_navigate_to(route.clone(), window, cx);
             }))
             .child(
                 div()
                     .flex()
+                    .flex_1()
+                    .min_w(px(0.))
                     .items_center()
                     .gap_1p5()
                     .text_xs()
@@ -440,10 +546,25 @@ impl Sidebar {
                             text_secondary()
                         },
                     ))
-                    .child(row.label.clone()),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .whitespace_normal()
+                            .text_ellipsis()
+                            .child(row.label.clone()),
+                    ),
             )
             .when(has_unread || has_mention, |d| {
-                d.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(unread_indicator())))
+                d.child(
+                    div()
+                        .flex_shrink_0()
+                        .ml_1()
+                        .w(px(6.))
+                        .h(px(6.))
+                        .rounded_full()
+                        .bg(rgb(unread_indicator())),
+                )
             })
             .into_any_element()
     }
@@ -467,6 +588,7 @@ impl Sidebar {
                 } else {
                     div()
                         .w(px(16.))
+                        .flex_shrink_0()
                         .flex()
                         .items_center()
                         .justify_center()

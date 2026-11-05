@@ -231,6 +231,7 @@ impl AppModels {
                         title: "Acme Product".to_string(),
                         rows: vec![
                             SidebarRow {
+                                team: None,
                                 label: "general".to_string(),
                                 unread_count: 3,
                                 mention_count: 1,
@@ -240,6 +241,7 @@ impl AppModels {
                                 },
                             },
                             SidebarRow {
+                                team: None,
                                 label: "design".to_string(),
                                 unread_count: 0,
                                 mention_count: 0,
@@ -256,6 +258,7 @@ impl AppModels {
                         title: "Friends".to_string(),
                         rows: vec![
                             SidebarRow {
+                                team: None,
                                 label: "hangout".to_string(),
                                 unread_count: 5,
                                 mention_count: 0,
@@ -265,6 +268,7 @@ impl AppModels {
                                 },
                             },
                             SidebarRow {
+                                team: None,
                                 label: "travel".to_string(),
                                 unread_count: 0,
                                 mention_count: 0,
@@ -281,6 +285,7 @@ impl AppModels {
                         title: "Open Source".to_string(),
                         rows: vec![
                             SidebarRow {
+                                team: None,
                                 label: "zbase".to_string(),
                                 unread_count: 2,
                                 mention_count: 1,
@@ -290,6 +295,7 @@ impl AppModels {
                                 },
                             },
                             SidebarRow {
+                                team: None,
                                 label: "gpui".to_string(),
                                 unread_count: 0,
                                 mention_count: 0,
@@ -305,6 +311,7 @@ impl AppModels {
                         id: SidebarSectionId::new("dms"),
                         title: "Conversations".to_string(),
                         rows: vec![SidebarRow {
+                            team: None,
                             label: "Alice Johnson".to_string(),
                             unread_count: 1,
                             mention_count: 0,

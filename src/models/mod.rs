@@ -978,6 +978,7 @@ impl AppModels {
         }
         let section = self.sidebar.sections.remove(from);
         self.sidebar.sections.insert(to, section);
+        self.sidebar.order_unread_groups();
     }
 
     pub fn apply_saved_sidebar_order(&mut self) {
@@ -1013,6 +1014,7 @@ impl AppModels {
                 section.collapsed = collapsed_set.contains(&section.id.0);
             }
         }
+        self.sidebar.order_unread_groups();
     }
 
     pub fn expand_section_for_route(&mut self, route: &Route) {
@@ -2068,7 +2070,7 @@ impl AppModels {
             .flat_map(|section| section.rows.iter())
             .filter(|row| {
                 filter.is_empty()
-                    || row.label.to_lowercase().contains(&filter)
+                    || row.full_label().to_lowercase().contains(&filter)
                     || row.route.label().to_lowercase().contains(&filter)
             })
             .map(|row| row.route.clone())

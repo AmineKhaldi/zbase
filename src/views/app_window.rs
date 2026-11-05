@@ -28,7 +28,7 @@ use crate::{
         notifications_model::ToastAction,
         profile_panel_model::SocialTab,
         quick_switcher_model::QuickSwitcherResultKind,
-        sidebar_model::{SidebarAvatar, SidebarModel},
+        sidebar_model::{SidebarAvatar, SidebarModel, team_avatar_key},
         timeline_model::TeamAuthorRole,
     },
     services::{
@@ -3221,7 +3221,19 @@ impl AppWindow {
         let sidebar_sections_sig = sidebar_sections_state_signature(&snapshot.sidebar.sections);
         let sidebar_sections_changed =
             self.sync_cache.sidebar_sections_sig != Some(sidebar_sections_sig);
-        if sidebar_sections_changed {
+        if sidebar_sections_changed || workspace_changed {
+            let channel_teams = snapshot
+                .workspace
+                .channels
+                .iter()
+                .filter(|summary| !summary.is_simple_team())
+                .filter_map(|summary| {
+                    summary
+                        .group
+                        .as_ref()
+                        .map(|group| (summary.id.0.as_str(), group))
+                })
+                .collect::<HashMap<_, _>>();
             self.models.sidebar.sections = snapshot
                 .sidebar
                 .sections
@@ -3239,6 +3251,12 @@ impl AppWindow {
                             row.route.clone().map(|route| {
                                 crate::models::sidebar_model::SidebarRow {
                                     label: row.label.clone(),
+                                    team: match &route {
+                                        Route::Channel { channel_id, .. } => channel_teams
+                                            .get(channel_id.0.as_str())
+                                            .map(|group| (*group).clone()),
+                                        _ => None,
+                                    },
                                     unread_count: row.unread_count,
                                     mention_count: row.mention_count,
                                     route,
@@ -3291,6 +3309,14 @@ impl AppWindow {
                 })
                 .collect::<HashMap<_, _>>();
             let mut conversation_avatars = HashMap::new();
+            for summary in &snapshot.workspace.channels {
+                if let Some(group) = &summary.group
+                    && let Some(asset) = team_avatar_asset(summary, &snapshot.backend.user_profiles)
+                {
+                    conversation_avatars
+                        .insert(team_avatar_key(&group.id), SidebarAvatar::Team(asset));
+                }
+            }
             for row in self
                 .models
                 .sidebar
@@ -9238,14 +9264,13 @@ fn sidebar_avatar_inputs_signature(
     }
 
     for summary in channels {
-        if summary.is_simple_team() {
-            mix_sig_str(&mut sig, &summary.id.0);
-            if let Some(group) = &summary.group {
-                mix_sig_str(&mut sig, &group.id);
-            }
-            if let Some(asset) = team_avatar_asset(summary, user_profiles) {
-                mix_sig_str(&mut sig, &asset);
-            }
+        mix_sig_str(&mut sig, &summary.id.0);
+        mix_sig_bool(&mut sig, summary.is_simple_team());
+        if let Some(group) = &summary.group {
+            mix_sig_str(&mut sig, &group.id);
+        }
+        if let Some(asset) = team_avatar_asset(summary, user_profiles) {
+            mix_sig_str(&mut sig, &asset);
         }
     }
     for summary in direct_messages {
@@ -10425,6 +10450,17 @@ mod tests {
             super::simple_team_avatar_asset(&summary, &profiles),
             None,
             "ordinary channel rows keep their hash icon"
+        );
+        let before =
+            super::sidebar_avatar_inputs_signature(&[], &[], &[summary.clone()], &profiles);
+        profiles
+            .get_mut(&UserId::new("team:annar"))
+            .unwrap()
+            .avatar_asset = Some("/cache/annar-updated.png".into());
+        assert_ne!(
+            before,
+            super::sidebar_avatar_inputs_signature(&[], &[], &[summary], &profiles),
+            "complex team header icons must also refresh when their image changes"
         );
     }
 
