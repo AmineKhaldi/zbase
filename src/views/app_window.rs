@@ -5400,9 +5400,10 @@ impl AppWindow {
     pub(crate) fn begin_thread_resize(
         &mut self,
         event: &MouseDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        window.prevent_default();
         self.thread_resize_drag = Some(ThreadResizeDrag {
             anchor_x: f32::from(event.position.x),
             starting_width: self.models.thread_pane.width_px,
@@ -5445,7 +5446,7 @@ impl AppWindow {
     fn update_thread_resize_drag_on_drag(
         &mut self,
         event: &gpui::DragMoveEvent<RightPaneResizeDrag>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(drag) = self.thread_resize_drag.as_ref() else {
@@ -5453,7 +5454,11 @@ impl AppWindow {
         };
 
         let next_width = drag.starting_width + (drag.anchor_x - f32::from(event.event.position.x));
-        self.models.set_thread_width(next_width);
+        self.models.set_thread_width(constrained_right_pane_width(
+            next_width,
+            self.models.sidebar.width_px,
+            f32::from(window.viewport_size().width),
+        ));
         self.refresh(cx);
     }
 
@@ -8140,6 +8145,7 @@ impl Render for AppWindow {
                 .child(
                     div()
                         .w(px(RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX))
+                        .flex_shrink_0()
                         .h_full()
                         .bg(if is_dark_theme() {
                             tint(sidebar_bg(), 0.98)
@@ -8382,14 +8388,31 @@ fn timeline_row_index_for_message(
     })
 }
 
+fn constrained_right_pane_width(
+    requested_width_px: f32,
+    sidebar_width_px: f32,
+    viewport_width_px: f32,
+) -> f32 {
+    let available_width = viewport_width_px
+        - SHELL_HORIZONTAL_PADDING_PX
+        - sidebar_width_px
+        - RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX
+        - MAIN_PANEL_MIN_WIDTH_PX
+        - 2.0 * SHELL_GAP_PX;
+    requested_width_px.clamp(280.0, available_width.clamp(280.0, 520.0))
+}
+
 fn shell_layout(
     right_pane_mode: &RightPaneMode,
     right_pane_width_px: f32,
     sidebar_width_px: f32,
     viewport_width_px: f32,
 ) -> ShellLayout {
-    let base_shell_width =
-        SHELL_HORIZONTAL_PADDING_PX + sidebar_width_px + MAIN_PANEL_MIN_WIDTH_PX + SHELL_GAP_PX;
+    let base_shell_width = SHELL_HORIZONTAL_PADDING_PX
+        + sidebar_width_px
+        + RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX
+        + MAIN_PANEL_MIN_WIDTH_PX
+        + SHELL_GAP_PX;
 
     let right_pane_width = match right_pane_mode {
         RightPaneMode::Hidden => 0.0,
@@ -9863,13 +9886,38 @@ fn timeline_interactions_blocked_by_overlay_state(
 #[cfg(test)]
 mod tests {
     use super::{
-        latest_timeline_snapshot_message_id, timeline_interactions_blocked_by_overlay_state,
+        constrained_right_pane_width, latest_timeline_snapshot_message_id, shell_layout,
+        timeline_interactions_blocked_by_overlay_state,
     };
     use crate::domain::{
         ids::{ConversationId, MessageId, UserId},
         message::{ChatEvent, MessageFragment, MessageRecord, MessageSendState},
     };
-    use crate::models::overlay_model::OverlayModel;
+    use crate::models::{navigation_model::RightPaneMode, overlay_model::OverlayModel};
+
+    #[test]
+    fn right_pane_resize_stays_within_window() {
+        for mode in [
+            RightPaneMode::Thread,
+            RightPaneMode::Profile(UserId::new("alice")),
+        ] {
+            for viewport in [1100.0, 1200.0, 1440.0] {
+                let width = constrained_right_pane_width(520.0, 240.0, viewport);
+                assert!(shell_layout(&mode, width, 240.0, viewport).show_right_pane);
+                assert!(
+                    !shell_layout(&mode, width, 240.0, viewport - 1.0).show_right_pane
+                        || width == 520.0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn right_pane_resize_preserves_width_limits() {
+        assert_eq!(constrained_right_pane_width(100.0, 240.0, 1440.0), 280.0);
+        assert_eq!(constrained_right_pane_width(900.0, 240.0, 1440.0), 520.0);
+        assert_eq!(constrained_right_pane_width(520.0, 240.0, 800.0), 280.0);
+    }
 
     fn test_message(id: &str, event: Option<ChatEvent>) -> MessageRecord {
         MessageRecord {

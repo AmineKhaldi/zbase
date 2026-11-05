@@ -338,18 +338,25 @@ pub fn render_profile_panel(
                                     }))
                                     .child(
                                         div()
+                                            .flex_1()
+                                            .min_w(px(0.))
                                             .flex()
                                             .items_center()
                                             .gap_2()
-                                            .child(Avatar::render(
-                                                &entry_name,
-                                                entry.avatar_asset.as_deref(),
-                                                28.,
-                                                default_avatar_background(&entry_name),
-                                                text_primary(),
-                                            ))
+                                            .child(
+                                                div().flex_shrink_0().child(Avatar::render(
+                                                    &entry_name,
+                                                    entry.avatar_asset.as_deref(),
+                                                    28.,
+                                                    default_avatar_background(&entry_name),
+                                                    text_primary(),
+                                                )),
+                                            )
                                             .child(
                                                 div()
+                                                    .flex_1()
+                                                    .min_w(px(0.))
+                                                    .truncate()
                                                     .text_sm()
                                                     .text_color(rgb(profile_name_color(
                                                         entry.affinity,

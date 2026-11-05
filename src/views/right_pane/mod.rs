@@ -132,6 +132,7 @@ impl RightPaneHost {
             .child(
                 div()
                     .w(px(RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX))
+                    .flex_shrink_0()
                     .h_full()
                     .bg(glass_surface_strong())
                     .cursor(CursorStyle::ResizeColumn)
