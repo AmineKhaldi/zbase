@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The tag-triggered workflow owns building, signing, notarization, and publishing.
+# Optional CLI helper: prepare a tag and draft, then publish through GitHub after editing notes.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 VERSION="${1:?Usage: scripts/release.sh <version>}"
@@ -11,4 +11,5 @@ git fetch origin main
 git merge-base --is-ancestor HEAD origin/main || { echo "Release commit must already be on origin/main" >&2; exit 1; }
 git tag -a "v${VERSION}" -m "zBase v${VERSION}"
 git push origin "refs/tags/v${VERSION}"
-echo "Release workflow started for v${VERSION}. It publishes only after signing and notarization succeed."
+gh release create "v${VERSION}" --verify-tag --draft --title "zBase v${VERSION}" --generate-notes
+echo "Draft created. Edit its notes in GitHub, then click Publish release to build and attach the signed DMG."

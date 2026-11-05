@@ -21,17 +21,22 @@ The signing certificate must be Developer ID **Application**, not Apple Developm
 
 ## Test before publishing
 
-Merge the workflow to the default branch first so GitHub exposes its manual Run workflow control. Run **Release** from the desired branch with **publish unchecked**. This performs the full signing and notarization pipeline and uploads a `macos-release` artifact, without creating a GitHub release or changing the Homebrew tap. Download the DMG from that workflow run and test it on a Mac without development dependencies installed.
+Merge the workflow to the default branch first so GitHub exposes its manual Run workflow control. Run **Release** from the desired branch. Manual runs only build artifacts; they never attach assets to a release. This performs the full signing and notarization pipeline and uploads a `macos-release` artifact, without creating a GitHub release or changing the Homebrew tap. Download the DMG from that workflow run and test it on a Mac without development dependencies installed.
 
 ## Publish
 
-1. Update the package version in `Cargo.toml` and `Cargo.lock`, and merge the release commit to `main`.
-2. From that committed revision, run `scripts/release.sh 1.0.13` (substitute its actual version). The script checks the version and pushes the annotated `v1.0.13` tag.
-3. The tag starts the Release workflow. Successful builds upload the signed/notarized DMG, its SHA-256 checksum, media source archives, and build information, then publish the draft release. Only then is the Homebrew source formula updated.
+1. Update the package version in `Cargo.toml` and `Cargo.lock`, and merge the release commit (including this workflow) to `main`.
+2. In GitHub, open **Releases → Draft a new release**. Choose **Create new tag**, enter `v` followed by the exact Cargo version (for example, `v1.0.13`), and target the release commit on `main`.
+3. Write your title and release notes. Save the draft while editing; click **Publish release** when ready.
+4. The `release: published` event starts the workflow. It builds, signs and notarizes the app and DMG, then attaches the DMG, checksum, corresponding media sources and build information to that same release. Your title, notes, latest selection and prerelease status are preserved. The Homebrew source formula is updated after attachment for stable releases only.
 
-The workflow no longer publishes on every push to `main`, creates its own tags, or bumps versions automatically. The local release script does not create an unsigned GitHub release.
+The release is public immediately; its DMG becomes available once the workflow succeeds. Saving a draft, editing notes, pushing a tag, or merging to `main` does not start a release build. There is no automatic tagging or version bump on merge. Manual workflow runs remain available for testing without changing any release.
 
-If building/notarization fails, no public release is created. Rerun the failed workflow after correcting the cause. A publishing failure can leave a draft; rerunning resumes that draft. An already-public release is never overwritten. If only the Homebrew update failed after publication, rerun that step/job with the publish step skipped, or run `scripts/update_homebrew.py vVERSION` with an appropriately scoped `GH_TOKEN`; do not republish the existing release.
+This process requires **immutable releases to be disabled**, since assets are attached after publication. The workflow rejects an immutable release before compiling.
+
+The optional CLI helper `scripts/release.sh VERSION` validates the committed version, pushes its tag, and creates a draft with generated notes. Edit and publish that draft in GitHub to start the build. The script is not required for the browser-based process.
+
+If building or notarization fails, the public release remains available with its notes, but the new DMG is not attached. Use **Re-run failed jobs** on that release's workflow run to retry; do not create a replacement release or move its tag. Asset upload retries replace matching generated asset names and preserve your release metadata and other assets. If only the Homebrew step fails, rerunning the attachment job is safe. Manual workflow runs do not attach assets, so use the original release-triggered run when retrying attachment.
 
 ## Packaging and media libraries
 

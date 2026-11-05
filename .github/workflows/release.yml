@@ -1,14 +1,9 @@
 name: Release
 
 on:
-  push:
-    tags: ['v*']
+  release:
+    types: [published]
   workflow_dispatch:
-    inputs:
-      publish:
-        description: Publish a GitHub release (must run from a version tag)
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -23,7 +18,6 @@ jobs:
     timeout-minutes: 120
     outputs:
       version: ${{ steps.version.outputs.version }}
-      publish: ${{ steps.version.outputs.publish }}
     env:
       MACOSX_DEPLOYMENT_TARGET: '15.0'
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -37,16 +31,21 @@ jobs:
       - name: Validate release version and platform
         id: version
         env:
-          REQUEST_PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+          RELEASE_BUILD: ${{ github.event_name == 'release' }}
         run: |
           test "$(uname -m)" = arm64
           VERSION=$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)
-          if [[ "$REQUEST_PUBLISH" == true && "$GITHUB_REF" != "refs/tags/v${VERSION}" ]]; then
-            echo 'Publishing requires a tag matching Cargo.toml' >&2
-            exit 1
+          if [[ "$RELEASE_BUILD" == true ]]; then
+            if [[ "$GITHUB_REF" != "refs/tags/v${VERSION}" ]]; then
+              echo 'Release tag must match the package version in Cargo.toml' >&2
+              exit 1
+            fi
+            if ! jq -e '.release.immutable != true' "$GITHUB_EVENT_PATH"; then
+              echo 'This workflow attaches assets after publication; immutable releases must be disabled' >&2
+              exit 1
+            fi
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "publish=$REQUEST_PUBLISH" >> "$GITHUB_OUTPUT"
       - name: Install build tools
         run: |
           brew install cmake pkgconf meson ninja
@@ -107,9 +106,9 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/zbase-signing/release.keychain-db" 2>/dev/null || true
           rm -rf "$RUNNER_TEMP/zbase-signing"
 
-  publish:
+  attach:
     needs: build
-    if: needs.build.outputs.publish == 'true'
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -117,24 +116,24 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       VERSION: ${{ needs.build.outputs.version }}
+      RELEASE_ID: ${{ github.event.release.id }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           name: macos-release
           path: dist/release
-      - name: Publish verified assets atomically through a draft
+      - name: Attach verified assets to the published release
         run: |
           TAG="v${VERSION}"
-          if gh release view "$TAG" --json isDraft > release-state.json 2>/dev/null; then
-            jq -e '.isDraft == true' release-state.json
-          else
-            gh release create "$TAG" --verify-tag --draft --title "zBase $TAG" --generate-notes
-          fi
+          # Check the original release still exists and accepts asset uploads.
+          gh api "repos/$GH_REPO/releases/tags/$TAG" > release-state.json
+          jq -e --argjson id "$RELEASE_ID" \
+            '.id == $id and .draft == false and .immutable != true' release-state.json
           tar -czf dist/release/media-build-info.tar.gz -C dist/release media-build-info
           gh release upload "$TAG" dist/release/*.dmg dist/release/*.sha256 dist/release/*.tar.* --clobber
-          gh release edit "$TAG" --draft=false --latest
       - name: Update Homebrew source formula
+        if: github.event.release.prerelease == false
         env:
           GH_TOKEN: ${{ secrets.TAP_TOKEN }}
         run: python3 scripts/update_homebrew.py "v${VERSION}"
