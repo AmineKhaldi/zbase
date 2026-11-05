@@ -12,13 +12,37 @@ A fast, native desktop chat client for <a href="https://keybase.io">Keybase</a>,
   <img src="docs/screenshot.png" alt="zBase screenshot" />
 </p>
 
-zBase is a from-scratch replacement for the official Keybase desktop app. It talks directly to the Keybase daemon over its local msgpack-RPC socket and renders everything through GPUI — the same GPU-accelerated UI framework that powers the [Zed](https://zed.dev) editor. The result is a chat client that launches instantly, scrolls at 120 fps, and uses a fraction of the memory of an Electron app.
+zBase is a from-scratch replacement for the official Keybase desktop app. It talks directly to the Keybase daemon over its local msgpack-RPC socket and renders everything through GPUI — the same GPU-accelerated UI framework that powers the [Zed](https://zed.dev) editor. zBase keeps a local message cache for quick navigation and search, with light and dark themes that follow Keybase’s colors.
+
+## Install
+
+The recommended installation is the **signed and notarized macOS app**. You do not need Rust, Homebrew, or separate media libraries.
+
+1. Make sure you have **macOS 15 or later on an Apple Silicon Mac** and [Keybase](https://keybase.io/download) installed and running.
+2. Download the Apple Silicon `.dmg` from the [latest GitHub release](https://github.com/cameroncooper/zbase/releases/latest).
+3. Open the DMG and drag **zBase.app** to **Applications**, then launch zBase from Applications or Spotlight.
+
+zBase uses the local Keybase service and your existing Keybase account. Keep the Keybase app or `keybase service` running while using zBase. Official DMGs bundle their media libraries; Intel Macs are not supported by these downloads.
+
+### Optional: Homebrew source installation
+
+Homebrew compiles zBase locally and installs its build dependencies. Use this if you prefer a source installation; it is not required for the DMG.
+
+```sh
+brew install cameroncooper/tap/zbase
+```
+
+After compilation, link the app bundle into Applications, provided there is not already a zBase.app installed there:
+
+```sh
+ln -s "$(brew --prefix)/opt/zbase/zBase.app" /Applications/zBase.app
+```
 
 ## Features
 
 ### Chat
 - Channels, DMs, and group DMs organized by team/workspace
-- Threaded conversations with a dedicated right pane
+- Threaded conversations with reply previews, reply counts, and a dedicated right pane
 - Send, edit, and delete messages
 - Emoji reactions (standard Unicode and custom team emoji)
 - Emoji picker with skin tone preference and recents
@@ -29,9 +53,11 @@ zBase is a from-scratch replacement for the official Keybase desktop app. It tal
 - Selectable, copyable message text with styled ranges and clickable links
 - @mentions, #channel mentions, and @here/@all broadcasts
 - Pinned messages per conversation
+- Leave eligible team channels from the channel Details panel
 
 ### Navigation
-- **Recent / Grouped sidebar** — use the history icon beside Search to toggle between one activity-sorted list and team/channel groups; the choice is saved per account. Recent keeps read conversations in place and shows shortened team names inline.
+- **Recent / Grouped sidebar** — use the history icon beside Search to toggle between one activity-sorted list and team/channel groups; the choice is saved per account. Recent is the default for new accounts, keeps read conversations in place, and shows shortened team names inline.
+- **Grouped Unread** — team icons and nested channels, with the active conversation kept visible until you navigate away
 - **Quick Switcher** (`Cmd+K`) — fuzzy search across all conversations, ranked by usage affinity
 - **Find in Chat** (`Cmd+F`) — search within the current conversation with match-by-match navigation
 - **Global Search** (`Cmd+J`) — full-text search across workspaces with filters (by user, channel, has file, has link, mentions me) and highlighted snippets
@@ -54,6 +80,7 @@ zBase is a from-scratch replacement for the official Keybase desktop app. It tal
 - Comfortable and compact density
 - Reduced motion toggle
 - Per-account sidebar section ordering and collapse state
+- Remembered window size and position, with temporary space for profiles and threads excluded from your preferred size
 - Persistent settings stored in `.zbase/settings.conf`
 
 ### Performance
@@ -61,58 +88,17 @@ zBase is a from-scratch replacement for the official Keybase desktop app. It tal
 - CSV export and configurable scenarios via environment variables
 - RocksDB local cache for offline-ready conversation and message history
 - Tantivy full-text search index with automatic schema migration
-
-## Requirements
-
-- **macOS 15+** (official DMGs target Apple Silicon)
-- **Keybase** daemon running locally (`keybase service` or the Keybase app)
-
-Source builds also require stable **Rust** with 2024 edition support, **FFmpeg**, **CMake**, and **pkg-config**. Official DMGs bundle their media libraries and do not require Homebrew.
-
-## Install
-
-### DMG
-
-Download the Apple Silicon `.dmg` from [GitHub Releases](https://github.com/cameroncooper/zbase/releases), open it, and drag **zBase.app** to **Applications**. Official DMGs are signed and notarized. See [macOS release documentation](docs/macos-releases.md) for the build and signing process.
-
-### Homebrew
-
-```sh
-brew install cameroncooper/tap/zbase
-```
-
-Homebrew builds from source, so this will take a few minutes. Once it finishes, link the app bundle into your Applications folder:
-
-```sh
-ln -sf "$(brew --prefix)/opt/zbase/zBase.app" /Applications/zBase.app
-```
-
-### From source
-
-```sh
-git clone https://github.com/cameroncooper/zbase.git
-cd zbase
-cargo build --release
-```
-
-To create a macOS `.app` bundle:
-
-```sh
-scripts/macos/build_app_bundle.sh release
-cp -r dist/macos/zBase.app /Applications/
-```
+- Metadata-only history catch-up and local search indexing avoid downloading every historical attachment
 
 ## Usage
 
-Make sure the Keybase daemon is running, then launch zBase:
+Launch **zBase** from Applications or Spotlight. To open the installed app from a terminal:
 
 ```sh
-# Run from the terminal
-cargo run --release
-
-# Or launch the app bundle
 open /Applications/zBase.app
 ```
+
+The history icon beside Search toggles Recent and Grouped sidebar views. Opening a profile or thread adds space to a compact window when needed; closing the panel restores its base width.
 
 ### Environment variables
 
@@ -163,6 +149,44 @@ src/
 ```
 
 The backend layer is trait-based (`ChatBackend`), making it possible to add adapters for other chat providers in the future.
+
+## Building from source
+
+Source builds require macOS 15+, Xcode Command Line Tools, stable Rust with 2024 edition support, and the following Homebrew dependencies:
+
+```sh
+xcode-select --install
+brew install cmake pkgconf ffmpeg
+```
+
+With Rust installed, clone the repository and build the app:
+
+```sh
+git clone https://github.com/cameroncooper/zbase.git
+cd zbase
+scripts/macos/build_app_bundle.sh release
+open dist/macos/zBase.app
+```
+
+This creates a development app at `dist/macos/zBase.app` using your installed media libraries. For terminal-based development:
+
+```sh
+cargo run --locked --release --features gpui/runtime_shaders
+```
+
+For self-contained packaging, Developer ID signing, notarization, and publishing, see [macOS releases](docs/macos-releases.md).
+
+### Checks before opening a PR
+
+```sh
+cargo clippy --locked --all-targets --features gpui/runtime_shaders
+cargo test --locked --all-targets --features gpui/runtime_shaders
+python3 -m unittest discover -s scripts/macos -p test_bundle_dylibs.py -v
+```
+
+GitHub Actions runs workflow/script linting, Clippy, Rust tests, macOS packaging integration tests, and a release build on PRs and pushes to `main`. It verifies the app’s minimum OS, architecture, bundled library dependencies, and ad-hoc signatures. The `macos-development-app` artifact contains a development build for inspection; it is not Developer ID signed or notarized. Release signing credentials are used only by the separate Release workflow.
+
+Unit and packaging tests do not require Keybase or a logged-in account. Tests requiring a live service remain opt-in. Native interactive UI checks are still performed separately; CI does not verify on-screen rendering or live account synchronization.
 
 ## Development tools
 
