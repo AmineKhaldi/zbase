@@ -8,17 +8,18 @@ BUNDLE_IDENTIFIER="${BUNDLE_IDENTIFIER:-com.zbase.app}"
 ICON_PATH="${ROOT_DIR}/assets/macos/AppIcon.icns"
 VERSION="$(awk -F'"' '/^version = / { print $2; exit }' "${ROOT_DIR}/Cargo.toml")"
 SKIP_BUILD="${SKIP_BUILD:-0}"
+export MACOSX_DEPLOYMENT_TARGET=15.0
 TARGET_DIR="$(cargo metadata --format-version 1 --no-deps --manifest-path "${ROOT_DIR}/Cargo.toml" | plutil -extract target_directory raw -o - -)"
 
 if [[ "${PROFILE}" == "release" ]]; then
   BIN_PATH="${TARGET_DIR}/release/zbase"
   if [[ "${SKIP_BUILD}" != "1" ]]; then
-    cargo build --release --bin zbase --features gpui/runtime_shaders --manifest-path "${ROOT_DIR}/Cargo.toml"
+    cargo build --release --locked --bin zbase --features gpui/runtime_shaders --manifest-path "${ROOT_DIR}/Cargo.toml"
   fi
 else
   BIN_PATH="${TARGET_DIR}/debug/zbase"
   if [[ "${SKIP_BUILD}" != "1" ]]; then
-    cargo build --bin zbase --features gpui/runtime_shaders --manifest-path "${ROOT_DIR}/Cargo.toml"
+    cargo build --locked --bin zbase --features gpui/runtime_shaders --manifest-path "${ROOT_DIR}/Cargo.toml"
   fi
 fi
 
@@ -76,7 +77,7 @@ cat > "${PLIST_PATH}" <<EOF
   <key>CFBundleVersion</key>
   <string>${VERSION}</string>
   <key>LSMinimumSystemVersion</key>
-  <string>13.0</string>
+  <string>15.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
 </dict>

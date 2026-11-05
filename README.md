@@ -63,13 +63,16 @@ zBase is a from-scratch replacement for the official Keybase desktop app. It tal
 
 ## Requirements
 
-- **macOS 13+** (Apple Silicon or Intel)
-- **Rust 2024 edition** (nightly toolchain recommended)
+- **macOS 15+** (official DMGs target Apple Silicon)
 - **Keybase** daemon running locally (`keybase service` or the Keybase app)
-- **FFmpeg** libraries (for video preview decoding)
-- **CMake** and **pkg-config** (build dependencies for RocksDB)
+
+Source builds also require stable **Rust** with 2024 edition support, **FFmpeg**, **CMake**, and **pkg-config**. Official DMGs bundle their media libraries and do not require Homebrew.
 
 ## Install
+
+### DMG
+
+Download the Apple Silicon `.dmg` from [GitHub Releases](https://github.com/cameroncooper/zbase/releases), open it, and drag **zBase.app** to **Applications**. Official DMGs are signed and notarized. See [macOS release documentation](docs/macos-releases.md) for the build and signing process.
 
 ### Homebrew
 
