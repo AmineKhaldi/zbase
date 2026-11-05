@@ -231,7 +231,11 @@ impl Sidebar {
                         current_user_avatar_asset,
                         24.,
                         success_soft(),
-                        0xffffff,
+                        if is_dark_theme() {
+                            0xffffff
+                        } else {
+                            crate::views::affinity_positive()
+                        },
                     ))
                     .child(
                         div()
@@ -375,6 +379,15 @@ impl Sidebar {
         let is_hovered = hovered_row == Some(route_label.as_str());
         let hover_label = route_label.clone();
 
+        let row_color = if selected {
+            if is_dark_theme() {
+                accent()
+            } else {
+                crate::views::text_inverted()
+            }
+        } else {
+            text_primary()
+        };
         div()
             // Rows can appear in multiple sections (e.g. Unread + Channels/DMs). Keep ids unique so
             // hit-testing and click dispatch remain reliable.
@@ -390,6 +403,10 @@ impl Sidebar {
             .items_center()
             .justify_between()
             .cursor_pointer()
+            .when(selected && !is_dark_theme(), |row| row.bg(rgb(accent())))
+            .when(is_hovered && !selected && !is_dark_theme(), |row| {
+                row.bg(subtle_surface())
+            })
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 this.sidebar_set_hovered_row(
                     if *hovered {
@@ -412,22 +429,21 @@ impl Sidebar {
                     .when(selected || has_unread || is_hovered, |d| {
                         d.font_weight(FontWeight::BOLD)
                     })
-                    .text_color(rgb(if selected { accent() } else { text_primary() }))
+                    .text_color(rgb(row_color))
                     .child(Self::leading_element(
                         row,
                         &route_label,
                         conversation_avatars,
-                        selected,
+                        if selected {
+                            row_color
+                        } else {
+                            text_secondary()
+                        },
                     ))
                     .child(row.label.clone()),
             )
-            .when(has_mention, |d| {
+            .when(has_unread || has_mention, |d| {
                 d.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(unread_indicator())))
-            })
-            .when(has_unread && !has_mention, |d| {
-                d.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(
-                    if is_dark_theme() { unread_indicator() } else { accent() }
-                )))
             })
             .into_any_element()
     }
@@ -436,7 +452,7 @@ impl Sidebar {
         row: &SidebarRow,
         route_label: &str,
         conversation_avatars: &HashMap<String, SidebarAvatar>,
-        selected: bool,
+        channel_color: u32,
     ) -> AnyElement {
         match &row.route {
             Route::Channel { .. } => {
@@ -454,11 +470,7 @@ impl Sidebar {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(hash_icon(if selected {
-                            accent()
-                        } else {
-                            text_secondary()
-                        }))
+                        .child(hash_icon(channel_color))
                         .into_any_element()
                 }
             }

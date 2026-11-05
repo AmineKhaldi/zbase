@@ -1463,8 +1463,17 @@ mod tests {
         use crate::{app::theme::ThemeVariant, views::with_theme};
         let dark = with_theme(ThemeVariant::Dark, SelectableTextColors::current);
         let light = with_theme(ThemeVariant::Light, SelectableTextColors::current);
-        assert_ne!(dark.link, light.link);
-        for (captured, ambient) in [(dark, ThemeVariant::Light), (light, ThemeVariant::Dark)] {
+        // Themes may legitimately share link colors. Include a distinct captured
+        // style so this checks deferred rendering independently of palette choices.
+        let configured = SelectableTextColors {
+            link: 0x123456,
+            selection: 0x654321ff,
+        };
+        for (captured, ambient) in [
+            (dark, ThemeVariant::Light),
+            (light, ThemeVariant::Dark),
+            (configured, ThemeVariant::Light),
+        ] {
             let runs = with_theme(ambient, || {
                 build_text_runs_for_content(
                     "link",

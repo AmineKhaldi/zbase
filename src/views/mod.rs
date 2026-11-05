@@ -75,40 +75,42 @@ struct Palette {
     selection: u32,
 }
 
+// Light palette follows Keybase shared/styles/colors.tsx: white, blueGrey,
+// black_on_white, blue/blueDark, and the matching semantic status colors.
 const LIGHT_PALETTE: Palette = Palette {
-    app_bg: 0xf3f7fa,
-    titlebar_bg: 0xf7fbfd,
-    titlebar_surface: 0xe9eff4,
-    rail_bg: 0xf4f8fb,
-    rail_surface: 0xe5edf3,
-    sidebar_bg: 0xf7fafc,
-    main_bg: 0xfbfcfd,
+    app_bg: 0xffffff,
+    titlebar_bg: 0xffffff,
+    titlebar_surface: 0xe6e6e6,
+    rail_bg: 0x3663ea,
+    rail_surface: 0x4c8eff,
+    sidebar_bg: 0xf2f4f7,
+    main_bg: 0xffffff,
     panel_bg: 0xffffff,
-    panel_alt_bg: 0xf4f7fa,
-    border: 0xdbe3ea,
-    text_primary: 0x334155,
-    text_secondary: 0x7a8897,
-    text_inverted: 0xf7fbff,
-    text_muted_inverted: 0x93a4b8,
-    accent: 0x6f87ad,
-    link: 0x6f87ad,
-    unread_indicator: 0x6588a7,
-    accent_soft: 0xebf0f6,
-    success: 0x5e8f88,
-    success_soft: 0xe9f3f1,
-    warning: 0xa58558,
-    warning_soft: 0xf8efdf,
-    danger: 0xb47a74,
-    danger_soft: 0xf7ecea,
-    affinity_positive: 0x5e8f88,
-    affinity_positive_soft: 0xe9f3f1,
-    affinity_broken: 0xb47a74,
-    affinity_broken_soft: 0xf7ecea,
-    mention: 0x6588a7,
-    mention_soft: 0xe9f0f5,
-    mention_you: 0xa58558,
-    mention_you_soft: 0xf8efdf,
-    selection: 0x6f87ad26,
+    panel_alt_bg: 0xf0f0f0,
+    border: 0xe6e6e6,
+    text_primary: 0x262626,
+    text_secondary: 0x7f7f7f,
+    text_inverted: 0xffffff,
+    text_muted_inverted: 0xcccccc,
+    accent: 0x4c8eff,
+    link: 0x3663ea,
+    unread_indicator: 0xff6f21,
+    accent_soft: 0xebf2fc,
+    success: 0x37bd99,
+    success_soft: 0xe8faf6,
+    warning: 0x75574e,
+    warning_soft: 0xfffdcc,
+    danger: 0xeb253b,
+    danger_soft: 0xfaf2ed,
+    affinity_positive: 0x189e7a,
+    affinity_positive_soft: 0xe8faf6,
+    affinity_broken: 0xeb253b,
+    affinity_broken_soft: 0xfaf2ed,
+    mention: 0x3663ea,
+    mention_soft: 0xebf2fc,
+    mention_you: 0x3663ea,
+    mention_you_soft: 0xebf2fc,
+    selection: 0x4c8eff4d,
 };
 
 // Keybase desktop dark colors (shared/styles/colors.tsx): white, blueGrey,
@@ -211,11 +213,11 @@ pub fn panel_alt_bg() -> u32 {
 }
 
 pub fn panel_surface() -> Hsla {
-    tint(panel_bg(), if is_dark_theme() { 0.55 } else { 0.45 })
+    tint(panel_bg(), if is_dark_theme() { 0.55 } else { 1.0 })
 }
 
 pub fn panel_alt_surface() -> Hsla {
-    tint(panel_alt_bg(), if is_dark_theme() { 0.50 } else { 0.40 })
+    tint(panel_alt_bg(), if is_dark_theme() { 0.50 } else { 1.0 })
 }
 
 pub fn border() -> u32 {
@@ -386,26 +388,18 @@ pub fn tint(color: u32, opacity: f32) -> Hsla {
 }
 
 pub fn app_backdrop() -> Background {
-    if is_dark_theme() {
-        linear_gradient(
-            135.,
-            linear_color_stop(tint(app_bg(), 1.0), 0.0),
-            linear_color_stop(tint(main_bg(), 1.0), 1.0),
-        )
-    } else {
-        linear_gradient(
-            135.,
-            linear_color_stop(tint(0xf0f5f9, 0.62), 0.0),
-            linear_color_stop(tint(0xeaeff5, 0.66), 1.0),
-        )
-    }
+    linear_gradient(
+        135.,
+        linear_color_stop(tint(app_bg(), 1.0), 0.0),
+        linear_color_stop(tint(main_bg(), 1.0), 1.0),
+    )
 }
 
 pub fn glass_surface() -> Hsla {
     if is_dark_theme() {
         tint(panel_bg(), 0.98)
     } else {
-        tint(0xffffff, 0.45)
+        tint(panel_bg(), 1.0)
     }
 }
 
@@ -413,7 +407,7 @@ pub fn glass_surface_strong() -> Hsla {
     if is_dark_theme() {
         tint(panel_alt_bg(), 0.98)
     } else {
-        tint(0xffffff, 0.88)
+        tint(panel_alt_bg(), 1.0)
     }
 }
 
@@ -421,7 +415,7 @@ pub fn glass_surface_dark() -> Hsla {
     if is_dark_theme() {
         tint(sidebar_bg(), 0.98)
     } else {
-        tint(0xffffff, 0.76)
+        tint(sidebar_bg(), 1.0)
     }
 }
 
@@ -429,7 +423,7 @@ pub fn modal_surface() -> Hsla {
     if is_dark_theme() {
         tint(panel_bg(), 0.99)
     } else {
-        tint(0xf8f9fa, 0.99)
+        tint(panel_bg(), 1.0)
     }
 }
 
@@ -437,19 +431,19 @@ pub fn content_surface() -> Hsla {
     if is_dark_theme() {
         tint(main_bg(), 0.98)
     } else {
-        tint(0xffffff, 0.82)
+        tint(main_bg(), 1.0)
     }
 }
 
 pub fn subtle_surface() -> Hsla {
-    tint(panel_alt_bg(), if is_dark_theme() { 0.88 } else { 0.68 })
+    tint(panel_alt_bg(), if is_dark_theme() { 0.88 } else { 1.0 })
 }
 
 pub fn shell_border() -> Hsla {
     if is_dark_theme() {
         tint(0xffffff, 0.10)
     } else {
-        tint(0x8ea3b7, 0.28)
+        tint(0x000000, 0.10)
     }
 }
 
@@ -457,7 +451,7 @@ pub fn shell_border_strong() -> Hsla {
     if is_dark_theme() {
         tint(0xffffff, 0.20)
     } else {
-        tint(0x8ea3b7, 0.44)
+        tint(0x000000, 0.20)
     }
 }
 

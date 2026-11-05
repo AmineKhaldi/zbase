@@ -877,8 +877,7 @@ impl TimelineList {
             return text_primary();
         }
         match affinity {
-            Affinity::None if super::is_dark_theme() => super::link(),
-            Affinity::None => text_primary(),
+            Affinity::None => super::link(),
             Affinity::Positive => affinity_positive(),
             Affinity::Broken => affinity_broken(),
         }
