@@ -335,7 +335,7 @@ impl AppModels {
                 current_user_id: Some(UserId::new("user_me")),
                 rows: vec![
                     TimelineRow::DateDivider("Today".to_string()),
-                    TimelineRow::UnreadDivider("3 unread messages".to_string()),
+                    TimelineRow::UnreadDivider("3 new messages".to_string()),
                     TimelineRow::Message(MessageRow {
                         author: demo_alice(),
                         message: general_message,
@@ -853,7 +853,7 @@ fn general_timeline() -> TimelineModel {
         current_user_id: Some(UserId::new("user_me")),
         rows: vec![
             TimelineRow::DateDivider("Today".to_string()),
-            TimelineRow::UnreadDivider("3 unread messages".to_string()),
+            TimelineRow::UnreadDivider("3 new messages".to_string()),
             TimelineRow::Message(MessageRow {
                 author,
                 message: MessageRecord {

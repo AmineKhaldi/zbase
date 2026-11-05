@@ -2661,7 +2661,7 @@ impl AppWindow {
             rows.insert(
                 rows.len() / 2,
                 crate::models::timeline_model::TimelineRow::UnreadDivider(
-                    "Unread messages".to_string(),
+                    "New messages".to_string(),
                 ),
             );
         }
@@ -3713,7 +3713,7 @@ impl AppWindow {
                     })
                 {
                     rows.push(crate::models::timeline_model::TimelineRow::UnreadDivider(
-                        "Unread messages".to_string(),
+                        "New messages".to_string(),
                     ));
                     unread_divider_inserted = true;
                     previous_message = None;
