@@ -1,7 +1,7 @@
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SidebarMode {
-    Recent,
     #[default]
+    Recent,
     Grouped,
 }
 

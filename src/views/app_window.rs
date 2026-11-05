@@ -8773,6 +8773,7 @@ impl Render for AppWindow {
                         custom_emoji_index,
                         supports_custom_emoji,
                         quick_switcher_indexing_status.as_deref(),
+                        window.viewport_size(),
                         cx,
                     );
                     if self.models.overlay.quick_switcher_open {

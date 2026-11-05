@@ -250,7 +250,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sidebar_modes_round_trip_and_old_settings_default_to_grouped() {
+    fn sidebar_modes_round_trip_and_missing_preferences_use_default() {
         let mut settings = SettingsModel::default();
         settings
             .sidebar_modes

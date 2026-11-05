@@ -1604,9 +1604,12 @@ impl TimelineList {
                             this.cancel_hover_clear(); cx.stop_propagation();
                         }))
                         .child(inline_toolbar);
-                    deferred(toolbar_wrapper).priority(10).into_any_element()
+                    div().absolute().inset_0()
+                        .child(deferred(toolbar_wrapper).priority(10))
+                        .into_any_element()
                 } else {
-                    div().into_any_element()
+                    // Even an empty in-flow child adds the message column's gap.
+                    div().absolute().into_any_element()
                 }
             }))
             .when(

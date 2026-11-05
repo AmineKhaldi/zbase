@@ -1,5 +1,5 @@
 use crate::models::conversation_model::AvatarParticipant;
-use crate::views::{accent, panel_alt_bg, panel_surface};
+use crate::views::{accent, is_dark_theme, panel_surface};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, ImageSource, IntoElement, ObjectFit, ParentElement, Styled, StyledImage, div, img,
@@ -136,6 +136,7 @@ impl Avatar {
         let initials = initials_for_name(name);
 
         div()
+            .flex_shrink_0()
             .w(px(size))
             .h(px(size))
             .when(circular, |d| d.rounded_full())
@@ -186,7 +187,8 @@ impl Avatar {
 pub fn default_avatar_background(name: &str) -> u32 {
     match name {
         "You" => accent(),
-        _ => panel_alt_bg(),
+        _ if is_dark_theme() => 0x484848,
+        _ => 0xd8dde3,
     }
 }
 

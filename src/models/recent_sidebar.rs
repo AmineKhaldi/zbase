@@ -196,13 +196,14 @@ mod tests {
         };
         let mut models = AppModels::empty_with_settings(SettingsModel::default());
         models.app.current_user_id = Some(UserId::new("alice"));
-        models.set_sidebar_mode(SidebarMode::Recent);
+        assert_eq!(models.sidebar.mode, SidebarMode::Recent);
+        models.set_sidebar_mode(SidebarMode::Grouped);
         models.app.current_user_id = Some(UserId::new("bob"));
         models.restore_sidebar_mode();
-        assert_eq!(models.sidebar.mode, SidebarMode::Grouped);
+        assert_eq!(models.sidebar.mode, SidebarMode::Recent);
         models.app.current_user_id = Some(UserId::new("ALICE"));
         models.restore_sidebar_mode();
-        assert_eq!(models.sidebar.mode, SidebarMode::Recent);
+        assert_eq!(models.sidebar.mode, SidebarMode::Grouped);
     }
     #[test]
     fn recent_navigation_and_filtering_ignore_group_collapse_and_reads_keep_rows() {
