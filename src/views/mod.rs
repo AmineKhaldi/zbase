@@ -759,6 +759,10 @@ pub fn activity_icon(color: u32) -> AnyElement {
     icon_asset("assets/icons/activity.svg", 18., color)
 }
 
+pub fn history_icon(color: u32) -> AnyElement {
+    icon_asset("assets/icons/history.svg", 18., color)
+}
+
 pub fn search_icon(color: u32) -> AnyElement {
     icon_asset("assets/icons/search.svg", 18., color)
 }

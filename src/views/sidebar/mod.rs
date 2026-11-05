@@ -12,16 +12,16 @@ use crate::{
     },
     views::{
         accent, avatar::Avatar, chevron_down_icon, chevron_right_icon, glass_surface_dark,
-        hash_icon, is_dark_theme, panel_bg, plus_icon, search_icon, shell_border_strong,
-        sidebar_bg, subtle_surface, success, success_soft, text_primary, text_secondary, tint,
-        unread_indicator,
+        hash_icon, history_icon, is_dark_theme, panel_bg, plus_icon, search_icon,
+        shell_border_strong, sidebar_bg, subtle_surface, success, success_soft, text_primary,
+        text_secondary, tint, unread_indicator,
     },
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, AppContext, ClickEvent, Context, DragMoveEvent, FontWeight, InteractiveElement,
-    IntoElement, MouseMoveEvent, ParentElement, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, div, px, rgb,
+    IntoElement, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
+    Styled, UniformListScrollHandle, Window, div, px, rgb,
 };
 use std::collections::HashMap;
 
@@ -47,18 +47,42 @@ impl Render for DragPreview {
 }
 
 /// GPUI supplies the hover delay and removes this tooltip on pointer exit.
-struct SidebarTooltip(String, crate::app::theme::ThemeVariant);
+struct SidebarTooltip {
+    text: String,
+    theme: crate::app::theme::ThemeVariant,
+    single_line: bool,
+}
 
 impl SidebarTooltip {
     fn builder(text: String) -> impl Fn(&mut Window, &mut gpui::App) -> gpui::AnyView + 'static {
+        Self::build(text, false)
+    }
+
+    fn single_line(
+        text: String,
+    ) -> impl Fn(&mut Window, &mut gpui::App) -> gpui::AnyView + 'static {
+        Self::build(text, true)
+    }
+
+    fn build(
+        text: String,
+        single_line: bool,
+    ) -> impl Fn(&mut Window, &mut gpui::App) -> gpui::AnyView + 'static {
         let theme = crate::views::current_theme();
-        move |_, cx| cx.new(|_| Self(text.clone(), theme)).into()
+        move |_, cx| {
+            cx.new(|_| Self {
+                text: text.clone(),
+                theme,
+                single_line,
+            })
+            .into()
+        }
     }
 }
 
 impl Render for SidebarTooltip {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        crate::views::with_theme(self.1, || {
+        crate::views::with_theme(self.theme, || {
             div()
                 .max_w(px(360.))
                 .px_2()
@@ -69,9 +93,17 @@ impl Render for SidebarTooltip {
                 .border_color(shell_border_strong())
                 .text_xs()
                 .text_color(rgb(text_primary()))
-                .child(self.0.clone())
+                .when(self.single_line, |tooltip| tooltip.whitespace_nowrap())
+                .child(self.text.clone())
         })
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ToolbarAction {
+    ToggleRecent,
+    Search,
+    NewChat,
 }
 
 #[derive(Default)]
@@ -139,10 +171,23 @@ impl Sidebar {
             })
             .overflow_hidden()
             .text_color(rgb(text_primary()))
-            .child(Self::render_title_bar_row(cx))
-            .child(Self::render_mode_switch(sidebar.mode, cx))
+            .child(Self::render_title_bar_row(
+                sidebar.mode,
+                sidebar.width_px,
+                cx,
+            ))
             .when(sidebar.mode == SidebarMode::Recent, |root| {
-                root.child(recent::render(
+                root.child(
+                    div()
+                        .px_2()
+                        .pt_2()
+                        .pb_1()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(text_secondary()))
+                        .child("Recent"),
+                )
+                .child(recent::render(
                     sidebar,
                     conversation_avatars,
                     current_route,
@@ -202,111 +247,74 @@ impl Sidebar {
             .into_any_element()
     }
 
-    fn render_mode_switch<H: SidebarHost>(mode: SidebarMode, cx: &mut Context<H>) -> AnyElement {
+    fn render_title_bar_row<H: SidebarHost>(
+        mode: SidebarMode,
+        width_px: f32,
+        cx: &mut Context<H>,
+    ) -> AnyElement {
+        let recent = mode == SidebarMode::Recent;
+        let next_mode = if recent {
+            SidebarMode::Grouped
+        } else {
+            SidebarMode::Recent
+        };
+        let buttons = [
+            (
+                "sidebar-recent-trigger",
+                if recent {
+                    "Show grouped teams and conversations".to_string()
+                } else {
+                    "Show recent conversations".to_string()
+                },
+                history_icon(if recent { accent() } else { text_secondary() }),
+                ToolbarAction::ToggleRecent,
+            ),
+            (
+                "sidebar-search-trigger",
+                format!("Search ({})", command_shortcut_label("K")),
+                search_icon(text_secondary()),
+                ToolbarAction::Search,
+            ),
+            (
+                "sidebar-new-chat-trigger",
+                format!("New chat ({})", command_shortcut_label("N")),
+                plus_icon(text_secondary()),
+                ToolbarAction::NewChat,
+            ),
+        ];
+        let compact = width_px < 184.;
         div()
-            .flex()
-            .mx_1()
-            .mt_1()
-            .mb_1()
-            .p(px(2.))
-            .rounded_md()
-            .bg(subtle_surface())
-            .children(
-                [
-                    (SidebarMode::Recent, "Recent"),
-                    (SidebarMode::Grouped, "Grouped"),
-                ]
-                .map(|(value, label)| {
-                    div()
-                        .id(SharedString::from(format!("sidebar-mode-{label}")))
-                        .flex_1()
-                        .py_1()
-                        .text_xs()
-                        .text_center()
-                        .rounded_sm()
-                        .cursor_pointer()
-                        .text_color(rgb(if value == mode {
-                            text_primary()
-                        } else {
-                            text_secondary()
-                        }))
-                        .when(value == mode, |button| {
-                            button.bg(rgb(panel_bg())).font_weight(FontWeight::SEMIBOLD)
-                        })
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.sidebar_set_mode(value, cx)),
-                        )
-                        .child(label)
-                }),
-            )
-            .into_any_element()
-    }
-
-    fn render_title_bar_row<H: SidebarHost>(cx: &mut Context<H>) -> AnyElement {
-        let search_tooltip = format!("Search ({})", command_shortcut_label("K"));
-        let new_chat_tooltip = format!("New chat ({})", command_shortcut_label("N"));
-        div()
-            .when(cfg!(target_os = "macos"), |d| d.h(px(44.)))
+            .when(cfg!(target_os = "macos"), |row| row.h(px(44.)))
             .flex()
             .items_end()
             .justify_end()
-            .gap_1()
-            .child(
+            .gap(px(if compact { 2. } else { 4. }))
+            .children(buttons.map(|(id, tooltip, icon, action)| {
                 div()
-                    .id(SharedString::from("sidebar-search-trigger"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.sidebar_hide_hover_tooltip(cx);
-                        this.sidebar_toggle_quick_switcher(cx);
-                    }))
-                    .on_mouse_move(cx.listener({
-                        let search_tooltip = search_tooltip.clone();
-                        move |this, event: &MouseMoveEvent, _, cx| {
-                            this.sidebar_show_hover_tooltip(
-                                search_tooltip.clone(),
-                                f32::from(event.position.x),
-                                f32::from(event.position.y),
-                                cx,
-                            );
-                            cx.stop_propagation();
-                        }
-                    }))
-                    .w(px(24.))
+                    .id(id)
+                    .w(px(if compact { 20. } else { 24. }))
                     .h(px(24.))
+                    .flex_shrink_0()
                     .rounded_full()
+                    .cursor_pointer()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .hover(|s| s.bg(subtle_surface()))
-                    .child(search_icon(text_secondary())),
-            )
-            .child(
-                div()
-                    .id(SharedString::from("sidebar-new-chat-trigger"))
-                    .on_click(cx.listener(|this, _, window, cx| {
+                    .when(recent && action == ToolbarAction::ToggleRecent, |button| {
+                        button.bg(rgb(crate::views::accent_soft()))
+                    })
+                    .hover(|style| style.bg(subtle_surface()))
+                    .tooltip(SidebarTooltip::single_line(tooltip))
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         this.sidebar_hide_hover_tooltip(cx);
-                        this.sidebar_open_new_chat(window, cx);
-                    }))
-                    .on_mouse_move(cx.listener({
-                        let new_chat_tooltip = new_chat_tooltip.clone();
-                        move |this, event: &MouseMoveEvent, _, cx| {
-                            this.sidebar_show_hover_tooltip(
-                                new_chat_tooltip.clone(),
-                                f32::from(event.position.x),
-                                f32::from(event.position.y),
-                                cx,
-                            );
-                            cx.stop_propagation();
+                        match action {
+                            ToolbarAction::ToggleRecent => this.sidebar_set_mode(next_mode, cx),
+                            ToolbarAction::Search => this.sidebar_toggle_quick_switcher(cx),
+                            ToolbarAction::NewChat => this.sidebar_open_new_chat(window, cx),
                         }
                     }))
-                    .w(px(24.))
-                    .h(px(24.))
-                    .rounded_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .hover(|s| s.bg(subtle_surface()))
-                    .child(plus_icon(text_secondary())),
-            )
+                    .child(icon)
+            }))
             .into_any_element()
     }
 
