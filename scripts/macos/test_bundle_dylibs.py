@@ -37,6 +37,11 @@ class BundleTests(unittest.TestCase):
         subprocess.run(["clang", "-mmacosx-version-min=15.0", str(source_file), "-o", str(destination), *args], check=True)
 
     def test_recursive_bundle_runs_after_original_libraries_disappear(self):
+        # Exercise signed inputs explicitly, independent of linker defaults.
+        # Their signatures must be replaceable after dependency and rpath edits.
+        for binary in [self.app / "Contents/MacOS/zbase", *self.prefix.glob("*.dylib")]:
+            output("codesign", "--force", "--sign", "-", binary)
+            output("codesign", "--verify", "--strict", binary)
         bundle(self.app, self.prefix)
         for library in self.prefix.glob("*.dylib"):
             library.unlink()
@@ -45,6 +50,8 @@ class BundleTests(unittest.TestCase):
         for library in (self.app / "Contents/Frameworks").glob("*.dylib"):
             output("codesign", "--force", "--sign", "-", library)
         output("codesign", "--force", "--sign", "-", self.app / "Contents/MacOS/zbase")
+        for binary in [self.app / "Contents/MacOS/zbase", *(self.app / "Contents/Frameworks").glob("*.dylib")]:
+            output("codesign", "--verify", "--strict", binary)
         subprocess.run([str(self.app / "Contents/MacOS/zbase")], check=True)
 
     def test_rejects_dependency_outside_explicit_prefix(self):
