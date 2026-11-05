@@ -1,11 +1,14 @@
 mod recent;
+mod team_group;
+
+use team_group::{TeamGroup, TeamGroupMode};
 
 use crate::{
-    domain::{conversation::ConversationGroup, ids::SidebarSectionId, route::Route},
+    domain::{ids::SidebarSectionId, route::Route},
     models::{
         app_model::Connectivity,
         settings_model::SidebarMode,
-        sidebar_model::{SidebarAvatar, SidebarModel, SidebarRow, SidebarSection, team_avatar_key},
+        sidebar_model::{SidebarAvatar, SidebarModel, SidebarRow, SidebarSection},
     },
     views::{
         accent, avatar::Avatar, chevron_down_icon, chevron_right_icon, glass_surface_dark,
@@ -376,6 +379,22 @@ impl Sidebar {
         hovered_row: Option<&str>,
         cx: &mut Context<H>,
     ) -> AnyElement {
+        if section.id.0.starts_with("group_")
+            && let Some(team) = section.rows.iter().find_map(|row| row.team.as_ref())
+        {
+            return TeamGroup {
+                team,
+                section_id: &section.id,
+                rows: visible_rows,
+                mode: TeamGroupMode::Collapsible {
+                    collapsed: section.collapsed,
+                },
+                avatars: conversation_avatars,
+                current_route,
+                hovered_row,
+            }
+            .render(cx);
+        }
         let section_id = section.id.clone();
         let section_id_for_drop = section.id.clone();
         let drag_title = section.title.clone();
@@ -441,9 +460,21 @@ impl Sidebar {
                     left.team.as_ref().map(|team| &team.id)
                         == right.team.as_ref().map(|team| &team.id)
                 }) {
-                    let rendered_rows = rows
-                        .iter()
-                        .map(|row| {
+                    if is_unread_section && let Some(team) = &rows[0].team {
+                        children.push(
+                            TeamGroup {
+                                team,
+                                section_id: &section.id,
+                                rows,
+                                mode: TeamGroupMode::Unread,
+                                avatars: conversation_avatars,
+                                current_route,
+                                hovered_row,
+                            }
+                            .render(cx),
+                        );
+                    } else {
+                        children.extend(rows.iter().map(|row| {
                             Self::render_row(
                                 &section.id,
                                 row,
@@ -452,69 +483,11 @@ impl Sidebar {
                                 hovered_row,
                                 cx,
                             )
-                        })
-                        .collect::<Vec<_>>();
-                    if is_unread_section && let Some(team) = &rows[0].team {
-                        children.push(Self::render_unread_team_header(team, conversation_avatars));
-                        children.push(
-                            div()
-                                .ml(px(16.))
-                                .pl(px(4.))
-                                .border_l_1()
-                                .border_color(shell_border_strong())
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .children(rendered_rows)
-                                .into_any_element(),
-                        );
-                    } else {
-                        children.extend(rendered_rows);
+                        }));
                     }
                 }
                 container.children(children)
             })
-            .into_any_element()
-    }
-
-    fn render_unread_team_header(
-        team: &ConversationGroup,
-        conversation_avatars: &HashMap<String, SidebarAvatar>,
-    ) -> AnyElement {
-        let asset = match conversation_avatars.get(&team_avatar_key(&team.id)) {
-            Some(SidebarAvatar::Team(asset)) => Some(asset.as_str()),
-            _ => None,
-        };
-        let tooltip = team.display_name.clone();
-        div()
-            .id(SharedString::from(format!(
-                "sidebar-unread-team-{}",
-                team.id
-            )))
-            .flex()
-            .items_center()
-            .gap_1p5()
-            .px_2()
-            .pt_1()
-            .pb_0p5()
-            .text_xs()
-            .text_color(rgb(text_secondary()))
-            .tooltip(SidebarTooltip::builder(tooltip))
-            .child(Avatar::render_square(
-                &team.display_name,
-                asset,
-                16.,
-                crate::views::accent_soft(),
-                accent(),
-            ))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .whitespace_normal()
-                    .text_ellipsis()
-                    .child(team.display_name.clone()),
-            )
             .into_any_element()
     }
 
