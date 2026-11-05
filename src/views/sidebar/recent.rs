@@ -87,7 +87,9 @@ fn render_row<H: SidebarHost>(
     let selected = &row.route == current;
     let unread = row.unread_count > 0 || row.mention_count > 0;
     let route_key = row.route.label();
-    let is_hovered = hovered == Some(route_key.as_str()) || highlighted == Some(&row.route);
+    let row_id = format!("sidebar-recent-{route_key}");
+    let is_hovered = hovered == Some(row_id.as_str()) || highlighted == Some(&row.route);
+    let hover_id = row_id.clone();
     let route = row.route.clone();
     let tooltip = row.full_label();
     let primary = if selected && !is_dark_theme() {
@@ -138,7 +140,7 @@ fn render_row<H: SidebarHost>(
         Sidebar::leading_element(row, &route_key, avatars, secondary)
     };
     div()
-        .id(SharedString::from(format!("sidebar-recent-{route_key}")))
+        .id(SharedString::from(row_id))
         .h(px(30.))
         .w_full()
         .px_2()
@@ -151,7 +153,7 @@ fn render_row<H: SidebarHost>(
         .when(is_hovered && !selected, |row| row.bg(subtle_surface()))
         .tooltip(SidebarTooltip::builder(tooltip))
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-            this.sidebar_set_hovered_row(hovered.then(|| route_key.clone()), cx);
+            this.sidebar_set_hovered_row(hovered.then(|| hover_id.clone()), cx);
         }))
         .on_click(cx.listener(move |this, _, window, cx| {
             this.sidebar_navigate_to(route.clone(), window, cx)

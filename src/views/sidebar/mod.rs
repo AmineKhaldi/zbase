@@ -522,8 +522,9 @@ impl Sidebar {
         let has_mention = row.mention_count > 0;
         let route_label = row.route.label();
         let route = row.route.clone();
-        let is_hovered = hovered_row == Some(route_label.as_str());
-        let hover_label = route_label.clone();
+        let row_id = format!("sidebar-{}-{route_label}", section_id.0);
+        let is_hovered = hovered_row == Some(row_id.as_str());
+        let hover_label = row_id.clone();
         let tooltip = row.full_label();
 
         let row_color = if selected {
@@ -538,10 +539,7 @@ impl Sidebar {
         div()
             // Rows can appear in multiple sections (e.g. Unread + Channels/DMs). Keep ids unique so
             // hit-testing and click dispatch remain reliable.
-            .id(SharedString::from(format!(
-                "sidebar-{}-{route_label}",
-                section_id.0
-            )))
+            .id(SharedString::from(row_id))
             .w_full()
             .h(px(28.))
             .overflow_hidden()
