@@ -1845,10 +1845,12 @@ impl AppWindow {
         }
 
         if self.composer_input.read(cx).up_at_top_triggered {
-            self.composer_input.update(cx, |input, _| {
-                input.up_at_top_triggered = false;
-            });
-            self.edit_last_own_message(cx);
+            let edit_previous = self
+                .composer_input
+                .update(cx, |input, _| input.take_edit_previous_request());
+            if edit_previous {
+                self.edit_last_own_message(cx);
+            }
         }
 
         let composer_text = self
