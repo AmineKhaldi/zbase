@@ -123,6 +123,7 @@ impl Sidebar {
         };
 
         let drag_scroll_handle = scroll_handle.clone();
+        let mut previous_section_is_team = false;
 
         div()
             .w(px(sidebar.width_px))
@@ -163,15 +164,32 @@ impl Sidebar {
                         })
                         .pr_2()
                         .pt_2()
-                        .children(sidebar.sections.iter().map(|section| {
-                            Self::render_section(
+                        .children(sidebar.sections.iter().flat_map(|section| {
+                            let is_team = section.id.0.starts_with("group_");
+                            let mut elements = Vec::new();
+                            if is_team && !previous_section_is_team {
+                                elements.push(
+                                    div()
+                                        .px_2()
+                                        .pt_2()
+                                        .pb_1()
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(rgb(text_secondary()))
+                                        .child("Teams")
+                                        .into_any_element(),
+                                );
+                            }
+                            previous_section_is_team = is_team;
+                            elements.push(Self::render_section(
                                 section,
                                 &section.rows,
                                 conversation_avatars,
                                 current_route,
                                 hovered_row,
                                 cx,
-                            )
+                            ));
+                            elements
                         })),
                 )
             })
@@ -525,17 +543,16 @@ impl Sidebar {
                 section_id.0
             )))
             .w_full()
+            .h(px(28.))
+            .overflow_hidden()
             .rounded_md()
             .px_2()
-            .py_1()
             .flex()
             .items_center()
             .justify_between()
             .cursor_pointer()
             .when(selected && !is_dark_theme(), |row| row.bg(rgb(accent())))
-            .when(is_hovered && !selected && !is_dark_theme(), |row| {
-                row.bg(subtle_surface())
-            })
+            .when(is_hovered && !selected, |row| row.bg(subtle_surface()))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 this.sidebar_set_hovered_row(
                     if *hovered {
@@ -559,9 +576,7 @@ impl Sidebar {
                     .items_center()
                     .gap_1p5()
                     .text_xs()
-                    .when(selected || has_unread || is_hovered, |d| {
-                        d.font_weight(FontWeight::BOLD)
-                    })
+                    .when(selected || has_unread, |d| d.font_weight(FontWeight::BOLD))
                     .text_color(rgb(row_color))
                     .child(Self::leading_element(
                         row,
@@ -578,6 +593,7 @@ impl Sidebar {
                             .flex_1()
                             .min_w(px(0.))
                             .whitespace_normal()
+                            .line_clamp(1)
                             .text_ellipsis()
                             .child(row.label.clone()),
                     ),

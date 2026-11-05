@@ -121,6 +121,7 @@ impl TeamGroup<'_> {
                     .flex_1()
                     .min_w(px(0.))
                     .whitespace_normal()
+                    .line_clamp(1)
                     .text_ellipsis()
                     .child(self.team.display_name.clone()),
             )

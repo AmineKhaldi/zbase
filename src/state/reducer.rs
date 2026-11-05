@@ -3470,6 +3470,59 @@ mod tests {
     }
 
     #[test]
+    fn unread_team_rows_are_filtered_independently_of_the_full_team_and_expanded() {
+        use crate::domain::conversation::{ConversationGroup, ConversationTeamType};
+        let mut read = channel_summary("read", "read-channel");
+        read.group = Some(ConversationGroup {
+            id: "team".into(),
+            display_name: "Team".into(),
+            team_type: ConversationTeamType::Complex,
+        });
+        let mut unread = read.clone();
+        unread.id = ConversationId::new("unread");
+        unread.unread_count = 1;
+        let mut mention = read.clone();
+        mention.id = ConversationId::new("mention");
+        mention.mention_count = 1;
+        let mut muted = unread.clone();
+        muted.id = ConversationId::new("muted");
+        muted.muted = true;
+        let mut retained = read.clone();
+        retained.id = ConversationId::new("retained");
+        let sections = build_sidebar_sections(
+            &[read, unread, mention, muted, retained.clone()],
+            &[],
+            &WorkspaceId::new("ws"),
+            &HashMap::new(),
+            Some(&retained.id),
+        );
+        let unread = sections
+            .iter()
+            .find(|section| section.id.as_ref().unwrap().0 == "unread")
+            .unwrap();
+        assert!(!unread.collapsed);
+        let ids = unread
+            .rows
+            .iter()
+            .filter_map(|row| row.route.as_ref())
+            .map(|route| match route {
+                Route::Channel { channel_id, .. } => channel_id.0.as_str(),
+                _ => panic!("expected a channel"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["mention", "retained", "unread"]);
+        assert_eq!(
+            sections
+                .iter()
+                .find(|section| section.id.as_ref().unwrap().0 == "group_team")
+                .unwrap()
+                .rows
+                .len(),
+            5
+        );
+    }
+
+    #[test]
     fn active_unread_row_survives_read_acknowledgement_until_navigation_away() {
         let mut state = UiState::default();
         let workspace = WorkspaceId::new("ws");

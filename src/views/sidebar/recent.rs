@@ -163,6 +163,7 @@ fn render_row<H: SidebarHost>(
                 .min_w(px(0.))
                 .text_xs()
                 .whitespace_normal()
+                .line_clamp(1)
                 .text_ellipsis()
                 .text_color(rgb(primary))
                 .when(unread || selected, |label| {
