@@ -9,6 +9,10 @@ name = "zBase"
 identifier = "com.zbase.app"
 icon = ["assets/macos/AppIcon.icns"]
 
+[features]
+default = []
+demo-fixtures = []
+
 [dependencies]
 gpui = { version = "0.2.2", default-features = false, features = ["font-kit"] }
 unicode-segmentation = "1.12.0"

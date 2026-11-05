@@ -97,15 +97,24 @@ impl KeybaseRpcClient {
     }
 
     pub async fn call(&mut self, method: &str, args: Vec<Value>) -> io::Result<Value> {
-        let msgid = self.next_message_id();
-        let payload = Value::Array(vec![
-            Value::from(0), // request
-            Value::from(msgid),
-            Value::from(method),
-            Value::Array(args),
-        ]);
-        self.transport.write_value(&payload).await?;
-        self.wait_for_response(msgid).await
+        time::timeout(Duration::from_secs(30), async {
+            let msgid = self.next_message_id();
+            let payload = Value::Array(vec![
+                Value::from(0),
+                Value::from(msgid),
+                Value::from(method),
+                Value::Array(args),
+            ]);
+            self.transport.write_value(&payload).await?;
+            self.wait_for_response(msgid).await
+        })
+        .await
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("Keybase request timed out: {method}"),
+            )
+        })?
     }
 
     /// Like `call`, but collects any in-flight callbacks/notifications that
@@ -121,6 +130,45 @@ impl KeybaseRpcClient {
         &mut self,
         method: &str,
         args: Vec<Value>,
+    ) -> io::Result<(Value, Vec<RpcNotification>)> {
+        time::timeout(
+            Duration::from_secs(30),
+            self.call_collecting_callbacks_inner(method, args, true),
+        )
+        .await
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("Keybase request timed out: {method}"),
+            )
+        })?
+    }
+
+    /// Preserve notifications received during a request, without draining the
+    /// live stream after its response (which can race a disconnect).
+    pub async fn call_collecting_callbacks_until_response(
+        &mut self,
+        method: &str,
+        args: Vec<Value>,
+    ) -> io::Result<(Value, Vec<RpcNotification>)> {
+        time::timeout(
+            Duration::from_secs(30),
+            self.call_collecting_callbacks_inner(method, args, false),
+        )
+        .await
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("Keybase request timed out: {method}"),
+            )
+        })?
+    }
+
+    async fn call_collecting_callbacks_inner(
+        &mut self,
+        method: &str,
+        args: Vec<Value>,
+        drain_trailing_callbacks: bool,
     ) -> io::Result<(Value, Vec<RpcNotification>)> {
         const TRAILING_CALLBACK_IDLE_TIMEOUT: Duration = Duration::from_millis(200);
         const TRAILING_CALLBACK_MAX_WINDOW: Duration = Duration::from_millis(1500);
@@ -160,7 +208,11 @@ impl KeybaseRpcClient {
                     if let Some(error_value) = error {
                         return Err(io::Error::other(format!("rpc error: {error_value:?}")));
                     }
-                    response_value = Some(result.unwrap_or(Value::Nil));
+                    let result = result.unwrap_or(Value::Nil);
+                    if !drain_trailing_callbacks {
+                        return Ok((result, callbacks));
+                    }
+                    response_value = Some(result);
                     drain_deadline = Some(Instant::now() + TRAILING_CALLBACK_MAX_WINDOW);
                     continue;
                 }

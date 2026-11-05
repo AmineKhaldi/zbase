@@ -1,6 +1,8 @@
+mod scrolling;
+
 use gpui::{
     App, Bounds, ClipboardEntry, ClipboardItem, Context, CursorStyle, Element, ElementId,
-    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId,
+    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, Hsla,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
     Style, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, point,
     prelude::*, px, relative, rgb, rgba, size,
@@ -16,6 +18,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::views::{accent, selection};
 
 const DEFAULT_TEXT_FIELD_PROFILE_MIN_MS: u128 = 2;
+const PLACEHOLDER_OPACITY: f32 = 0.70;
 const ENV_INPUT_DISABLE_LAYOUT_CACHE: &str = "ZBASE_INPUT_DISABLE_LAYOUT_CACHE";
 const ENV_INPUT_PROFILE_MIN_MS: &str = "ZBASE_INPUT_PROFILE_MIN_MS";
 const ENV_INPUT_USE_LEGACY_REPLACE: &str = "ZBASE_INPUT_USE_LEGACY_REPLACE";
@@ -205,6 +208,10 @@ pub struct TextField {
     field_kind: TextFieldKind,
     autocomplete_navigation_enabled: bool,
     scroll_y: Pixels,
+    scroll_to_cursor: bool,
+    selection_pointer: Option<Point<Pixels>>,
+    selection_scroll_task: Option<gpui::Task<()>>,
+    /// Raised only by Up in an empty editor; revalidated when consumed.
     pub up_at_top_triggered: bool,
     pub pasted_image: Option<Vec<u8>>,
     last_content_height: Pixels,
@@ -297,6 +304,9 @@ impl TextField {
             field_kind,
             autocomplete_navigation_enabled: false,
             scroll_y: px(0.),
+            scroll_to_cursor: true,
+            selection_pointer: None,
+            selection_scroll_task: None,
             up_at_top_triggered: false,
             pasted_image: None,
             last_content_height: px(0.),
@@ -482,6 +492,8 @@ impl TextField {
     }
 
     fn mark_content_edited(&mut self) {
+        self.scroll_to_cursor = true;
+        self.stop_selection_drag();
         self.pending_height_edit_at = Some(Instant::now());
     }
 
@@ -541,17 +553,12 @@ impl TextField {
             window.dispatch_action(Box::new(crate::app::commands::SelectPrevious), cx);
             return;
         }
-        if self.content.trim().is_empty() {
-            self.up_at_top_triggered = true;
+        self.up_at_top_triggered = self.content.is_empty();
+        if self.up_at_top_triggered {
             cx.notify();
             return;
         }
-        let before = self.cursor_offset();
         self.move_vertical(-1.0, cx);
-        if self.cursor_offset() == before {
-            self.up_at_top_triggered = true;
-            cx.notify();
-        }
     }
 
     fn down(&mut self, _: &Down, window: &mut Window, cx: &mut Context<Self>) {
@@ -723,7 +730,9 @@ impl TextField {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.stop_selection_drag();
         self.is_selecting = true;
+        self.selection_pointer = Some(event.position);
         window.focus(&self.focus_handle(cx));
         let offset = self.index_for_mouse_position(event.position);
 
@@ -747,7 +756,7 @@ impl TextField {
 
     fn on_mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         if self.is_selecting {
-            let up_offset = self.index_for_mouse_position(event.position);
+            let up_offset = self.selection_index_for_position(event.position);
             // For double/triple click selection, mouse-down may have already established a full
             // word/line range. Avoid shrinking it on mouse-up when releasing within that range.
             if self.selected_range.is_empty() {
@@ -757,13 +766,23 @@ impl TextField {
             {
                 self.select_to(up_offset, cx);
             }
-            self.is_selecting = false;
+            self.stop_selection_drag();
+            self.scroll_to_cursor = false;
         }
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_selecting {
-            self.select_to(self.index_for_mouse_position(event.position), cx);
+            if event.pressed_button != Some(MouseButton::Left) {
+                self.stop_selection_drag();
+                return;
+            }
+            self.selection_pointer = Some(event.position);
+            self.select_to(self.selection_index_for_position(event.position), cx);
+            self.scroll_to_cursor = false;
+            self.scroll_selection_once(cx);
+            self.start_selection_scroll(window, cx);
+            cx.stop_propagation();
         }
     }
 
@@ -819,6 +838,7 @@ impl TextField {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.scroll_to_cursor = true;
         self.selected_range = offset..offset;
         self.selection_reversed = false;
         cx.notify();
@@ -875,6 +895,7 @@ impl TextField {
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.scroll_to_cursor = true;
         if self.selection_reversed {
             self.selected_range.start = offset;
         } else {
@@ -1183,6 +1204,11 @@ impl Element for TextLineElement {
                     } else {
                         &input.content
                     };
+                    let text_color = if is_placeholder {
+                        text_style.color.opacity(PLACEHOLDER_OPACITY)
+                    } else {
+                        text_style.color
+                    };
                     let font_size = text_style.font_size.to_pixels(window.rem_size());
                     if !text_field_layout_cache_disabled()
                         && let Some(cached_layout) = input.last_layout.as_ref().filter(|layout| {
@@ -1192,6 +1218,7 @@ impl Element for TextLineElement {
                                 Some(wrap_width),
                                 font_size,
                                 line_height,
+                                text_color,
                             )
                         })
                     {
@@ -1200,7 +1227,7 @@ impl Element for TextLineElement {
                         let run = TextRun {
                             len: display_text.len(),
                             font: text_style.font(),
-                            color: text_style.color,
+                            color: text_color,
                             background_color: None,
                             underline: None,
                             strikethrough: None,
@@ -1265,7 +1292,11 @@ impl Element for TextLineElement {
         let style = window.text_style();
 
         let (display_text, text_color, is_placeholder) = if content.is_empty() {
-            (input.placeholder.clone(), style.color.opacity(0.42), true)
+            (
+                input.placeholder.clone(),
+                style.color.opacity(PLACEHOLDER_OPACITY),
+                true,
+            )
         } else {
             (content.clone(), style.color, false)
         };
@@ -1283,6 +1314,7 @@ impl Element for TextLineElement {
                     wrap_width,
                     font_size,
                     line_height,
+                    text_color,
                 )
             }) {
             cached_layout.clone()
@@ -1354,11 +1386,18 @@ impl Element for TextLineElement {
                 content,
                 wrap_width,
                 font_size,
+                text_color,
                 marked_range: input.marked_range.clone(),
             }
         };
         let scroll_y = if input.is_multiline() {
-            visible_scroll_offset(&layout, input.scroll_y, bounds.size.height, cursor)
+            visible_scroll_offset(
+                &layout,
+                input.scroll_y,
+                bounds.size.height,
+                cursor,
+                input.scroll_to_cursor,
+            )
         } else {
             px(0.)
         };
@@ -1411,6 +1450,30 @@ impl Element for TextLineElement {
             cx,
         );
 
+        // Register capture before a drag begins, so a fast pointer exit does not
+        // depend on the next frame installing listeners after mouse-down.
+        let input = self.input.downgrade();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+            if phase == gpui::DispatchPhase::Capture
+                && let Some(input) = input.upgrade()
+                && input.read(cx).is_selecting
+            {
+                input.update(cx, |input, cx| input.on_mouse_move(event, window, cx));
+            }
+        });
+        let input = self.input.downgrade();
+        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+            if phase == gpui::DispatchPhase::Capture && event.button == MouseButton::Left
+                && let Some(input) = input.upgrade()
+                && input.read(cx).is_selecting
+            {
+                input.update(cx, |input, cx| {
+                    input.on_mouse_up(event, window, cx);
+                    cx.stop_propagation();
+                });
+            }
+        });
+
         for quad in prepaint.selection.drain(..) {
             window.paint_quad(quad);
         }
@@ -1444,6 +1507,7 @@ impl Element for TextLineElement {
             input.last_layout = Some(layout);
             input.last_bounds = Some(bounds);
             input.scroll_y = scroll_y;
+            input.scroll_to_cursor = false;
             if !pixels_match(previous_content_height, content_height)
                 && let Some(started_at) = input.pending_height_edit_at.take()
             {
@@ -1511,6 +1575,7 @@ impl Render for TextField {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .child(TextLineElement { input: cx.entity() })
     }
 }
@@ -1530,6 +1595,7 @@ struct TextLayoutSnapshot {
     content: String,
     wrap_width: Option<Pixels>,
     font_size: Pixels,
+    text_color: Hsla,
     marked_range: Option<Range<usize>>,
 }
 
@@ -1543,6 +1609,7 @@ impl Default for TextLayoutSnapshot {
             content: String::new(),
             wrap_width: None,
             font_size: px(0.),
+            text_color: rgb(0).into(),
             marked_range: None,
         }
     }
@@ -1556,12 +1623,14 @@ impl TextLayoutSnapshot {
         wrap_width: Option<Pixels>,
         font_size: Pixels,
         line_height: Pixels,
+        text_color: Hsla,
     ) -> bool {
         self.is_placeholder == is_placeholder
             && self.marked_range.as_ref() == marked_range
             && optional_pixels_match(self.wrap_width, wrap_width)
             && pixels_match(self.font_size, font_size)
             && pixels_match(self.line_height, line_height)
+            && self.text_color == text_color
     }
 
     fn next_line_start(&self, line_start_ix: usize, line_len: usize) -> usize {
@@ -1735,27 +1804,19 @@ fn visible_scroll_offset(
     current_scroll_y: Pixels,
     visible_height: Pixels,
     cursor: usize,
+    follow_cursor: bool,
 ) -> Pixels {
     if layout.is_placeholder {
         return px(0.);
     }
-
-    let max_scroll = (layout.total_height() - visible_height).max(px(0.));
-    let Some(cursor_position) = layout.position_for_index(cursor) else {
-        return current_scroll_y.min(max_scroll).max(px(0.));
-    };
-
-    let cursor_top = cursor_position.y;
-    let cursor_bottom = cursor_top + layout.line_height;
-    let mut scroll_y = current_scroll_y.min(max_scroll).max(px(0.));
-
-    if cursor_top < scroll_y {
-        scroll_y = cursor_top;
-    } else if cursor_bottom > scroll_y + visible_height {
-        scroll_y = cursor_bottom - visible_height;
-    }
-
-    scroll_y.min(max_scroll).max(px(0.))
+    scrolling::resolve_scroll_offset(
+        current_scroll_y,
+        layout.total_height(),
+        visible_height,
+        layout.position_for_index(cursor).map(|point| point.y),
+        layout.line_height,
+        follow_cursor,
+    )
 }
 
 fn word_range_at_offset(content: &str, offset: usize) -> Option<Range<usize>> {
@@ -1871,6 +1932,49 @@ mod tests {
         current_line_end, current_line_start, delete_to_previous_word_start, next_word_end,
         previous_word_start,
     };
+
+    #[test]
+    fn theme_color_changes_invalidate_cached_text_and_placeholder_runs() {
+        use super::{PLACEHOLDER_OPACITY, TextLayoutSnapshot};
+        use gpui::{Hsla, px, rgb};
+        for is_placeholder in [false, true] {
+            let dark: Hsla = rgb(0xd9d9d9).into();
+            let light: Hsla = rgb(0x262626).into();
+            let dark = if is_placeholder {
+                dark.opacity(PLACEHOLDER_OPACITY)
+            } else {
+                dark
+            };
+            let light = if is_placeholder {
+                light.opacity(PLACEHOLDER_OPACITY)
+            } else {
+                light
+            };
+            let snapshot = TextLayoutSnapshot {
+                is_placeholder,
+                font_size: px(14.),
+                line_height: px(22.),
+                text_color: dark,
+                ..Default::default()
+            };
+            assert!(snapshot.matches_shape_state(
+                is_placeholder,
+                None,
+                None,
+                px(14.),
+                px(22.),
+                dark
+            ));
+            assert!(!snapshot.matches_shape_state(
+                is_placeholder,
+                None,
+                None,
+                px(14.),
+                px(22.),
+                light
+            ));
+        }
+    }
 
     #[test]
     fn previous_word_start_moves_to_prior_word() {

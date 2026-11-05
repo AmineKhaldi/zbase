@@ -1,3 +1,5 @@
+mod channel_membership;
+
 use crate::domain::{
     affinity::Affinity,
     attachment::{
@@ -9,7 +11,10 @@ use crate::domain::{
     ids::{ChannelId, ConversationId, DmId, MessageId, SidebarSectionId, UserId, WorkspaceId},
     message::{MessageFragment, MessageRecord, MessageSendState},
     presence::Presence,
-    profile::{ProfileSection, SocialGraph, SocialGraphEntry, SocialGraphListType, UserProfile},
+    profile::{
+        ProfileSection, SocialGraph, SocialGraphEntry, SocialGraphListType, SocialListLoadState,
+        UserProfile,
+    },
     route::Route,
 };
 use crate::util::formatting::now_unix_ms;
@@ -21,7 +26,7 @@ use std::{
 use super::{
     action::{DraftKey, UiAction},
     effect::{BackendCommand, Effect, SearchScope},
-    event::{AppEvent, BackendEvent},
+    event::{AppEvent, BackendEvent, BootstrapSource},
     ids::{ClientMessageId, OpId, QueryId},
     state::{
         BootPhase, ConnectionState, UiSidebarRowState, UiSidebarSectionState, UiState,
@@ -44,6 +49,9 @@ pub fn reduce(state: &mut UiState, event: AppEvent) -> ReducerOutput {
 
 fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
     match action {
+        UiAction::LeaveChannel { conversation_id } => {
+            channel_membership::request_leave(state, conversation_id)
+        }
         UiAction::StartApp => {
             state.app.boot_phase = BootPhase::HydratingLocalState;
             ReducerOutput {
@@ -59,6 +67,7 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             }
         }
         UiAction::Navigate(route) => {
+            track_unread_visit(state, &route);
             state.navigation.current_route = Some(route.clone());
             state.sidebar.highlighted_route = Some(route.clone());
 
@@ -99,6 +108,7 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             ReducerOutput { effects }
         }
         UiAction::NavigateQuiet(route) => {
+            track_unread_visit(state, &route);
             state.navigation.current_route = Some(route.clone());
             state.sidebar.highlighted_route = Some(route.clone());
 
@@ -150,6 +160,7 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             }
         }
         UiAction::CloseRightPane => {
+            state.backend.profile_panel.selected_user = None;
             state.navigation.active_thread_root = None;
             state.thread.open = false;
             state.thread.root_message_id = None;
@@ -169,12 +180,14 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             ReducerOutput::default()
         }
         UiAction::SubmitSearch => {
+            let query_id = next_query_id(state);
+            state.search.active_query_id = Some(query_id.clone());
             state.search.is_loading = true;
             state.search.results.clear();
             state.search.highlighted_index = None;
             ReducerOutput {
                 effects: vec![Effect::Backend(BackendCommand::Search {
-                    query_id: next_query_id(state),
+                    query_id,
                     scope: match state.navigation.current_route.as_ref() {
                         Some(Route::Channel { workspace_id, .. })
                         | Some(Route::DirectMessage { workspace_id, .. })
@@ -202,14 +215,17 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
         }
         UiAction::NewChatSearchUsers { query } => {
             state.new_chat.search_query = query.clone();
+            state.new_chat.active_query_id = None;
+            state.new_chat.search_results.clear();
             state.new_chat.error = None;
             if query.trim().is_empty() {
-                state.new_chat.search_results.clear();
                 return ReducerOutput::default();
             }
+            let query_id = next_query_id(state);
+            state.new_chat.active_query_id = Some(query_id.clone());
             ReducerOutput {
                 effects: vec![Effect::Backend(BackendCommand::SearchUsers {
-                    query_id: next_query_id(state),
+                    query_id,
                     query,
                 })],
             }
@@ -395,7 +411,7 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             conversation_id,
             message_id,
         } => {
-            state.timeline.messages.retain(|m| m.id != message_id);
+            // Keep the message visible until the backend confirms deletion.
             ReducerOutput {
                 effects: vec![Effect::Backend(BackendCommand::DeleteMessage {
                     op_id: next_op_id(state, "delete"),
@@ -497,6 +513,26 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             message_id,
             emoji,
         } => {
+            let op_id = next_op_id(state, "react");
+            let previous = state
+                .backend
+                .message_reactions
+                .get(&conversation_id)
+                .and_then(|messages| messages.get(&message_id))
+                .cloned()
+                .unwrap_or_default();
+            state.backend.pending_reactions.insert(
+                op_id.clone(),
+                super::state::PendingReaction {
+                    conversation_id: conversation_id.clone(),
+                    message_id: message_id.clone(),
+                    previous,
+                },
+            );
+            state
+                .backend
+                .latest_reaction_ops
+                .insert((conversation_id.clone(), message_id.clone()), op_id.clone());
             let actor_id = current_user_id(state);
             toggle_runtime_reaction(
                 state,
@@ -508,7 +544,7 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             );
             ReducerOutput {
                 effects: vec![Effect::Backend(BackendCommand::ReactToMessage {
-                    op_id: next_op_id(state, "react"),
+                    op_id,
                     conversation_id,
                     message_id,
                     reaction: emoji,
@@ -588,10 +624,20 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             }
         }
         UiAction::ShowUserProfileCard { user_id } | UiAction::ShowUserProfilePanel { user_id } => {
+            state.backend.profile_panel.selected_user = Some(user_id.clone());
             state.backend.profile_panel.loading.insert(user_id.clone());
-            ReducerOutput {
-                effects: vec![Effect::Backend(BackendCommand::LoadUserProfile { user_id })],
+            let mut output = ReducerOutput {
+                effects: vec![Effect::Backend(BackendCommand::LoadUserProfile {
+                    user_id: user_id.clone(),
+                })],
+            };
+            if state.backend.profile_panel.profiles.contains_key(&user_id) {
+                let list_type = state.backend.profile_panel.active_social_tab;
+                output
+                    .effects
+                    .extend(request_social_graph_refresh(state, user_id, list_type).effects);
             }
+            output
         }
         UiAction::RefreshProfilePresence {
             user_id,
@@ -603,17 +649,8 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             })],
         },
         UiAction::LoadSocialGraphList { user_id, list_type } => {
-            state
-                .backend
-                .profile_panel
-                .loading_social_list
-                .insert(user_id.clone());
-            ReducerOutput {
-                effects: vec![Effect::Backend(BackendCommand::LoadSocialGraphList {
-                    user_id,
-                    list_type,
-                })],
-            }
+            state.backend.profile_panel.active_social_tab = list_type;
+            request_social_graph_refresh(state, user_id, list_type)
         }
         UiAction::FollowUser { user_id } => {
             state
@@ -654,7 +691,18 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             if let Some(account) = state.backend.accounts.get_mut(&account_id) {
                 account.connection_state = ConnectionState::Connected;
             }
-            state.app.boot_phase = BootPhase::ConnectingBackend;
+            if !state.backend.hydrated_accounts.contains(&account_id) {
+                state.app.boot_phase = BootPhase::ConnectingBackend;
+            } else {
+                state.app.boot_phase = BootPhase::Ready;
+            }
+            // A successful subscription is followed by server reconciliation. This also
+            // covers daemon restarts after cached state has already been displayed.
+            return ReducerOutput {
+                effects: vec![Effect::Backend(BackendCommand::LoadBootstrap {
+                    account_id,
+                })],
+            };
         }
         BackendEvent::AccountDisconnected { account_id, .. } => {
             if let Some(account) = state.backend.accounts.get_mut(&account_id) {
@@ -663,24 +711,36 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             state.app.boot_phase = BootPhase::Degraded;
         }
         BackendEvent::BootstrapLoaded {
+            source,
             account_id,
             payload,
         } => {
+            let first_hydration = state.backend.hydrated_accounts.insert(account_id.clone());
+            if source == BootstrapSource::Cache && !first_hydration {
+                return ReducerOutput::default();
+            }
+            let initialize_selection = first_hydration
+                && state.timeline.conversation_id.is_none()
+                && matches!(
+                    state.navigation.current_route,
+                    None | Some(Route::WorkspaceHome { .. })
+                );
             let mut bootstrap_effects = Vec::new();
-            state.backend.message_reactions.clear();
-            state.backend.conversation_pins.clear();
-            state.backend.conversation_team_ids.clear();
-            state.backend.team_roles.clear();
             if let Some(account) = state.backend.accounts.get_mut(&account_id)
                 && let Some(display_name) = payload.account_display_name
             {
                 account.display_name = display_name;
             }
 
-            state.workspace.active_workspace_id = payload.active_workspace_id.clone();
+            if state.workspace.active_workspace_id.is_none() {
+                state.workspace.active_workspace_id = payload.active_workspace_id.clone();
+            }
             state.workspace.workspace_name = payload.workspace_name;
-            state.workspace.channels = payload.channels;
-            state.workspace.direct_messages = payload.direct_messages;
+            merge_workspace_conversations(
+                &mut state.workspace,
+                payload.channels,
+                payload.direct_messages,
+            );
 
             for binding in payload.workspace_bindings {
                 state
@@ -706,46 +766,51 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 .active_workspace_id
                 .clone()
                 .unwrap_or_else(|| WorkspaceId::new("ws_primary"));
+            apply_authoritative_badges(state);
             state.sidebar.sections = build_sidebar_sections(
                 &state.workspace.channels,
                 &state.workspace.direct_messages,
                 &workspace_id,
                 &state.backend.user_profiles,
+                state.sidebar.retained_unread_conversation.as_ref(),
             );
 
-            if let Some(conversation_id) = payload.selected_conversation_id {
-                state.timeline.conversation_id = Some(conversation_id.clone());
-                if let Some(route) = route_for_conversation_id(
-                    &conversation_id,
-                    &workspace_id,
-                    &state.workspace.channels,
-                    &state.workspace.direct_messages,
-                ) {
-                    state.navigation.current_route = Some(route.clone());
-                    state.sidebar.highlighted_route = Some(route);
+            if initialize_selection {
+                if let Some(conversation_id) = payload
+                    .selected_conversation_id
+                    .clone()
+                    .filter(|id| !state.workspace.left_conversation_ids.contains(id))
+                {
+                    state.timeline.conversation_id = Some(conversation_id.clone());
+                    if let Some(route) = route_for_conversation_id(
+                        &conversation_id,
+                        &workspace_id,
+                        &state.workspace.channels,
+                        &state.workspace.direct_messages,
+                    ) {
+                        state.navigation.current_route = Some(route.clone());
+                        state.sidebar.highlighted_route = Some(route);
+                    }
+                    state.timeline.unread_marker = payload.unread_marker;
                 }
+            }
+            if state.timeline.conversation_id == payload.selected_conversation_id {
+                for message in payload.selected_messages {
+                    upsert_message_in_state(state, message);
+                }
+            }
+            // Refresh the user's selection, never the bootstrap's default selection.
+            if let Some(conversation_id) = state.timeline.conversation_id.clone() {
                 bootstrap_effects.push(Effect::Backend(BackendCommand::LoadConversation {
-                    conversation_id,
+                    conversation_id: conversation_id.clone(),
                 }));
+                if let Some(root_id) = state.navigation.active_thread_root.clone() {
+                    bootstrap_effects.push(Effect::Backend(BackendCommand::LoadThread {
+                        conversation_id,
+                        root_id,
+                    }));
+                }
             }
-
-            state.timeline.messages = payload.selected_messages;
-            normalize_messages_by_id(&mut state.timeline.messages);
-            for message in state.timeline.messages.clone() {
-                apply_message_reactions(state, &message);
-            }
-            state.timeline.unread_marker = payload.unread_marker;
-            state.timeline.loading_older = false;
-            state.timeline.older_cursor = state
-                .timeline
-                .messages
-                .first()
-                .map(|message| message.id.0.clone());
-            state.timeline.newer_cursor = state
-                .timeline
-                .messages
-                .last()
-                .map(|message| message.id.0.clone());
             state.app.boot_phase = BootPhase::Ready;
             return ReducerOutput {
                 effects: bootstrap_effects,
@@ -760,8 +825,7 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             if state.workspace.active_workspace_id.is_none() {
                 state.workspace.active_workspace_id = Some(workspace_id.clone());
             }
-            merge_conversation_summaries(&mut state.workspace.channels, channels);
-            merge_conversation_summaries(&mut state.workspace.direct_messages, direct_messages);
+            merge_workspace_conversations(&mut state.workspace, channels, direct_messages);
             for binding in conversation_bindings {
                 state
                     .backend
@@ -773,12 +837,66 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 .active_workspace_id
                 .clone()
                 .unwrap_or(workspace_id);
+            apply_authoritative_badges(state);
             state.sidebar.sections = build_sidebar_sections(
                 &state.workspace.channels,
                 &state.workspace.direct_messages,
                 &sidebar_workspace_id,
                 &state.backend.user_profiles,
+                state.sidebar.retained_unread_conversation.as_ref(),
             );
+        }
+        BackendEvent::WorkspaceConversationsExcluded {
+            workspace_id,
+            conversation_ids,
+        } => {
+            state
+                .workspace
+                .excluded_conversation_ids
+                .extend(conversation_ids);
+            merge_workspace_conversations(&mut state.workspace, Vec::new(), Vec::new());
+            state.sidebar.sections = build_sidebar_sections(
+                &state.workspace.channels,
+                &state.workspace.direct_messages,
+                &workspace_id,
+                &state.backend.user_profiles,
+                state.sidebar.retained_unread_conversation.as_ref(),
+            );
+            if state
+                .timeline
+                .conversation_id
+                .as_ref()
+                .is_some_and(|id| state.workspace.excluded_conversation_ids.contains(id))
+            {
+                if let Some(summary) = state
+                    .workspace
+                    .channels
+                    .iter()
+                    .chain(&state.workspace.direct_messages)
+                    .next()
+                {
+                    let route = route_for_summary(summary, &workspace_id);
+                    return reduce_ui_action(state, UiAction::Navigate(route));
+                }
+                state.timeline.conversation_id = None;
+                state.timeline.messages.clear();
+                state.navigation.current_route = Some(Route::WorkspaceHome { workspace_id });
+                state.sidebar.highlighted_route = state.navigation.current_route.clone();
+            }
+        }
+        BackendEvent::HistorySynced { conversation_id } => {
+            if state.timeline.conversation_id.as_ref() == Some(&conversation_id) {
+                let mut effects = vec![Effect::Backend(BackendCommand::LoadConversation {
+                    conversation_id: conversation_id.clone(),
+                })];
+                if let Some(root_id) = state.navigation.active_thread_root.clone() {
+                    effects.push(Effect::Backend(BackendCommand::LoadThread {
+                        conversation_id,
+                        root_id,
+                    }));
+                }
+                return ReducerOutput { effects };
+            }
         }
         BackendEvent::WorkspaceSynced { .. } | BackendEvent::ConversationLoaded { .. } => {}
         BackendEvent::MessagesPrepended {
@@ -797,6 +915,12 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                         apply_message_reactions(state, message);
                     }
                     let mut merged = messages;
+                    merged.retain(|message| {
+                        !state
+                            .backend
+                            .deleted_messages
+                            .contains(&(conversation_id.clone(), message.id.clone()))
+                    });
                     merged.extend(state.timeline.messages.clone());
                     normalize_messages_by_id(&mut merged);
                     trim_timeline_for_prepend(&mut merged);
@@ -821,12 +945,21 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             super::state::TimelineKey::Thread {
                 conversation_id,
                 root_id,
+                requested_root_id,
             } => {
-                if state.timeline.conversation_id.as_ref() == Some(&conversation_id) {
-                    state.thread.open = true;
+                if state.timeline.conversation_id.as_ref() == Some(&conversation_id)
+                    && state.thread.open
+                    && state.navigation.active_thread_root.as_ref() == Some(&requested_root_id)
+                {
                     state.thread.root_message_id = Some(root_id);
                     state.thread.loading = false;
                     state.thread.replies = messages;
+                    state.thread.replies.retain(|message| {
+                        !state
+                            .backend
+                            .deleted_messages
+                            .contains(&(conversation_id.clone(), message.id.clone()))
+                    });
                     normalize_messages_by_id(&mut state.thread.replies);
                 }
             }
@@ -845,6 +978,12 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 // message can land via MessageUpserted while the load is in-flight; if the eventual
                 // replace page doesn't include it yet, we'd otherwise "lose" it until re-enter.
                 let mut merged = messages;
+                merged.retain(|message| {
+                    !state
+                        .backend
+                        .deleted_messages
+                        .contains(&(conversation_id.clone(), message.id.clone()))
+                });
                 merged.extend(state.timeline.messages.clone());
                 normalize_messages_by_id(&mut merged);
                 recompute_thread_reply_counts(&mut merged);
@@ -869,6 +1008,31 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
         BackendEvent::MessageUpserted(message) => {
             upsert_message_in_state(state, message);
         }
+        BackendEvent::MessageAttachmentsUpdated {
+            conversation_id,
+            message_id,
+            attachments,
+        } => {
+            if !state
+                .backend
+                .deleted_messages
+                .contains(&(conversation_id.clone(), message_id.clone()))
+            {
+                for message in state
+                    .timeline
+                    .messages
+                    .iter_mut()
+                    .chain(state.thread.replies.iter_mut())
+                {
+                    if message.conversation_id == conversation_id && message.id == message_id {
+                        crate::domain::message::apply_attachment_paths(message, &attachments);
+                    }
+                }
+            }
+        }
+        BackendEvent::CommandFailed { command, error } => {
+            return reduce_command_failure(state, *command, error);
+        }
         BackendEvent::MessageSendConfirmed {
             op_id: _,
             client_message_id,
@@ -890,15 +1054,20 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
         BackendEvent::MessageSendFailed {
             op_id: _,
             client_message_id,
-            error: _,
+            error,
         } => {
             let pending_id = pending_message_id_for_client(&client_message_id);
             mark_message_failed(state, &pending_id);
+            state.notifications.toasts.push(error);
         }
         BackendEvent::MessageDeleted {
             conversation_id,
             message_id,
         } => {
+            state
+                .backend
+                .deleted_messages
+                .insert((conversation_id.clone(), message_id.clone()));
             if let Some(reactions) = state.backend.message_reactions.get_mut(&conversation_id) {
                 reactions.remove(&message_id);
             }
@@ -945,6 +1114,23 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             avatar_asset,
             updated_ms,
         } => {
+            let previous = state.backend.user_profiles.get(&user_id);
+            let stale = previous.is_some_and(|old| old.updated_ms > updated_ms);
+            let display_name = previous
+                .filter(|_| stale)
+                .map(|old| old.display_name.clone())
+                .unwrap_or(display_name);
+            let avatar_asset = if stale {
+                previous
+                    .and_then(|old| old.avatar_asset.clone())
+                    .or(avatar_asset)
+            } else {
+                avatar_asset.or_else(|| previous.and_then(|old| old.avatar_asset.clone()))
+            };
+            let updated_ms = previous.map_or(updated_ms, |old| old.updated_ms.max(updated_ms));
+            if let Some(profile) = state.backend.profile_panel.profiles.get_mut(&user_id) {
+                profile.avatar_asset = avatar_asset.clone();
+            }
             state.backend.user_profiles.insert(
                 user_id.clone(),
                 super::state::UserProfileState {
@@ -964,9 +1150,22 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             profile,
         } => {
             let user_id = profile.user_id.clone();
+            let first_profile = !state.backend.profile_panel.profiles.contains_key(&user_id);
             let mut profile = profile;
+            profile.avatar_asset = profile.avatar_asset.or_else(|| {
+                state
+                    .backend
+                    .user_profiles
+                    .get(&user_id)
+                    .and_then(|old| old.avatar_asset.clone())
+            });
             if let Some(presence) = presence_for_user(&state.backend.user_presences, &user_id) {
                 profile.presence = presence;
+            }
+            // Profile metadata and social rosters arrive independently. Missing
+            // roster fields mean "not included", not an empty refreshed list.
+            if let Some(previous) = state.backend.profile_panel.profiles.get(&user_id) {
+                preserve_social_lists(&mut profile, previous);
             }
             state.backend.profile_panel.loading.remove(&user_id);
             state
@@ -992,31 +1191,10 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 account.avatar = profile.avatar_asset.clone();
             }
 
-            let needs_social_load = profile.sections.iter().any(|section| {
-                matches!(
-                    section,
-                    ProfileSection::SocialGraph(graph)
-                        if graph.followers.is_none() && graph.following.is_none()
-                )
-            });
-            if needs_social_load
-                && !state
-                    .backend
-                    .profile_panel
-                    .loading_social_list
-                    .contains(&user_id)
+            if first_profile && state.backend.profile_panel.selected_user.as_ref() == Some(&user_id)
             {
-                state
-                    .backend
-                    .profile_panel
-                    .loading_social_list
-                    .insert(user_id.clone());
-                return ReducerOutput {
-                    effects: vec![Effect::Backend(BackendCommand::LoadSocialGraphList {
-                        user_id,
-                        list_type: SocialGraphListType::Followers,
-                    })],
-                };
+                let list_type = state.backend.profile_panel.active_social_tab;
+                return request_social_graph_refresh(state, user_id, list_type);
             }
         }
         BackendEvent::SocialGraphListLoaded {
@@ -1027,8 +1205,8 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             state
                 .backend
                 .profile_panel
-                .loading_social_list
-                .remove(&user_id);
+                .social_lists
+                .remove(&(user_id.clone(), list_type));
             if let Some(profile) = state.backend.profile_panel.profiles.get_mut(&user_id) {
                 merge_social_graph_entries(profile, list_type, entries);
             }
@@ -1247,7 +1425,29 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 reactions_by_message.remove(&message_id);
             }
         }
-        BackendEvent::ReactionFailed { op_id: _, error: _ } => {}
+        BackendEvent::ReactionConfirmed { op_id } => {
+            state.backend.pending_reactions.remove(&op_id);
+        }
+        BackendEvent::ReactionFailed { op_id, error } => {
+            state.notifications.toasts.push(error);
+            if let Some(pending) = state.backend.pending_reactions.remove(&op_id) {
+                let key = (pending.conversation_id.clone(), pending.message_id.clone());
+                if state.backend.latest_reaction_ops.get(&key) == Some(&op_id) {
+                    state.backend.latest_reaction_ops.remove(&key);
+                    state
+                        .backend
+                        .message_reactions
+                        .entry(pending.conversation_id.clone())
+                        .or_default()
+                        .insert(pending.message_id, pending.previous);
+                }
+                return ReducerOutput {
+                    effects: vec![Effect::Backend(BackendCommand::LoadConversation {
+                        conversation_id: pending.conversation_id,
+                    })],
+                };
+            }
+        }
         BackendEvent::TeamRolesUpdated {
             conversation_id,
             team_id,
@@ -1277,6 +1477,31 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                     updated_ms,
                     is_complete,
                 },
+            );
+        }
+        BackendEvent::ConversationBadgesUpdated {
+            backend_id,
+            counts,
+            complete,
+        } => {
+            state
+                .backend
+                .conversation_badges
+                .entry(backend_id)
+                .or_default()
+                .update(counts, complete);
+            apply_authoritative_badges(state);
+            let workspace_id = state
+                .workspace
+                .active_workspace_id
+                .clone()
+                .unwrap_or_else(|| WorkspaceId::new("ws_primary"));
+            state.sidebar.sections = build_sidebar_sections(
+                &state.workspace.channels,
+                &state.workspace.direct_messages,
+                &workspace_id,
+                &state.backend.user_profiles,
+                state.sidebar.retained_unread_conversation.as_ref(),
             );
         }
         BackendEvent::ConversationUnreadChanged {
@@ -1313,11 +1538,13 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                     .active_workspace_id
                     .clone()
                     .unwrap_or_else(|| WorkspaceId::new("ws_primary"));
+                apply_authoritative_badges(state);
                 state.sidebar.sections = build_sidebar_sections(
                     &state.workspace.channels,
                     &state.workspace.direct_messages,
                     &workspace_id,
                     &state.backend.user_profiles,
+                    state.sidebar.retained_unread_conversation.as_ref(),
                 );
             }
         }
@@ -1331,20 +1558,22 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
         }
         BackendEvent::CallUpdated(_) => {}
         BackendEvent::SearchResults {
-            query_id: _,
+            query_id,
             results,
             is_complete,
         } => {
+            if state.search.active_query_id.as_ref() != Some(&query_id) {
+                return ReducerOutput::default();
+            }
             state.search.results.extend(results);
             state.search.highlighted_index = (!state.search.results.is_empty()).then_some(0);
             state.search.is_loading = !is_complete;
         }
-        BackendEvent::UserSearchResults {
-            query_id: _,
-            results,
-        } => {
+        BackendEvent::UserSearchResults { query_id, results } => {
+            if state.new_chat.active_query_id.as_ref() != Some(&query_id) {
+                return ReducerOutput::default();
+            }
             state.new_chat.search_results = results;
-            state.new_chat.creating = false;
         }
         BackendEvent::ChannelResolved {
             conversation_binding,
@@ -1356,7 +1585,29 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             );
         }
         BackendEvent::ChannelResolveFailed { .. } => {}
-        BackendEvent::ChannelJoined { .. } => {}
+        BackendEvent::ChannelLeft {
+            workspace_id,
+            conversation_id,
+        } => {
+            return channel_membership::channel_left(state, workspace_id, conversation_id);
+        }
+        BackendEvent::ChannelJoined {
+            conversation_id, ..
+        } => {
+            // A confirmed join supersedes any in-flight leave completion.
+            state
+                .workspace
+                .leaving_conversation_ids
+                .remove(&conversation_id);
+            state
+                .workspace
+                .leave_channel_errors
+                .remove(&conversation_id);
+            state
+                .workspace
+                .left_conversation_ids
+                .remove(&conversation_id);
+        }
         BackendEvent::ConversationCreated {
             op_id: _,
             workspace_id,
@@ -1367,33 +1618,26 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 conversation_binding.conversation_id.clone(),
                 conversation_binding,
             );
-            match &conversation.kind {
-                ConversationKind::Channel => {
-                    merge_conversation_summaries(
-                        &mut state.workspace.channels,
-                        vec![conversation.clone()],
-                    );
-                }
-                ConversationKind::DirectMessage | ConversationKind::GroupDirectMessage => {
-                    merge_conversation_summaries(
-                        &mut state.workspace.direct_messages,
-                        vec![conversation.clone()],
-                    );
-                }
-            }
+            merge_workspace_conversations(
+                &mut state.workspace,
+                vec![conversation.clone()],
+                Vec::new(),
+            );
             if state.workspace.active_workspace_id.is_none() {
                 state.workspace.active_workspace_id = Some(workspace_id.clone());
             }
             let sidebar_workspace_id = state
                 .workspace
                 .active_workspace_id
-                .as_ref()
-                .unwrap_or(&workspace_id);
+                .clone()
+                .unwrap_or(workspace_id.clone());
+            apply_authoritative_badges(state);
             state.sidebar.sections = build_sidebar_sections(
                 &state.workspace.channels,
                 &state.workspace.direct_messages,
-                sidebar_workspace_id,
+                &sidebar_workspace_id,
                 &state.backend.user_profiles,
+                state.sidebar.retained_unread_conversation.as_ref(),
             );
             let route = route_for_summary(&conversation, &workspace_id);
             state.navigation.current_route = Some(route.clone());
@@ -1422,10 +1666,122 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
         BackendEvent::BootStatus(status) => {
             state.app.boot_status = status.clone();
         }
-        BackendEvent::KeybaseNotifyStub { .. } => {}
+        BackendEvent::KeybaseNotifyStub { .. } | BackendEvent::BenchmarkPulse(_) => {}
     }
 
     ReducerOutput::default()
+}
+
+fn apply_authoritative_badges(state: &mut UiState) {
+    for summary in state
+        .workspace
+        .channels
+        .iter_mut()
+        .chain(state.workspace.direct_messages.iter_mut())
+    {
+        if let Some(binding) = state.backend.conversation_bindings.get(&summary.id)
+            && let Some(badges) = state.backend.conversation_badges.get(&binding.backend_id)
+        {
+            badges.apply(summary);
+        }
+    }
+}
+
+fn reduce_command_failure(
+    state: &mut UiState,
+    command: BackendCommand,
+    error: String,
+) -> ReducerOutput {
+    let mut effects = Vec::new();
+    match command {
+        BackendCommand::LeaveChannel {
+            conversation_id, ..
+        } => {
+            state.workspace.leave_channel_errors
+                .insert(conversation_id.clone(), error.clone());
+            state
+                .workspace
+                .leaving_conversation_ids
+                .remove(&conversation_id);
+        }
+        BackendCommand::SendMessage {
+            client_message_id, ..
+        }
+        | BackendCommand::SendAttachment {
+            client_message_id, ..
+        } => {
+            mark_message_failed(state, &pending_message_id_for_client(&client_message_id));
+        }
+        BackendCommand::Search { query_id, .. }
+            if state.search.active_query_id.as_ref() == Some(&query_id) =>
+        {
+            state.search.is_loading = false;
+        }
+        BackendCommand::SearchUsers { query_id, .. }
+            if state.new_chat.active_query_id.as_ref() == Some(&query_id) =>
+        {
+            state.new_chat.search_results.clear();
+            state.new_chat.error = Some(error.clone());
+        }
+        BackendCommand::CreateConversation { .. } => {
+            state.new_chat.creating = false;
+            state.new_chat.error = Some(error.clone());
+        }
+        BackendCommand::LoadOlderMessages { key, .. } => match key {
+            super::state::TimelineKey::Conversation(id)
+                if state.timeline.conversation_id.as_ref() == Some(&id) =>
+            {
+                state.timeline.loading_older = false
+            }
+            super::state::TimelineKey::Thread {
+                conversation_id,
+                requested_root_id,
+                ..
+            } if state.timeline.conversation_id.as_ref() == Some(&conversation_id)
+                && state.navigation.active_thread_root.as_ref() == Some(&requested_root_id) =>
+            {
+                state.thread.loading = false
+            }
+            _ => {}
+        },
+        BackendCommand::JumpToMessage {
+            conversation_id, ..
+        } if state.timeline.conversation_id.as_ref() == Some(&conversation_id) => {
+            state.timeline.loading_older = false
+        }
+        BackendCommand::LoadThread {
+            conversation_id,
+            root_id,
+        } if state.timeline.conversation_id.as_ref() == Some(&conversation_id)
+            && state.navigation.active_thread_root.as_ref() == Some(&root_id) =>
+        {
+            state.thread.loading = false
+        }
+        BackendCommand::LoadUserProfile { user_id } => {
+            state.backend.profile_panel.loading.remove(&user_id);
+        }
+        BackendCommand::LoadSocialGraphList { user_id, list_type } => {
+            state
+                .backend
+                .profile_panel
+                .social_lists
+                .insert((user_id, list_type), SocialListLoadState::Failed);
+        }
+        BackendCommand::FollowUser { user_id } | BackendCommand::UnfollowUser { user_id } => {
+            // Reconcile with the backend instead of leaving an optimistic follow stuck.
+            effects.push(Effect::Backend(BackendCommand::LoadUserProfile { user_id }));
+        }
+        BackendCommand::ReactToMessage { op_id, .. } => {
+            return reduce_backend_event(state, BackendEvent::ReactionFailed { op_id, error });
+        }
+        BackendCommand::LoadBootstrap { .. } | BackendCommand::ConnectAccount { .. } => {
+            state.app.boot_phase = BootPhase::Degraded;
+            state.app.boot_status = error.clone();
+        }
+        _ => {}
+    }
+    state.notifications.toasts.push(error);
+    ReducerOutput { effects }
 }
 
 fn current_user_id(state: &UiState) -> UserId {
@@ -1528,6 +1884,54 @@ fn update_follow_status(
     }
 }
 
+fn request_social_graph_refresh(
+    state: &mut UiState,
+    user_id: UserId,
+    list_type: SocialGraphListType,
+) -> ReducerOutput {
+    let key = (user_id.clone(), list_type);
+    if state.backend.profile_panel.social_lists.get(&key) == Some(&SocialListLoadState::Loading) {
+        return ReducerOutput::default();
+    }
+    state
+        .backend
+        .profile_panel
+        .social_lists
+        .insert(key, SocialListLoadState::Loading);
+    ReducerOutput {
+        effects: vec![Effect::Backend(BackendCommand::LoadSocialGraphList {
+            user_id,
+            list_type,
+        })],
+    }
+}
+
+fn preserve_social_lists(profile: &mut UserProfile, previous: &UserProfile) {
+    if profile.user_id != previous.user_id {
+        return;
+    }
+    let Some(old) = previous.sections.iter().find_map(|section| match section {
+        ProfileSection::SocialGraph(graph) => Some(graph),
+        _ => None,
+    }) else {
+        return;
+    };
+    for section in &mut profile.sections {
+        if let ProfileSection::SocialGraph(graph) = section {
+            if graph.followers.is_none() {
+                graph.followers = old.followers.clone();
+            }
+            if graph.following.is_none() {
+                graph.following = old.following.clone();
+            }
+            return;
+        }
+    }
+    profile
+        .sections
+        .push(ProfileSection::SocialGraph(old.clone()));
+}
+
 fn merge_social_graph_entries(
     profile: &mut UserProfile,
     list_type: SocialGraphListType,
@@ -1600,7 +2004,7 @@ fn add_pending_message_to_state(
         (Vec::new(), None)
     } else {
         (
-            vec![MessageFragment::Text(text.to_string())],
+            crate::domain::message_formatting::parse_message_text(text),
             Some(text.to_string()),
         )
     };
@@ -1671,6 +2075,38 @@ fn message_body_text_for_matching(msg: &MessageRecord) -> Option<String> {
 }
 
 fn upsert_message_in_state(state: &mut UiState, mut message: MessageRecord) {
+    if state
+        .backend
+        .deleted_messages
+        .contains(&(message.conversation_id.clone(), message.id.clone()))
+    {
+        return;
+    }
+    if let Some(activity) = message.timestamp_ms {
+        let mut changed = false;
+        for summary in state
+            .workspace
+            .channels
+            .iter_mut()
+            .chain(&mut state.workspace.direct_messages)
+        {
+            if summary.id == message.conversation_id && activity > summary.last_activity_ms {
+                summary.last_activity_ms = activity;
+                changed = true;
+            }
+        }
+        if changed {
+            refresh_sidebar(state);
+        }
+    }
+    if let Some(existing) = state
+        .timeline
+        .messages
+        .iter()
+        .find(|item| item.id == message.id && item.conversation_id == message.conversation_id)
+    {
+        message = crate::domain::message::merge_message_version(existing, &message);
+    }
     if state.timeline.conversation_id.as_ref() != Some(&message.conversation_id) {
         // Keep the active timeline stable; incoming events for other conversations
         // should not force navigation.
@@ -1705,7 +2141,6 @@ fn upsert_message_in_state(state: &mut UiState, mut message: MessageRecord) {
         .iter_mut()
         .find(|existing| existing.id == message.id)
     {
-        preserve_local_attachment_sources(existing, &mut message);
         *existing = message.clone();
     } else {
         state.timeline.messages.push(message.clone());
@@ -1723,8 +2158,7 @@ fn upsert_message_in_state(state: &mut UiState, mut message: MessageRecord) {
                 .iter_mut()
                 .find(|existing| existing.id == message.id)
             {
-                preserve_local_attachment_sources(existing, &mut message);
-                *existing = message.clone();
+                *existing = crate::domain::message::merge_message_version(existing, &message);
             } else {
                 state.thread.replies.push(message.clone());
             }
@@ -1758,77 +2192,9 @@ fn replace_pending_message_id(state: &mut UiState, pending_id: &MessageId, _serv
         .retain(|message| message.id != *pending_id);
 }
 
-fn preserve_local_attachment_sources(
-    existing: &MessageRecord,
-    incoming: &mut MessageRecord,
-) {
-    if existing.attachments.is_empty() || incoming.attachments.is_empty() {
-        return;
-    }
-    for (index, incoming_att) in incoming.attachments.iter_mut().enumerate() {
-        let existing_att = existing
-            .attachments
-            .iter()
-            .find(|candidate| {
-                !candidate.name.is_empty()
-                    && !incoming_att.name.is_empty()
-                    && candidate.name.eq_ignore_ascii_case(&incoming_att.name)
-            })
-            .or_else(|| existing.attachments.get(index));
-        let Some(existing_att) = existing_att else {
-            continue;
-        };
-        let existing_has_local_source = matches!(
-            &existing_att.source,
-            Some(AttachmentSource::LocalPath(p)) if !p.is_empty()
-        );
-        let incoming_source_usable = incoming_att.source.as_ref().is_some_and(|s| match s {
-            AttachmentSource::LocalPath(p) => !p.is_empty(),
-            AttachmentSource::Url(url) => !is_unrenderable_asset_url(url),
-        });
-        if existing_has_local_source && !incoming_source_usable {
-            incoming_att.source = existing_att.source.clone();
-        }
-        let existing_has_local_preview = matches!(
-            &existing_att.preview,
-            Some(preview) if matches!(&preview.source, AttachmentSource::LocalPath(p) if !p.is_empty())
-        );
-        let incoming_preview_usable =
-            incoming_att
-                .preview
-                .as_ref()
-                .is_some_and(|preview| match &preview.source {
-                    AttachmentSource::LocalPath(p) => !p.is_empty(),
-                    AttachmentSource::Url(url) => !is_unrenderable_asset_url(url),
-                });
-        if existing_has_local_preview && !incoming_preview_usable {
-            incoming_att.preview = existing_att.preview.clone();
-        }
-    }
-}
-
-fn is_unrenderable_asset_url(url: &str) -> bool {
-    let lower = url.to_ascii_lowercase();
-    if lower.starts_with("http://127.0.0.1:") || lower.starts_with("http://localhost:") {
-        return true;
-    }
-    let prefix = if lower.starts_with("https://s3.amazonaws.com/") {
-        "https://s3.amazonaws.com/"
-    } else if lower.starts_with("http://s3.amazonaws.com/") {
-        "http://s3.amazonaws.com/"
-    } else {
-        return false;
-    };
-    if lower.contains("x-amz-signature=") || lower.contains("awsaccesskeyid=") {
-        return false;
-    }
-    let path = &url[prefix.len()..];
-    let Some(first_segment) = path.split('/').next() else {
-        return false;
-    };
-    first_segment.len() == 64 && first_segment.chars().all(|ch| ch.is_ascii_hexdigit())
-}
-
+// This joins a known outbox upload with its server confirmation, whose metadata
+// may still be incomplete. Updates to an existing canonical message instead use
+// merge_message_version and never infer attachment identity from array position.
 fn merge_pending_message_attachment_sources(
     server_message: &mut MessageRecord,
     pending_message: &MessageRecord,
@@ -2072,7 +2438,10 @@ fn should_replace_duplicate(
     match (&existing.edited, &incoming.edited) {
         (None, Some(_)) => true,
         (Some(_), None) => false,
-        (Some(a), Some(b)) => b.edited_at_ms.unwrap_or(0) > a.edited_at_ms.unwrap_or(0),
+        (Some(_), Some(_)) => {
+            crate::domain::message::message_revision(incoming)
+                > crate::domain::message::message_revision(existing)
+        }
         (None, None) => incoming.timestamp_ms.unwrap_or(0) > existing.timestamp_ms.unwrap_or(0),
     }
 }
@@ -2151,22 +2520,71 @@ fn apply_message_reactions(state: &mut UiState, message: &crate::domain::message
     entry.insert(message.id.clone(), reactions);
 }
 
-fn merge_conversation_summaries(
-    existing: &mut Vec<ConversationSummary>,
-    incoming: Vec<ConversationSummary>,
+// A conversation has one identity even when refreshed metadata changes its kind.
+// Merge both buckets together, repairing duplicates left by earlier updates, then
+// partition by the latest summary rather than by the event's input bucket.
+fn merge_workspace_conversations(
+    workspace: &mut super::state::UiWorkspaceState,
+    channels: Vec<ConversationSummary>,
+    direct_messages: Vec<ConversationSummary>,
 ) {
-    let mut index_by_id = existing
-        .iter()
-        .enumerate()
-        .map(|(index, summary)| (summary.id.clone(), index))
-        .collect::<HashMap<_, _>>();
-    for summary in incoming {
-        if let Some(index) = index_by_id.get(&summary.id).copied() {
-            existing[index] = summary;
-        } else {
-            index_by_id.insert(summary.id.clone(), existing.len());
-            existing.push(summary);
+    let mut summaries: Vec<ConversationSummary> = Vec::new();
+    let mut index_by_id = HashMap::new();
+    for mut summary in std::mem::take(&mut workspace.channels)
+        .into_iter()
+        .chain(std::mem::take(&mut workspace.direct_messages))
+        .chain(channels)
+        .chain(direct_messages)
+    {
+        if workspace.excluded_conversation_ids.contains(&summary.id)
+            || workspace.left_conversation_ids.contains(&summary.id)
+        {
+            continue;
         }
+        if let Some(index) = index_by_id.get(&summary.id).copied() {
+            summary.preserve_known_metadata(&summaries[index]);
+            summaries[index] = summary;
+        } else {
+            index_by_id.insert(summary.id.clone(), summaries.len());
+            summaries.push(summary);
+        }
+    }
+    (workspace.channels, workspace.direct_messages) = summaries
+        .into_iter()
+        .partition(|summary| matches!(summary.kind, ConversationKind::Channel));
+}
+
+fn refresh_sidebar(state: &mut UiState) {
+    let workspace_id = state
+        .workspace
+        .active_workspace_id
+        .clone()
+        .unwrap_or_else(|| WorkspaceId::new("ws_primary"));
+    state.sidebar.sections = build_sidebar_sections(
+        &state.workspace.channels,
+        &state.workspace.direct_messages,
+        &workspace_id,
+        &state.backend.user_profiles,
+        state.sidebar.retained_unread_conversation.as_ref(),
+    );
+}
+
+fn track_unread_visit(state: &mut UiState, route: &Route) {
+    let target = conversation_id_from_route(route);
+    let retained = target.filter(|id| {
+        state.sidebar.retained_unread_conversation.as_ref() == Some(id)
+            || state
+                .workspace
+                .channels
+                .iter()
+                .chain(&state.workspace.direct_messages)
+                .any(|summary| {
+                    &summary.id == id && (summary.unread_count > 0 || summary.mention_count > 0)
+                })
+    });
+    if state.sidebar.retained_unread_conversation != retained {
+        state.sidebar.retained_unread_conversation = retained;
+        refresh_sidebar(state);
     }
 }
 
@@ -2175,6 +2593,7 @@ fn build_sidebar_sections(
     direct_messages: &[ConversationSummary],
     workspace_id: &WorkspaceId,
     user_profiles: &HashMap<UserId, UserProfileState>,
+    retained_unread: Option<&ConversationId>,
 ) -> Vec<UiSidebarSectionState> {
     let mut sections = Vec::new();
     let mut unread_rows = Vec::new();
@@ -2187,16 +2606,18 @@ fn build_sidebar_sections(
             summary.kind,
             ConversationKind::DirectMessage | ConversationKind::GroupDirectMessage
         );
-        let include_in_unread = summary.unread_count > 0 || summary.mention_count > 0;
+        let include_in_unread = summary.unread_count > 0
+            || summary.mention_count > 0
+            || retained_unread == Some(&summary.id);
         if !include_in_unread {
             continue;
         }
-        let label = if is_dm {
+        let label = if let Some(label) = summary.simple_team_label() {
+            label
+        } else if is_dm {
             dm_display_label(&summary.title, user_profiles)
-        } else if let Some(group) = &summary.group {
-            format!("{} #{}", group.display_name, summary.title)
         } else {
-            format!("#{}", summary.title)
+            summary.title.clone()
         };
         unread_rows.push((
             summary.last_activity_ms,
@@ -2208,7 +2629,15 @@ fn build_sidebar_sections(
             },
         ));
     }
-    unread_rows.sort_by(|left, right| right.0.cmp(&left.0));
+    unread_rows.sort_by(|left, right| {
+        right.0.cmp(&left.0).then_with(|| {
+            left.1
+                .route
+                .as_ref()
+                .map(Route::label)
+                .cmp(&right.1.route.as_ref().map(Route::label))
+        })
+    });
     let unread_rows = unread_rows
         .into_iter()
         .map(|(_, row)| row)
@@ -2234,8 +2663,13 @@ fn build_sidebar_sections(
     let mut group_rows: std::collections::HashMap<String, Vec<UiSidebarRowState>> =
         std::collections::HashMap::new();
     let mut ungrouped_rows = Vec::new();
+    let mut flat_conversations = direct_messages.iter().collect::<Vec<_>>();
 
     for summary in &sorted_channels {
+        if summary.is_simple_team() {
+            flat_conversations.push(summary);
+            continue;
+        }
         let row = UiSidebarRowState {
             label: summary.title.clone(),
             unread_count: summary.unread_count,
@@ -2252,6 +2686,21 @@ fn build_sidebar_sections(
             ungrouped_rows.push(row);
         }
     }
+
+    // Simple teams share the recent-conversation list with DMs, but retain
+    // Channel routes and team metadata for permissions, navigation and identity.
+    flat_conversations.sort_by(|left, right| left.compare_recency(right));
+    let conversation_rows = flat_conversations
+        .iter()
+        .map(|summary| UiSidebarRowState {
+            label: summary
+                .simple_team_label()
+                .unwrap_or_else(|| dm_display_label(&summary.title, user_profiles)),
+            unread_count: summary.unread_count,
+            mention_count: summary.mention_count,
+            route: Some(route_for_summary(summary, workspace_id)),
+        })
+        .collect::<Vec<_>>();
 
     group_order.sort_by(|left, right| {
         left.1
@@ -2286,21 +2735,12 @@ fn build_sidebar_sections(
         });
     }
 
-    // Keep backend order for DMs so sidebar reflects recency.
-    let dm_rows = direct_messages
-        .iter()
-        .map(|summary| UiSidebarRowState {
-            label: dm_display_label(&summary.title, user_profiles),
-            unread_count: summary.unread_count,
-            mention_count: summary.mention_count,
-            route: Some(route_for_summary(summary, workspace_id)),
-        })
-        .collect::<Vec<_>>();
-    if !dm_rows.is_empty() {
+    if !conversation_rows.is_empty() {
         sections.push(UiSidebarSectionState {
+            // Keep the section identity so existing saved order/collapse settings work.
             id: Some(SidebarSectionId::new("dms")),
-            title: "DMs".to_string(),
-            rows: dm_rows,
+            title: "Conversations".to_string(),
+            rows: conversation_rows,
             collapsed: false,
         });
     }
@@ -2413,6 +2853,28 @@ fn conversation_id_from_route(route: &Route) -> Option<ConversationId> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pending_json_has_its_final_code_structure_before_server_echo() {
+        let id = crate::domain::ids::ConversationId::new("conv");
+        let mut state = super::UiState::default();
+        state.timeline.conversation_id = Some(id.clone());
+        let source = "```json\n{\"ok\": true}\n```";
+        super::add_pending_message_to_state(
+            &mut state,
+            &id,
+            source,
+            vec![],
+            None,
+            &super::ClientMessageId::new("local-json"),
+        );
+        let pending = &state.timeline.messages[0];
+        assert_eq!(pending.source_text.as_deref(), Some(source));
+        assert!(
+            matches!(&pending.fragments[..], [crate::domain::message::MessageFragment::Code { text, lang }]
+            if text == "{\"ok\": true}" && lang.as_deref() == Some("json"))
+        );
+    }
+
     use super::*;
     use crate::{
         domain::ids::UserId,
@@ -2446,6 +2908,498 @@ mod tests {
             send_state: MessageSendState::Sent,
             edited: None,
         }
+    }
+
+    #[test]
+    fn badge_snapshot_survives_bootstrap_and_inferred_unread_updates() {
+        use crate::domain::backend::{BackendId, ProviderConversationRef};
+        use crate::domain::conversation::ConversationBadgeCounts;
+        use crate::state::{bindings::ConversationBinding, event::BootstrapPayload};
+        let mut state = UiState::default();
+        let backend_id = BackendId::new("keybase");
+        let id = ConversationId::new("kb_conv:abcd");
+        let other = ConversationId::new("kb_conv:1234");
+        let mut summary = channel_summary(&id.0, "general");
+        summary.unread_count = 9;
+        summary.mention_count = 3;
+        state.timeline.conversation_id = Some(id.clone());
+        state.timeline.unread_marker = Some(MessageId::new("42"));
+        // Subscription can finish before bootstrap. Remember the snapshot.
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::ConversationBadgesUpdated {
+                backend_id: backend_id.clone(),
+                counts: HashMap::new(),
+                complete: true,
+            },
+        );
+        let payload = BootstrapPayload {
+            channels: vec![summary.clone()],
+            conversation_bindings: vec![ConversationBinding {
+                conversation_id: id.clone(),
+                backend_id: backend_id.clone(),
+                account_id: AccountId::new("account"),
+                provider_conversation_ref: ProviderConversationRef::new(&id.0),
+            }],
+            ..BootstrapPayload::default()
+        };
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::BootstrapLoaded {
+                source: BootstrapSource::Server,
+                account_id: AccountId::new("account"),
+                payload: payload.clone(),
+            },
+        );
+        assert_eq!(state.workspace.channels[0].unread_count, 0);
+        assert_eq!(state.workspace.channels[0].mention_count, 0);
+        assert_eq!(state.timeline.unread_marker, Some(MessageId::new("42")));
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::ConversationUnreadChanged {
+                conversation_id: id.clone(),
+                unread_count: 9,
+                mention_count: 3,
+                read_upto: Some(MessageId::new("43")),
+            },
+        );
+        assert_eq!(state.workspace.channels[0].unread_count, 0);
+        assert_eq!(state.timeline.unread_marker, Some(MessageId::new("43")));
+        // A later real badge update can make the conversation unread again.
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::ConversationBadgesUpdated {
+                backend_id: backend_id.clone(),
+                counts: HashMap::from([(
+                    id.clone(),
+                    ConversationBadgeCounts {
+                        unread_count: 2,
+                        badge_count: 1,
+                    },
+                )]),
+                complete: true,
+            },
+        );
+        assert_eq!(state.workspace.channels[0].unread_count, 2);
+        assert!(state.sidebar.sections.iter().any(|s| s.title == "Unread"));
+        // Older inbox metadata must not overwrite the badge snapshot.
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::WorkspaceConversationsExtended {
+                workspace_id: WorkspaceId::new("workspace"),
+                channels: vec![summary],
+                direct_messages: vec![],
+                conversation_bindings: vec![],
+            },
+        );
+        assert_eq!(state.workspace.channels[0].unread_count, 2);
+        // A confirmed local read is a delta, not an empty full snapshot.
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::ConversationBadgesUpdated {
+                backend_id: backend_id.clone(),
+                counts: HashMap::from([(
+                    other,
+                    ConversationBadgeCounts {
+                        unread_count: 5,
+                        badge_count: 0,
+                    },
+                )]),
+                complete: false,
+            },
+        );
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::ConversationBadgesUpdated {
+                backend_id,
+                counts: HashMap::from([(id, ConversationBadgeCounts::default())]),
+                complete: false,
+            },
+        );
+        assert_eq!(state.workspace.channels[0].unread_count, 0);
+        assert!(!state.sidebar.sections.iter().any(|s| s.title == "Unread"));
+        assert_eq!(state.timeline.unread_marker, Some(MessageId::new("43")));
+    }
+
+    #[test]
+    fn server_refresh_preserves_navigation_thread_drafts_and_pending_messages() {
+        let mut state = UiState::default();
+        let account_id = AccountId::new("account");
+        let original = ConversationId::new("original");
+        let current = ConversationId::new("current");
+        let payload = super::super::event::BootstrapPayload {
+            active_workspace_id: Some(WorkspaceId::new("workspace")),
+            selected_conversation_id: Some(original.clone()),
+            selected_messages: vec![message(&original, "1", 1)],
+            channels: vec![channel_summary("original", "original")],
+            ..Default::default()
+        };
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::BootstrapLoaded {
+                source: BootstrapSource::Cache,
+                account_id: account_id.clone(),
+                payload: payload.clone(),
+            },
+        );
+        let route = Route::Channel {
+            workspace_id: WorkspaceId::new("workspace"),
+            channel_id: ChannelId::new("current"),
+        };
+        reduce_ui_action(&mut state, UiAction::Navigate(route.clone()));
+        reduce_ui_action(
+            &mut state,
+            UiAction::UpdateDraft {
+                key: DraftKey::Conversation(current.clone()),
+                text: "pending text".into(),
+            },
+        );
+        reduce_ui_action(
+            &mut state,
+            UiAction::SendMessage {
+                key: DraftKey::Conversation(current.clone()),
+            },
+        );
+        reduce_ui_action(
+            &mut state,
+            UiAction::OpenThread {
+                root_id: MessageId::new("10"),
+            },
+        );
+        reduce_ui_action(
+            &mut state,
+            UiAction::UpdateDraft {
+                key: DraftKey::Thread(MessageId::new("10")),
+                text: "unsent reply".into(),
+            },
+        );
+        let result = reduce_backend_event(
+            &mut state,
+            BackendEvent::BootstrapLoaded {
+                source: BootstrapSource::Server,
+                account_id,
+                payload,
+            },
+        );
+        assert_eq!(state.navigation.current_route, Some(route));
+        assert_eq!(state.timeline.conversation_id, Some(current.clone()));
+        assert!(
+            state
+                .timeline
+                .messages
+                .iter()
+                .any(|message| message.send_state == MessageSendState::Pending)
+        );
+        assert!(state.thread.open);
+        assert_eq!(state.thread.reply_draft, "unsent reply");
+        assert!(result.effects.iter().any(|effect| matches!(effect, Effect::Backend(BackendCommand::LoadConversation { conversation_id }) if conversation_id == &current)));
+    }
+
+    #[test]
+    fn late_cache_hydration_cannot_overwrite_server_state() {
+        let mut state = UiState::default();
+        let account_id = AccountId::new("account");
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::BootstrapLoaded {
+                source: BootstrapSource::Server,
+                account_id: account_id.clone(),
+                payload: super::super::event::BootstrapPayload {
+                    workspace_name: "server".into(),
+                    ..Default::default()
+                },
+            },
+        );
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::BootstrapLoaded {
+                source: BootstrapSource::Cache,
+                account_id,
+                payload: super::super::event::BootstrapPayload {
+                    workspace_name: "stale cache".into(),
+                    ..Default::default()
+                },
+            },
+        );
+        assert_eq!(state.workspace.workspace_name, "server");
+    }
+
+    #[test]
+    fn replacement_attachments_do_not_inherit_timeline_or_thread_paths() {
+        let conversation = ConversationId::new("conversation");
+        let mut original = message(&conversation, "1", 1);
+        original.thread_root_id = Some(MessageId::new("root"));
+        original.attachments.push(AttachmentSummary {
+            name: "old.txt".into(),
+            kind: AttachmentKind::File,
+            size_bytes: 1,
+            source: Some(AttachmentSource::LocalPath("/cache/old.txt".into())),
+            ..AttachmentSummary::default()
+        });
+        let mut state = UiState::default();
+        state.timeline.conversation_id = Some(conversation.clone());
+        state.timeline.messages = vec![original.clone()];
+        state.thread.root_message_id = Some(MessageId::new("root"));
+        state.thread.replies = vec![original.clone()];
+        let mut replacement = original;
+        replacement.attachments[0].name = "replacement.txt".into();
+        replacement.attachments[0].source = None;
+        upsert_message_in_state(&mut state, replacement);
+        assert!(state.timeline.messages[0].attachments[0].source.is_none());
+        assert!(state.thread.replies[0].attachments[0].source.is_none());
+    }
+
+    #[test]
+    fn stale_message_and_attachment_completion_cannot_undo_edit_or_delete() {
+        let mut state = UiState::default();
+        let conversation_id = ConversationId::new("conversation");
+        state.timeline.conversation_id = Some(conversation_id.clone());
+        let original = message(&conversation_id, "1", 1);
+        let mut edited = original.clone();
+        edited.fragments = vec![MessageFragment::Text("edited".into())];
+        edited.edited = Some(crate::domain::message::EditMeta {
+            edit_id: MessageId::new("2"),
+            edited_at_ms: Some(2),
+        });
+        reduce_backend_event(&mut state, BackendEvent::MessageUpserted(edited));
+        reduce_backend_event(&mut state, BackendEvent::MessageUpserted(original.clone()));
+        assert_eq!(
+            state.timeline.messages[0].edited.as_ref().unwrap().edit_id,
+            MessageId::new("2")
+        );
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessageDeleted {
+                conversation_id: conversation_id.clone(),
+                message_id: original.id.clone(),
+            },
+        );
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessageAttachmentsUpdated {
+                conversation_id: conversation_id.clone(),
+                message_id: original.id.clone(),
+                attachments: Vec::new(),
+            },
+        );
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::TimelineReplaced {
+                conversation_id,
+                messages: vec![original],
+                older_cursor: None,
+                newer_cursor: None,
+            },
+        );
+        assert!(state.timeline.messages.is_empty());
+    }
+
+    #[test]
+    fn paging_failure_keeps_cursor_available_for_retry() {
+        let mut state = UiState::default();
+        let conversation_id = ConversationId::new("conversation");
+        state.timeline.conversation_id = Some(conversation_id.clone());
+        state.timeline.older_cursor = Some("10".into());
+        state.timeline.loading_older = true;
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::CommandFailed {
+                command: Box::new(BackendCommand::LoadOlderMessages {
+                    key: TimelineKey::Conversation(conversation_id),
+                    cursor: "10".into(),
+                }),
+                error: "offline".into(),
+            },
+        );
+        assert!(!state.timeline.loading_older);
+        assert_eq!(state.timeline.older_cursor.as_deref(), Some("10"));
+        assert_eq!(state.notifications.toasts, vec!["offline"]);
+    }
+
+    #[test]
+    fn creation_failure_settles_loading_and_keeps_dialog_open() {
+        let mut state = UiState::default();
+        state.new_chat.creating = true;
+        state.new_chat.open = true;
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::CommandFailed {
+                command: Box::new(BackendCommand::CreateConversation {
+                    op_id: OpId::new("create-1"),
+                    participants: Vec::new(),
+                    kind: ConversationKind::GroupDirectMessage,
+                }),
+                error: "offline".into(),
+            },
+        );
+        assert!(!state.new_chat.creating);
+        assert!(state.new_chat.open);
+        assert_eq!(state.new_chat.error.as_deref(), Some("offline"));
+    }
+
+    #[test]
+    fn late_reaction_failure_does_not_undo_a_newer_confirmed_operation() {
+        let mut state = UiState::default();
+        let conversation_id = ConversationId::new("conversation");
+        let message_id = MessageId::new("1");
+        let action = UiAction::ReactToMessage {
+            conversation_id: conversation_id.clone(),
+            message_id: message_id.clone(),
+            emoji: "thumbsup".into(),
+        };
+        let first = reduce_ui_action(&mut state, action.clone());
+        let Effect::Backend(BackendCommand::ReactToMessage { op_id: old, .. }) = &first.effects[0]
+        else {
+            panic!("reaction command");
+        };
+        let second = reduce_ui_action(&mut state, action);
+        let Effect::Backend(BackendCommand::ReactToMessage { op_id: new, .. }) = &second.effects[0]
+        else {
+            panic!("reaction command");
+        };
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::ReactionConfirmed { op_id: new.clone() },
+        );
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::ReactionFailed {
+                op_id: old.clone(),
+                error: "offline".into(),
+            },
+        );
+        assert!(
+            state
+                .backend
+                .message_reactions
+                .get(&conversation_id)
+                .and_then(|messages| messages.get(&message_id))
+                .is_none_or(|reactions| reactions.is_empty())
+        );
+    }
+
+    #[test]
+    fn search_ignores_completion_from_a_superseded_query() {
+        let mut state = UiState::default();
+        reduce_ui_action(&mut state, UiAction::SubmitSearch);
+        let first_query = state.search.active_query_id.clone().unwrap();
+        reduce_ui_action(&mut state, UiAction::SetSearchQuery("new query".into()));
+        reduce_ui_action(&mut state, UiAction::SubmitSearch);
+        let current_query = state.search.active_query_id.clone().unwrap();
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::SearchResults {
+                query_id: first_query,
+                results: Vec::new(),
+                is_complete: true,
+            },
+        );
+        assert!(state.search.is_loading);
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::SearchResults {
+                query_id: current_query,
+                results: Vec::new(),
+                is_complete: true,
+            },
+        );
+        assert!(!state.search.is_loading);
+    }
+
+    #[test]
+    fn clearing_user_search_invalidates_pending_response() {
+        let mut state = UiState::default();
+        reduce_ui_action(&mut state, UiAction::OpenNewChat);
+        reduce_ui_action(
+            &mut state,
+            UiAction::NewChatSearchUsers {
+                query: "alice".into(),
+            },
+        );
+        let query_id = state.new_chat.active_query_id.clone().unwrap();
+        reduce_ui_action(
+            &mut state,
+            UiAction::NewChatSearchUsers {
+                query: String::new(),
+            },
+        );
+        // A search response must not change an independent create operation either.
+        state.new_chat.creating = true;
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::UserSearchResults {
+                query_id,
+                results: Vec::new(),
+            },
+        );
+        assert!(state.new_chat.active_query_id.is_none());
+        assert!(state.new_chat.creating);
+    }
+
+    #[test]
+    fn late_thread_response_cannot_reopen_or_switch_threads() {
+        let mut state = UiState::default();
+        let conversation_id = ConversationId::new("conversation");
+        state.timeline.conversation_id = Some(conversation_id.clone());
+        let old_root = MessageId::new("1");
+        let new_root = MessageId::new("2");
+        reduce_ui_action(
+            &mut state,
+            UiAction::OpenThread {
+                root_id: old_root.clone(),
+            },
+        );
+        reduce_ui_action(
+            &mut state,
+            UiAction::OpenThread {
+                root_id: new_root.clone(),
+            },
+        );
+        let response = BackendEvent::MessagesPrepended {
+            key: TimelineKey::Thread {
+                conversation_id: conversation_id.clone(),
+                root_id: old_root.clone(),
+                requested_root_id: old_root.clone(),
+            },
+            messages: vec![message(&conversation_id, "1", 1)],
+            cursor: None,
+        };
+        reduce_backend_event(&mut state, response.clone());
+        assert_eq!(state.thread.root_message_id, Some(new_root));
+        assert!(state.thread.loading);
+        reduce_ui_action(&mut state, UiAction::CloseRightPane);
+        reduce_backend_event(&mut state, response);
+        assert!(!state.thread.open);
+        assert!(state.thread.replies.is_empty());
+    }
+
+    #[test]
+    fn thread_response_can_resolve_requested_reply_to_its_canonical_root() {
+        let mut state = UiState::default();
+        let conversation_id = ConversationId::new("conversation");
+        state.timeline.conversation_id = Some(conversation_id.clone());
+        let requested_root_id = MessageId::new("2");
+        reduce_ui_action(
+            &mut state,
+            UiAction::OpenThread {
+                root_id: requested_root_id.clone(),
+            },
+        );
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessagesPrepended {
+                key: TimelineKey::Thread {
+                    conversation_id: conversation_id.clone(),
+                    root_id: MessageId::new("1"),
+                    requested_root_id,
+                },
+                messages: vec![message(&conversation_id, "1", 1)],
+                cursor: None,
+            },
+        );
+        assert_eq!(state.thread.root_message_id, Some(MessageId::new("1")));
+        assert!(!state.thread.loading);
+        assert_eq!(state.thread.replies.len(), 1);
     }
 
     fn dm_summary(id: &str, title: &str) -> ConversationSummary {
@@ -2517,6 +3471,585 @@ mod tests {
     }
 
     #[test]
+    fn workspace_merge_repairs_identity_and_excludes_internal_conversations() {
+        let mut state = UiState::default();
+        state.workspace.channels = vec![
+            channel_summary("same", "stale"),
+            channel_summary("same", "stale"),
+        ];
+        state.workspace.direct_messages = vec![dm_summary("internal", "butterbot")];
+        let event = BackendEvent::WorkspaceConversationsExtended {
+            workspace_id: WorkspaceId::new("ws"),
+            channels: vec![],
+            direct_messages: vec![
+                dm_summary("same", "butterbot"),
+                dm_summary("other", "butterbot"),
+            ],
+            conversation_bindings: vec![],
+        };
+        reduce_backend_event(&mut state, event.clone());
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::WorkspaceConversationsExcluded {
+                workspace_id: WorkspaceId::new("ws"),
+                conversation_ids: vec![ConversationId::new("internal")],
+            },
+        );
+        // A cache-extension snapshot captured before the repair must not re-add it.
+        let mut stale = event;
+        if let BackendEvent::WorkspaceConversationsExtended {
+            direct_messages, ..
+        } = &mut stale
+        {
+            direct_messages.push(dm_summary("internal", "butterbot"));
+        }
+        reduce_backend_event(&mut state, stale);
+        assert!(state.workspace.channels.is_empty());
+        assert_eq!(state.workspace.direct_messages.len(), 2);
+        assert!(
+            state
+                .workspace
+                .direct_messages
+                .iter()
+                .all(|s| s.id.0 != "internal")
+        );
+        let flat = state
+            .sidebar
+            .sections
+            .iter()
+            .find(|s| s.title == "Conversations")
+            .unwrap();
+        assert_eq!(
+            flat.rows.len(),
+            2,
+            "distinct real IDs with the same name must survive"
+        );
+        // Classification changes also remove the old DM entry.
+        merge_workspace_conversations(
+            &mut state.workspace,
+            vec![channel_summary("same", "general")],
+            vec![],
+        );
+        assert_eq!(state.workspace.channels.len(), 1);
+        assert_eq!(state.workspace.direct_messages.len(), 1);
+    }
+
+    #[test]
+    fn unread_team_rows_are_filtered_independently_of_the_full_team_and_expanded() {
+        use crate::domain::conversation::{ConversationGroup, ConversationTeamType};
+        let mut read = channel_summary("read", "read-channel");
+        read.group = Some(ConversationGroup {
+            id: "team".into(),
+            display_name: "Team".into(),
+            team_type: ConversationTeamType::Complex,
+        });
+        let mut unread = read.clone();
+        unread.id = ConversationId::new("unread");
+        unread.unread_count = 1;
+        let mut mention = read.clone();
+        mention.id = ConversationId::new("mention");
+        mention.mention_count = 1;
+        let mut muted = unread.clone();
+        muted.id = ConversationId::new("muted");
+        muted.muted = true;
+        let mut retained = read.clone();
+        retained.id = ConversationId::new("retained");
+        let sections = build_sidebar_sections(
+            &[read, unread, mention, muted, retained.clone()],
+            &[],
+            &WorkspaceId::new("ws"),
+            &HashMap::new(),
+            Some(&retained.id),
+        );
+        let unread = sections
+            .iter()
+            .find(|section| section.id.as_ref().unwrap().0 == "unread")
+            .unwrap();
+        assert!(!unread.collapsed);
+        let ids = unread
+            .rows
+            .iter()
+            .filter_map(|row| row.route.as_ref())
+            .map(|route| match route {
+                Route::Channel { channel_id, .. } => channel_id.0.as_str(),
+                _ => panic!("expected a channel"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["mention", "retained", "unread"]);
+        assert_eq!(
+            sections
+                .iter()
+                .find(|section| section.id.as_ref().unwrap().0 == "group_team")
+                .unwrap()
+                .rows
+                .len(),
+            5
+        );
+    }
+
+    #[test]
+    fn active_unread_row_survives_read_acknowledgement_until_navigation_away() {
+        let mut state = UiState::default();
+        let workspace = WorkspaceId::new("ws");
+        state.workspace.active_workspace_id = Some(workspace.clone());
+        let mut unread = dm_summary("unread", "alice");
+        unread.unread_count = 2;
+        state.workspace.direct_messages = vec![unread, dm_summary("other", "bob")];
+        refresh_sidebar(&mut state);
+        let route = Route::DirectMessage {
+            workspace_id: workspace.clone(),
+            dm_id: DmId::new("unread"),
+        };
+        reduce_ui_action(&mut state, UiAction::Navigate(route.clone()));
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::ConversationUnreadChanged {
+                conversation_id: ConversationId::new("unread"),
+                unread_count: 0,
+                mention_count: 0,
+                read_upto: None,
+            },
+        );
+        assert_eq!(state.workspace.direct_messages[0].unread_count, 0);
+        let row = &state
+            .sidebar
+            .sections
+            .iter()
+            .find(|s| s.title == "Unread")
+            .unwrap()
+            .rows[0];
+        assert_eq!(
+            row.unread_count, 0,
+            "retaining the row must not invent unread state"
+        );
+        reduce_ui_action(&mut state, UiAction::Navigate(route));
+        assert!(state.sidebar.sections.iter().any(|s| s.title == "Unread"));
+        reduce_ui_action(
+            &mut state,
+            UiAction::Navigate(Route::DirectMessage {
+                workspace_id: workspace,
+                dm_id: DmId::new("other"),
+            }),
+        );
+        assert!(state.sidebar.sections.iter().all(|s| s.title != "Unread"));
+    }
+
+    #[test]
+    fn recent_activity_reorders_inactive_chats_and_late_metadata_cannot_undo_it() {
+        let mut state = UiState::default();
+        state.workspace.active_workspace_id = Some(WorkspaceId::new("ws"));
+        let mut first = dm_summary("first", "alice");
+        first.last_activity_ms = 200;
+        let mut second = dm_summary("second", "bob");
+        second.last_activity_ms = 100;
+        state.workspace.direct_messages = vec![first, second.clone()];
+        refresh_sidebar(&mut state);
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessageUpserted(message(&ConversationId::new("second"), "10", 300)),
+        );
+        assert_eq!(
+            state.timeline.conversation_id, None,
+            "activity must not force navigation"
+        );
+        let flat = state
+            .sidebar
+            .sections
+            .iter()
+            .find(|s| s.title == "Conversations")
+            .unwrap();
+        assert_eq!(flat.rows[0].label, "bob");
+        second.last_activity_ms = 50;
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::WorkspaceConversationsExtended {
+                workspace_id: WorkspaceId::new("ws"),
+                channels: vec![],
+                direct_messages: vec![second],
+                conversation_bindings: vec![],
+            },
+        );
+        let flat = state
+            .sidebar
+            .sections
+            .iter()
+            .find(|s| s.title == "Conversations")
+            .unwrap();
+        assert_eq!(flat.rows[0].label, "bob");
+        assert_eq!(state.workspace.direct_messages[1].last_activity_ms, 300);
+    }
+
+    #[test]
+    fn incomplete_or_stale_profile_updates_preserve_known_avatars() {
+        let mut state = UiState::default();
+        let user = UserId::new("bot");
+        for (avatar, updated_ms) in [
+            (Some("/cache/bot.png".to_string()), 100),
+            (None, 200),
+            (Some("/cache/obsolete.png".to_string()), 50),
+        ] {
+            reduce_backend_event(
+                &mut state,
+                BackendEvent::UserProfileUpserted {
+                    user_id: user.clone(),
+                    display_name: "bot".into(),
+                    avatar_asset: avatar,
+                    updated_ms,
+                },
+            );
+        }
+        assert_eq!(
+            state.backend.user_profiles[&user].avatar_asset.as_deref(),
+            Some("/cache/bot.png")
+        );
+        // A delayed cached avatar may enrich a newer response that had no image.
+        let other = UserId::new("other");
+        for (avatar, updated_ms) in [(None, 200), (Some("/cache/other.png".to_string()), 100)] {
+            reduce_backend_event(
+                &mut state,
+                BackendEvent::UserProfileUpserted {
+                    user_id: other.clone(),
+                    display_name: "other".into(),
+                    avatar_asset: avatar,
+                    updated_ms,
+                },
+            );
+        }
+        assert_eq!(
+            state.backend.user_profiles[&other].avatar_asset.as_deref(),
+            Some("/cache/other.png")
+        );
+    }
+
+    #[test]
+    fn profile_refresh_retains_loaded_rosters_until_authoritative_list_response() {
+        let mut state = UiState::default();
+        let user = UserId::new("alice");
+        let mut cached = profile_with_follow_status("alice", false);
+        let entry = SocialGraphEntry {
+            user_id: UserId::new("bob"),
+            display_name: "Bob".into(),
+            avatar_asset: None,
+            affinity: Affinity::None,
+        };
+        merge_social_graph_entries(
+            &mut cached,
+            SocialGraphListType::Followers,
+            vec![entry.clone()],
+        );
+        merge_social_graph_entries(
+            &mut cached,
+            SocialGraphListType::Following,
+            vec![entry.clone()],
+        );
+        state
+            .backend
+            .profile_panel
+            .profiles
+            .insert(user.clone(), cached);
+        reduce_ui_action(
+            &mut state,
+            UiAction::ShowUserProfilePanel {
+                user_id: user.clone(),
+            },
+        );
+        let mut fresh = profile_with_follow_status("alice", true);
+        if let ProfileSection::SocialGraph(graph) = &mut fresh.sections[0] {
+            graph.followers = None;
+            graph.following = None;
+            graph.followers_count = Some(2);
+        }
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::UserProfileLoaded {
+                account_id: AccountId::new("account"),
+                profile: fresh,
+            },
+        );
+        let graph = match &state.backend.profile_panel.profiles[&user].sections[0] {
+            ProfileSection::SocialGraph(graph) => graph,
+            _ => panic!("missing social graph"),
+        };
+        assert_eq!(graph.followers.as_deref(), Some([entry.clone()].as_slice()));
+        assert_eq!(graph.following.as_deref(), Some([entry].as_slice()));
+        assert_eq!(
+            graph.followers_count,
+            Some(2),
+            "metadata counts still refresh"
+        );
+        assert!(graph.you_are_following);
+        assert_eq!(
+            state.backend.profile_panel.social_lists
+                [&(user.clone(), SocialGraphListType::Followers)],
+            SocialListLoadState::Loading
+        );
+        let duplicate = reduce_ui_action(
+            &mut state,
+            UiAction::LoadSocialGraphList {
+                user_id: user.clone(),
+                list_type: SocialGraphListType::Followers,
+            },
+        );
+        assert!(
+            duplicate.effects.is_empty(),
+            "coalesce an in-flight refresh"
+        );
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::SocialGraphListLoaded {
+                user_id: user.clone(),
+                list_type: SocialGraphListType::Followers,
+                entries: vec![],
+            },
+        );
+        let graph = match &state.backend.profile_panel.profiles[&user].sections[0] {
+            ProfileSection::SocialGraph(graph) => graph,
+            _ => panic!("missing social graph"),
+        };
+        assert_eq!(
+            graph.followers.as_deref(),
+            Some([].as_slice()),
+            "an authoritative empty list must replace cached entries"
+        );
+        assert_eq!(graph.following.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn reopening_cached_following_refreshes_only_the_canonical_active_tab() {
+        let mut state = UiState::default();
+        let user = UserId::new("alice");
+        let metadata = profile_with_follow_status("alice", false);
+        state
+            .backend
+            .profile_panel
+            .profiles
+            .insert(user.clone(), metadata.clone());
+        state.backend.profile_panel.active_social_tab = SocialGraphListType::Following;
+        for _ in 0..2 {
+            let opened = reduce_ui_action(
+                &mut state,
+                UiAction::ShowUserProfilePanel {
+                    user_id: user.clone(),
+                },
+            );
+            assert!(
+                matches!(
+                    opened.effects.as_slice(),
+                    [
+                        Effect::Backend(BackendCommand::LoadUserProfile { .. }),
+                        Effect::Backend(BackendCommand::LoadSocialGraphList {
+                            list_type: SocialGraphListType::Following,
+                            ..
+                        })
+                    ]
+                ),
+                "reopening refreshes the loaded active list independently of metadata"
+            );
+            let output = reduce_backend_event(
+                &mut state,
+                BackendEvent::UserProfileLoaded {
+                    account_id: AccountId::new("account"),
+                    profile: metadata.clone(),
+                },
+            );
+            assert!(
+                output.effects.is_empty(),
+                "metadata must not duplicate the active-tab refresh"
+            );
+            reduce_backend_event(
+                &mut state,
+                BackendEvent::SocialGraphListLoaded {
+                    user_id: user.clone(),
+                    list_type: SocialGraphListType::Following,
+                    entries: vec![],
+                },
+            );
+            // Even a completed roster refresh is not restarted by later metadata.
+            let output = reduce_backend_event(
+                &mut state,
+                BackendEvent::UserProfileLoaded {
+                    account_id: AccountId::new("account"),
+                    profile: metadata.clone(),
+                },
+            );
+            assert!(output.effects.is_empty());
+            reduce_ui_action(&mut state, UiAction::CloseRightPane);
+        }
+        let output = reduce_backend_event(
+            &mut state,
+            BackendEvent::UserProfileLoaded {
+                account_id: AccountId::new("account"),
+                profile: metadata,
+            },
+        );
+        assert!(
+            output.effects.is_empty(),
+            "closed profiles do not start hidden roster loads"
+        );
+    }
+
+    #[test]
+    fn social_list_failures_are_per_tab_and_retryable() {
+        let mut state = UiState::default();
+        let user = UserId::new("alice");
+        for list_type in [
+            SocialGraphListType::Followers,
+            SocialGraphListType::Following,
+        ] {
+            reduce_ui_action(
+                &mut state,
+                UiAction::LoadSocialGraphList {
+                    user_id: user.clone(),
+                    list_type,
+                },
+            );
+        }
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::CommandFailed {
+                command: Box::new(BackendCommand::LoadSocialGraphList {
+                    user_id: user.clone(),
+                    list_type: SocialGraphListType::Followers,
+                }),
+                error: "Keybase unavailable".into(),
+            },
+        );
+        assert_eq!(
+            state.backend.profile_panel.social_lists
+                [&(user.clone(), SocialGraphListType::Followers)],
+            SocialListLoadState::Failed
+        );
+        assert_eq!(
+            state.backend.profile_panel.social_lists
+                [&(user.clone(), SocialGraphListType::Following)],
+            SocialListLoadState::Loading
+        );
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::SocialGraphListLoaded {
+                user_id: user.clone(),
+                list_type: SocialGraphListType::Following,
+                entries: vec![],
+            },
+        );
+        assert_eq!(
+            state.backend.profile_panel.social_lists
+                [&(user.clone(), SocialGraphListType::Followers)],
+            SocialListLoadState::Failed
+        );
+        reduce_ui_action(
+            &mut state,
+            UiAction::LoadSocialGraphList {
+                user_id: user.clone(),
+                list_type: SocialGraphListType::Followers,
+            },
+        );
+        assert_eq!(
+            state.backend.profile_panel.social_lists[&(user, SocialGraphListType::Followers)],
+            SocialListLoadState::Loading
+        );
+    }
+
+    #[test]
+    fn simple_teams_share_the_conversation_list_and_promote_to_groups() {
+        use crate::domain::conversation::{ConversationGroup, ConversationTeamType};
+        let workspace_id = WorkspaceId::new("ws");
+        let mut simple = channel_summary("simple-general", "general");
+        simple.group = Some(ConversationGroup {
+            id: "finance".into(),
+            display_name: "Finance".into(),
+            team_type: ConversationTeamType::Simple,
+        });
+        simple.last_activity_ms = 20;
+        simple.unread_count = 1;
+        let mut complex = channel_summary("complex-general", "general");
+        complex.group = Some(ConversationGroup {
+            id: "engineering".into(),
+            display_name: "Engineering".into(),
+            team_type: ConversationTeamType::Complex,
+        });
+        let mut dm = dm_summary("dm", "alice");
+        dm.last_activity_ms = 10;
+        let sections = build_sidebar_sections(
+            &[simple.clone(), complex.clone()],
+            &[dm.clone()],
+            &workspace_id,
+            &HashMap::new(),
+            None,
+        );
+        let flat = sections
+            .iter()
+            .find(|s| s.title == "Conversations")
+            .unwrap();
+        assert_eq!(
+            flat.rows
+                .iter()
+                .map(|r| r.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Finance", "alice"]
+        );
+        assert!(
+            matches!(&flat.rows[0].route, Some(Route::Channel { channel_id, .. }) if channel_id.0 == "simple-general")
+        );
+        assert!(sections.iter().any(|s| s.title == "Engineering"));
+        assert!(!sections.iter().any(|s| s.title == "Finance"));
+        assert_eq!(
+            sections.iter().find(|s| s.title == "Unread").unwrap().rows[0].label,
+            "Finance"
+        );
+        let mut state = UiState::default();
+        state.workspace.channels = vec![simple.clone(), complex];
+        state.workspace.direct_messages = vec![dm];
+        simple.group.as_mut().unwrap().team_type = ConversationTeamType::Complex;
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::WorkspaceConversationsExtended {
+                workspace_id: workspace_id.clone(),
+                channels: vec![simple.clone()],
+                direct_messages: vec![],
+                conversation_bindings: vec![],
+            },
+        );
+        assert!(
+            state
+                .sidebar
+                .sections
+                .iter()
+                .any(|s| s.title == "Finance" && s.rows[0].label == "general")
+        );
+        assert_eq!(
+            state
+                .sidebar
+                .sections
+                .iter()
+                .find(|s| s.title == "Conversations")
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+        // Older caches with no team type must not undo the known classification.
+        simple.group.as_mut().unwrap().team_type = ConversationTeamType::Unknown;
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::WorkspaceConversationsExtended {
+                workspace_id,
+                channels: vec![simple],
+                direct_messages: vec![],
+                conversation_bindings: vec![],
+            },
+        );
+        assert_eq!(
+            state.workspace.channels[0]
+                .group
+                .as_ref()
+                .unwrap()
+                .team_type,
+            ConversationTeamType::Complex
+        );
+    }
+
+    #[test]
     fn unread_section_includes_channels_with_unread_messages() {
         let workspace_id = WorkspaceId::new("ws");
         let mut channel = channel_summary("kb_conv:general", "general");
@@ -2527,7 +4060,8 @@ mod tests {
         dm.unread_count = 1;
         dm.last_activity_ms = 1_000;
 
-        let sections = build_sidebar_sections(&[channel], &[dm], &workspace_id, &HashMap::new());
+        let sections =
+            build_sidebar_sections(&[channel], &[dm], &workspace_id, &HashMap::new(), None);
         let unread = sections
             .iter()
             .find(|section| section.id.as_ref().is_some_and(|id| id.0 == "unread"))

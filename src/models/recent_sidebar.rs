@@ -1,0 +1,260 @@
+//! Recent is a projection of inbox metadata, with no message-history or media reads.
+use super::{
+    quick_switcher_route_for_summary,
+    sidebar_model::{SidebarRow, SidebarSection},
+};
+use crate::domain::{
+    conversation::{ConversationKind, ConversationSummary},
+    ids::WorkspaceId,
+};
+use std::collections::{HashMap, HashSet};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecentSidebarRow {
+    pub row: SidebarRow,
+    pub secondary: String,
+    pub is_channel: bool,
+}
+
+/// Choose a suffix unique across the entire inbox, so scrolling doesn't rename teams.
+fn short_team_names(channels: &[ConversationSummary]) -> HashMap<String, String> {
+    let teams = channels
+        .iter()
+        .filter_map(|summary| summary.group.as_ref())
+        .map(|group| (group.id.clone(), group.display_name.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut suffix_counts = HashMap::<String, usize>::new();
+    for name in teams.values() {
+        let parts = name.split('.').collect::<Vec<_>>();
+        for start in 0..parts.len() {
+            *suffix_counts
+                .entry(parts[start..].join(".").to_ascii_lowercase())
+                .or_default() += 1;
+        }
+    }
+    teams
+        .iter()
+        .map(|(id, name)| {
+            let parts = name.split('.').collect::<Vec<_>>();
+            let short = (1..=parts.len())
+                .map(|count| parts[parts.len() - count..].join("."))
+                .find(|candidate| suffix_counts.get(&candidate.to_ascii_lowercase()) == Some(&1))
+                .unwrap_or_else(|| name.clone());
+            (id.clone(), short)
+        })
+        .collect()
+}
+
+pub fn build_recent_rows(
+    channels: &[ConversationSummary],
+    direct_messages: &[ConversationSummary],
+    sections: &[SidebarSection],
+    workspace_id: &WorkspaceId,
+) -> Vec<RecentSidebarRow> {
+    let labels = sections
+        .iter()
+        .filter(|section| section.id.0 != "unread")
+        .flat_map(|section| &section.rows)
+        .map(|row| (row.route.label(), row.label.clone()))
+        .collect::<HashMap<_, _>>();
+    let team_names = short_team_names(channels);
+    let mut seen = HashSet::new();
+    let mut summaries = channels
+        .iter()
+        .chain(direct_messages)
+        .filter(|summary| seen.insert(&summary.id))
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| left.compare_recency(right));
+    summaries
+        .into_iter()
+        .map(|summary| {
+            let route = quick_switcher_route_for_summary(summary, workspace_id);
+            let is_channel = summary.kind == ConversationKind::Channel && !summary.is_simple_team();
+            let label = labels.get(&route.label()).cloned().unwrap_or_else(|| {
+                summary
+                    .simple_team_label()
+                    .unwrap_or_else(|| summary.title.clone())
+            });
+            let secondary = if is_channel {
+                summary
+                    .group
+                    .as_ref()
+                    .and_then(|group| team_names.get(&group.id))
+                    .cloned()
+                    .unwrap_or_default()
+            } else if summary.is_simple_team() {
+                String::new()
+            } else {
+                summary
+                    .title
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(|name| format!("@{name}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            RecentSidebarRow {
+                row: SidebarRow {
+                    label,
+                    team: is_channel.then(|| summary.group.clone()).flatten(),
+                    unread_count: summary.unread_count,
+                    mention_count: summary.mention_count,
+                    route,
+                },
+                secondary,
+                is_channel,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{
+        conversation::{ConversationGroup, ConversationTeamType},
+        ids::ConversationId,
+    };
+
+    fn channel(id: &str, team: &str, time: i64) -> ConversationSummary {
+        ConversationSummary {
+            id: ConversationId::new(id),
+            title: "alerts-prod-mainnet".into(),
+            kind: ConversationKind::Channel,
+            topic: String::new(),
+            group: Some(ConversationGroup {
+                id: team.into(),
+                display_name: team.into(),
+                team_type: ConversationTeamType::Complex,
+            }),
+            unread_count: 0,
+            mention_count: 0,
+            muted: false,
+            last_activity_ms: time,
+        }
+    }
+
+    #[test]
+    fn recent_includes_read_and_muted_chats_once_and_tracks_activity() {
+        let mut channels = vec![
+            channel("older", "chia_network.ent_wallet", 10),
+            channel("newer", "chia_network.ips", 20),
+        ];
+        channels[0].muted = true;
+        channels[1].unread_count = 3;
+        let workspace = WorkspaceId::new("ws");
+        let rows = build_recent_rows(&channels, &[channels[0].clone()], &[], &workspace);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].row.route,
+            quick_switcher_route_for_summary(&channels[1], &workspace)
+        );
+        assert_eq!(rows[0].secondary, "ips");
+        assert_eq!(rows[1].secondary, "ent_wallet");
+        channels[1].unread_count = 0;
+        assert_eq!(build_recent_rows(&channels, &[], &[], &workspace).len(), 2);
+        channels[0].last_activity_ms = 30;
+        assert_eq!(
+            build_recent_rows(&channels, &[], &[], &workspace)[0]
+                .row
+                .route,
+            rows[1].row.route
+        );
+    }
+
+    #[test]
+    fn team_suffixes_are_unambiguous_and_do_not_depend_on_visible_rows() {
+        let channels = vec![
+            channel("a", "chia_network.wallet", 10),
+            channel("b", "friends.wallet", 20),
+            channel("c", "chia_network", 30),
+            channel("d", "friends_of_chia", 0),
+        ];
+        let names = short_team_names(&channels);
+        assert_eq!(names["chia_network.wallet"], "chia_network.wallet");
+        assert_eq!(names["friends.wallet"], "friends.wallet");
+        assert_eq!(names["chia_network"], "chia_network");
+        assert_eq!(names["friends_of_chia"], "friends_of_chia");
+        let tied = vec![channel("b", "same", 1), channel("a", "same", 1)];
+        assert_eq!(
+            build_recent_rows(&tied, &[], &[], &WorkspaceId::new("ws"))[0]
+                .row
+                .route,
+            quick_switcher_route_for_summary(&tied[1], &WorkspaceId::new("ws"))
+        );
+    }
+
+    #[test]
+    fn sidebar_mode_is_restored_independently_for_each_account() {
+        use crate::{
+            domain::ids::UserId,
+            models::{
+                AppModels,
+                settings_model::{SettingsModel, SidebarMode},
+            },
+        };
+        let mut models = AppModels::empty_with_settings(SettingsModel::default());
+        models.app.current_user_id = Some(UserId::new("alice"));
+        assert_eq!(models.sidebar.mode, SidebarMode::Recent);
+        models.set_sidebar_mode(SidebarMode::Grouped);
+        models.app.current_user_id = Some(UserId::new("bob"));
+        models.restore_sidebar_mode();
+        assert_eq!(models.sidebar.mode, SidebarMode::Recent);
+        models.app.current_user_id = Some(UserId::new("ALICE"));
+        models.restore_sidebar_mode();
+        assert_eq!(models.sidebar.mode, SidebarMode::Grouped);
+    }
+    #[test]
+    fn recent_navigation_and_filtering_ignore_group_collapse_and_reads_keep_rows() {
+        use crate::models::{
+            AppModels,
+            settings_model::{SettingsModel, SidebarMode},
+        };
+        let mut models = AppModels::empty_with_settings(SettingsModel::default());
+        let mut summary = channel("channel", "chia_network.ent_wallet", 10);
+        summary.unread_count = 2;
+        models.workspace.channels = vec![summary.clone()];
+        models.sidebar.recent_rows = build_recent_rows(
+            &models.workspace.channels,
+            &[],
+            &[],
+            &models.app.active_workspace_id,
+        );
+        models.set_sidebar_mode(SidebarMode::Recent);
+        let routes = models.visible_sidebar_routes();
+        assert_eq!(routes.len(), 1);
+        models.sidebar.filter = "ENT_WALLET".into();
+        assert_eq!(models.visible_sidebar_routes(), routes);
+        models.clear_workspace_counts(&summary.id);
+        assert_eq!(models.visible_sidebar_routes(), routes);
+        assert_eq!(models.sidebar.recent_rows[0].row.unread_count, 0);
+        models.sidebar.filter = "missing-team".into();
+        assert!(models.visible_sidebar_routes().is_empty());
+        models.set_sidebar_mode(SidebarMode::Grouped);
+        assert!(models.visible_sidebar_routes().is_empty());
+    }
+    #[test]
+    fn channels_dms_and_simple_teams_share_one_activity_order() {
+        let normal = channel("channel", "chia_network.ent_wallet", 20);
+        let mut simple = channel("simple", "annar", 10);
+        simple.title = "general".into();
+        simple.group.as_mut().unwrap().team_type = ConversationTeamType::Simple;
+        let mut dm = channel("dm", "unused", 30);
+        dm.kind = ConversationKind::DirectMessage;
+        dm.title = "alice".into();
+        dm.group = None;
+        let rows = build_recent_rows(&[simple, normal], &[dm], &[], &WorkspaceId::new("ws"));
+        assert_eq!(
+            rows.iter()
+                .map(|recent| recent.row.label.as_str())
+                .collect::<Vec<_>>(),
+            ["alice", "alerts-prod-mainnet", "annar"]
+        );
+        assert!(!rows[0].is_channel);
+        assert!(rows[1].is_channel);
+        assert!(!rows[2].is_channel);
+        assert_eq!(rows[1].secondary, "ent_wallet");
+        assert!(rows[2].row.team.is_none());
+    }
+}

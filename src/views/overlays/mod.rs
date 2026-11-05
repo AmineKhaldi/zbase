@@ -54,6 +54,7 @@ impl OverlayHost {
         custom_emoji_index: Option<&HashMap<String, EmojiRenderState>>,
         supports_custom_emoji: bool,
         quick_switcher_indexing_status: Option<&str>,
+        viewport: gpui::Size<Pixels>,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         if overlay.active_modal.is_none()
@@ -109,7 +110,7 @@ impl OverlayHost {
                 container.child(Self::render_command_palette(cx))
             })
             .when_some(overlay.fullscreen_image.as_ref(), |container, image| {
-                container.child(Self::render_fullscreen_image_overlay(image, cx))
+                container.child(Self::render_fullscreen_image_overlay(image, viewport, cx))
             })
             .when_some(
                 overlay.file_upload_lightbox.as_ref(),
@@ -174,6 +175,7 @@ impl OverlayHost {
 
     fn render_fullscreen_image_overlay(
         image: &FullscreenImageOverlay,
+        viewport: gpui::Size<Pixels>,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         let caption = image
@@ -185,13 +187,17 @@ impl OverlayHost {
         let Some(image_source) = image_source_from_attachment_source(&image.source) else {
             return div()
                 .id("overlay-fullscreen-image-unavailable")
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.dismiss_overlays(cx);
+                        cx.stop_propagation();
+                    }),
+                )
                 .size_full()
                 .flex()
                 .items_center()
                 .justify_center()
-                .on_click(cx.listener(|_, _, _, cx| {
-                    cx.stop_propagation();
-                }))
                 .child(
                     div()
                         .px_4()
@@ -200,24 +206,39 @@ impl OverlayHost {
                         .bg(panel_surface())
                         .text_sm()
                         .text_color(rgb(text_primary()))
+                        .id("lightbox-error-card")
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                        )
                         .child("Unable to load image preview."),
                 )
                 .into_any_element();
         };
-        let (frame_width, frame_height) =
-            fullscreen_image_frame_size(image.width, image.height, 1120.0, 780.0);
+        let (frame_width, frame_height) = fullscreen_image_frame_size(
+            image.width,
+            image.height,
+            (f32::from(viewport.width) - 48.).max(1.).min(1120.),
+            (f32::from(viewport.height) - if caption.is_some() { 120. } else { 48. })
+                .max(1.)
+                .min(780.),
+        );
 
         div()
             .id("overlay-fullscreen-image")
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.dismiss_overlays(cx);
+                    cx.stop_propagation();
+                }),
+            )
             .size_full()
             .px_6()
             .py_6()
             .flex()
             .items_center()
             .justify_center()
-            .on_click(cx.listener(|_, _, _, cx| {
-                cx.stop_propagation();
-            }))
             .child(
                 div()
                     .size_full()
@@ -235,10 +256,15 @@ impl OverlayHost {
                             .items_center()
                             .justify_center()
                             .child(
-                                img(image_source)
-                                    .id("lightbox-image")
+                                div()
+                                    .id("lightbox-image-area")
                                     .w(px(frame_width))
                                     .h(px(frame_height))
+                                    .flex_shrink_0()
+                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                                    .child(img(image_source)
+                                    .id("lightbox-image")
+                                    .size_full()
                                     .object_fit(ObjectFit::Contain)
                                     .with_fallback(|| {
                                         div()
@@ -250,12 +276,17 @@ impl OverlayHost {
                                             .text_color(rgb(text_secondary()))
                                             .child("Image unavailable")
                                             .into_any_element()
-                                    }),
+                                    })),
                             ),
                     )
                     .when_some(caption, |container, caption| {
                         container.child(
                             div()
+                                .id("lightbox-caption")
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                                )
                                 .max_w(px(900.))
                                 .text_sm()
                                 .text_color(rgb(text_primary()))
@@ -1043,15 +1074,10 @@ fn fullscreen_image_frame_size(
     max_width: f32,
     max_height: f32,
 ) -> (f32, f32) {
-    let mut width = width.unwrap_or(1600) as f32;
-    let mut height = height.unwrap_or(1000) as f32;
-    if width <= 1.0 || height <= 1.0 {
-        return (max_width.min(900.0), max_height.min(600.0));
-    }
+    let width = width.filter(|width| *width > 0).unwrap_or(1600) as f32;
+    let height = height.filter(|height| *height > 0).unwrap_or(1000) as f32;
     let scale = (max_width / width).min(max_height / height).min(1.0);
-    width *= scale;
-    height *= scale;
-    (width.max(120.0), height.max(120.0))
+    (width * scale, height * scale)
 }
 
 fn file_upload_preview_frame_size(
@@ -1250,6 +1276,24 @@ impl Element for HighlightedTextElement {
                 _cx,
             );
             line_origin.y += line.size(prepaint.line_height).height;
+        }
+    }
+}
+
+#[cfg(test)]
+mod image_viewer_tests {
+    use super::fullscreen_image_frame_size;
+
+    #[test]
+    fn image_hit_area_preserves_aspect_ratio_and_fits_compact_windows() {
+        for (width, height) in [(4000, 2000), (2000, 4000), (20, 2000), (20, 10)] {
+            let (rendered_width, rendered_height) =
+                fullscreen_image_frame_size(Some(width), Some(height), 732., 600.);
+            assert!(rendered_width <= 732. && rendered_height <= 600.);
+            assert!(rendered_width <= width as f32 && rendered_height <= height as f32);
+            assert!(
+                (rendered_width / rendered_height - width as f32 / height as f32).abs() < 0.001
+            );
         }
     }
 }

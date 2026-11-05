@@ -1,4 +1,4 @@
-use crate::models::settings_model::{Density, SettingsModel, ThemeMode};
+use crate::models::settings_model::{Density, SettingsModel, SidebarMode, ThemeMode};
 use std::{
     fs,
     io::{self, ErrorKind},
@@ -47,6 +47,15 @@ fn parse_settings(raw: &str) -> SettingsModel {
         let key = key.trim();
         let value = value.trim();
 
+        if let Some(account_id) = key.strip_prefix("sidebar_mode.") {
+            let mode = if value == "recent" {
+                SidebarMode::Recent
+            } else {
+                SidebarMode::Grouped
+            };
+            settings.sidebar_modes.insert(account_id.to_string(), mode);
+            continue;
+        }
         if let Some(account_id) = key.strip_prefix("sidebar_section_order.") {
             let order = value
                 .split(',')
@@ -164,6 +173,14 @@ fn serialize_settings(settings: &SettingsModel) -> String {
         ));
     }
 
+    for (account_id, mode) in &settings.sidebar_modes {
+        let label = if *mode == SidebarMode::Recent {
+            "recent"
+        } else {
+            "grouped"
+        };
+        content.push_str(&format!("sidebar_mode.{account_id}={label}\n"));
+    }
     for (account_id, order) in &settings.sidebar_section_order {
         content.push_str(&format!(
             "sidebar_section_order.{}={}\n",
@@ -231,6 +248,24 @@ fn density_label(density: &Density) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidebar_modes_round_trip_and_missing_preferences_use_default() {
+        let mut settings = SettingsModel::default();
+        settings
+            .sidebar_modes
+            .insert("workspace:alice".into(), SidebarMode::Recent);
+        settings
+            .sidebar_modes
+            .insert("workspace:bob".into(), SidebarMode::Grouped);
+        let parsed = parse_settings(&serialize_settings(&settings));
+        assert_eq!(parsed.sidebar_modes, settings.sidebar_modes);
+        assert!(parse_settings("theme=dark\n").sidebar_modes.is_empty());
+        assert_eq!(
+            parse_settings("sidebar_mode.workspace:alice=unknown").sidebar_modes["workspace:alice"],
+            SidebarMode::Grouped
+        );
+    }
 
     #[test]
     fn quick_switcher_affinity_round_trips_through_settings_content() {

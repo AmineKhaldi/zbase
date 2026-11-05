@@ -47,7 +47,7 @@ pub struct ActivityItem {
     pub unread: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct NotificationsModel {
     pub toasts: Vec<ToastNotification>,
     pub notification_center_count: u32,

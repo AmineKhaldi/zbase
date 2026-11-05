@@ -1,3 +1,4 @@
+use crate::domain::profile::SocialListLoadState;
 use crate::{
     domain::{
         affinity::Affinity,
@@ -71,6 +72,11 @@ pub fn render_profile_panel(
     let identity_proofs = profile.map(profile_identity_proofs).unwrap_or(&[]);
     let team_showcase = profile.map(profile_team_showcase).unwrap_or(&[]);
     let custom_fields = profile.map(profile_custom_fields).unwrap_or(&[]);
+    let social_list_loaded =
+        social_graph.is_some_and(|graph| match profile_panel.active_social_tab {
+            SocialTab::Followers => graph.followers.is_some(),
+            SocialTab::Following => graph.following.is_some(),
+        });
     let social_entries = social_graph_entries(social_graph, profile_panel.active_social_tab);
     let use_social_virtualization = social_entries.len() >= SOCIAL_VIRTUALIZATION_MIN_ENTRIES
         && !social_virtualization_disabled();
@@ -185,19 +191,7 @@ pub fn render_profile_panel(
                                     text_primary(),
                                 ))
                         }),
-                )
-                // Refreshing indicator (stale data visible underneath)
-                .when(profile_panel.loading && profile.is_some(), |container| {
-                    container.child(
-                        div()
-                            .w_full()
-                            .text_xs()
-                            .text_color(rgb(text_secondary()))
-                            .flex()
-                            .justify_center()
-                            .child("Updating\u{2026}"),
-                    )
-                }),
+                ),
         )
         // Skeleton placeholders for first load
         .when(profile_panel.loading && profile.is_none(), |container| {
@@ -284,19 +278,27 @@ pub fn render_profile_panel(
                                 cx,
                             )),
                     )
-                    .when(profile_panel.loading_social_list, |section| {
-                        section.child(
-                            div()
-                                .rounded_md()
-                                .bg(panel_alt_surface())
-                                .p_3()
-                                .text_sm()
-                                .text_color(rgb(text_secondary()))
-                                .child("Loading people\u{2026}"),
-                        )
-                    })
                     .when(
-                        !profile_panel.loading_social_list && social_entries.is_empty(),
+                        !social_list_loaded
+                            && matches!(
+                                profile_panel.social_list_status,
+                                Some(SocialListLoadState::Loading)
+                            ),
+                        |section| {
+                            section.child(
+                                div()
+                                    .rounded_md()
+                                    .bg(panel_alt_surface())
+                                    .p_3()
+                                    .text_sm()
+                                    .text_color(rgb(text_secondary()))
+                                    .child("Loading people\u{2026}"),
+                            )
+                        },
+                    )
+                    .when(
+                        (social_list_loaded || profile_panel.social_list_status.is_none())
+                            && social_entries.is_empty(),
                         |section| {
                             section.child(
                                 div()
@@ -306,6 +308,36 @@ pub fn render_profile_panel(
                                     .text_sm()
                                     .text_color(rgb(text_secondary()))
                                     .child("No people to show yet."),
+                            )
+                        },
+                    )
+                    .when(
+                        !social_list_loaded
+                            && matches!(
+                                profile_panel.social_list_status,
+                                Some(SocialListLoadState::Failed)
+                            ),
+                        |section| {
+                            let list_type = profile_panel.active_social_tab.as_list_type();
+                            section.child(
+                                div()
+                                    .rounded_md()
+                                    .bg(panel_alt_surface())
+                                    .p_3()
+                                    .text_sm()
+                                    .text_color(rgb(text_secondary()))
+                                    .child("Couldn't load this list from Keybase.")
+                                    .child(
+                                        div()
+                                            .id("profile-social-retry")
+                                            .cursor_pointer()
+                                            .mt_2()
+                                            .text_color(rgb(accent()))
+                                            .child("Retry")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.profile_select_social_tab(list_type, cx);
+                                            })),
+                                    ),
                             )
                         },
                     )

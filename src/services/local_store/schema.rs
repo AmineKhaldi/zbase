@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     domain::{
         attachment::{AttachmentKind, AttachmentPreview, AttachmentSource, AttachmentSummary},
-        conversation::{ConversationGroup, ConversationKind, ConversationSummary},
+        conversation::{
+            ConversationGroup, ConversationKind, ConversationSummary, ConversationTeamType,
+        },
         ids::{ConversationId, MessageId, UserId, WorkspaceId},
         message::{
             BroadcastKind, ChatEvent, EditMeta, LinkPreview, MessageFragment, MessageRecord,
@@ -19,6 +21,8 @@ pub const SCHEMA_VERSION: u32 = 4;
 pub struct CachedConversationGroup {
     pub id: String,
     pub display_name: String,
+    #[serde(default)]
+    pub team_type: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -32,6 +36,9 @@ pub struct CachedConversationSummary {
     pub mention_count: u32,
     pub muted: bool,
     pub last_activity_time: i64,
+    // Older builds persisted startup ordering as if it were server activity.
+    #[serde(default)]
+    pub canonical_activity: bool,
 }
 
 impl CachedConversationSummary {
@@ -44,11 +51,17 @@ impl CachedConversationSummary {
             group: summary.group.as_ref().map(|group| CachedConversationGroup {
                 id: group.id.clone(),
                 display_name: group.display_name.clone(),
+                team_type: match group.team_type {
+                    ConversationTeamType::Simple => Some(1),
+                    ConversationTeamType::Complex => Some(2),
+                    ConversationTeamType::Unknown => None,
+                },
             }),
             unread_count: summary.unread_count,
             mention_count: summary.mention_count,
             muted: summary.muted,
             last_activity_time,
+            canonical_activity: true,
         }
     }
 
@@ -61,11 +74,20 @@ impl CachedConversationSummary {
             group: self.group.as_ref().map(|group| ConversationGroup {
                 id: group.id.clone(),
                 display_name: group.display_name.clone(),
+                team_type: match group.team_type {
+                    Some(1) => ConversationTeamType::Simple,
+                    Some(2) => ConversationTeamType::Complex,
+                    _ => ConversationTeamType::Unknown,
+                },
             }),
             unread_count: self.unread_count,
             mention_count: self.mention_count,
             muted: self.muted,
-            last_activity_ms: self.last_activity_time,
+            last_activity_ms: if self.canonical_activity {
+                self.last_activity_time
+            } else {
+                0
+            },
         }
     }
 }
@@ -371,6 +393,8 @@ pub struct CachedAttachment {
     pub preview_height: Option<u32>,
     #[serde(default)]
     pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 impl CachedAttachment {
@@ -396,6 +420,10 @@ impl CachedAttachment {
             preview_width,
             preview_height,
             duration_ms: attachment.duration_ms,
+            source: attachment
+                .source
+                .as_ref()
+                .map(cached_attachment_source_to_string),
         }
     }
 
@@ -419,7 +447,10 @@ impl CachedAttachment {
             preview,
             duration_ms: self.duration_ms,
             waveform: None,
-            source: None,
+            source: self
+                .source
+                .as_deref()
+                .and_then(cached_attachment_source_from_string),
         }
     }
 }
@@ -781,6 +812,51 @@ fn parse_cached_broadcast_kind(label: &str) -> Option<BroadcastKind> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn conversation_team_type_is_backward_compatible_in_the_cache() {
+        #[derive(Serialize)]
+        struct LegacyGroup {
+            id: String,
+            display_name: String,
+        }
+        let legacy = LegacyGroup {
+            id: "team".into(),
+            display_name: "Team".into(),
+        };
+        for bytes in [
+            rmp_serde::to_vec(&legacy).unwrap(),
+            rmp_serde::to_vec_named(&legacy).unwrap(),
+        ] {
+            let group: CachedConversationGroup = rmp_serde::from_slice(&bytes).unwrap();
+            assert_eq!(group.team_type, None);
+        }
+        for team_type in [
+            ConversationTeamType::Simple,
+            ConversationTeamType::Complex,
+            ConversationTeamType::Unknown,
+        ] {
+            let summary = ConversationSummary {
+                id: ConversationId::new("conversation"),
+                title: "general".into(),
+                kind: ConversationKind::Channel,
+                topic: "general".into(),
+                group: Some(ConversationGroup {
+                    id: "team".into(),
+                    display_name: "Team".into(),
+                    team_type: team_type.clone(),
+                }),
+                unread_count: 0,
+                mention_count: 0,
+                muted: false,
+                last_activity_ms: 100,
+            };
+            let bytes =
+                rmp_serde::to_vec(&CachedConversationSummary::from_domain(&summary, 100)).unwrap();
+            let cached: CachedConversationSummary = rmp_serde::from_slice(&bytes).unwrap();
+            assert_eq!(cached.to_domain().group.unwrap().team_type, team_type);
+        }
+    }
+
     fn sample_message_with_fragments() -> MessageRecord {
         MessageRecord {
             id: MessageId::new("1"),
@@ -824,6 +900,38 @@ mod tests {
                 edited_at_ms: Some(1_711_000_123_000),
             }),
         }
+    }
+
+    #[test]
+    fn attachment_sources_roundtrip_and_legacy_records_remain_readable() {
+        let path = std::env::temp_dir().join(format!("zbase-source-roundtrip-{}.txt", std::process::id()));
+        std::fs::write(&path, b"cached attachment").unwrap();
+        let attachment = AttachmentSummary {
+            name: "file.txt".into(),
+            size_bytes: 42,
+            source: Some(AttachmentSource::LocalPath(path.to_string_lossy().into_owned())),
+            ..AttachmentSummary::default()
+        };
+        let bytes = rmp_serde::to_vec(&CachedAttachment::from_domain(&attachment)).unwrap();
+        let cached: CachedAttachment = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(cached.to_domain().source, attachment.source);
+        // Old sequence-encoded structs end before the newly appended source.
+        let mut legacy = rmpv::decode::read_value(&mut bytes.as_slice()).unwrap();
+        let rmpv::Value::Array(fields) = &mut legacy else {
+            panic!("Expected sequence encoding");
+        };
+        fields.pop();
+        let mut legacy_bytes = Vec::new();
+        rmpv::encode::write_value(&mut legacy_bytes, &legacy).unwrap();
+        let restored: CachedAttachment = rmp_serde::from_slice(&legacy_bytes).unwrap();
+        assert!(restored.to_domain().source.is_none());
+        assert_eq!(restored.to_domain().name, attachment.name);
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(
+            cached.to_domain().source,
+            attachment.source,
+            "cache decoding must preserve metadata independently of filesystem state"
+        );
     }
 
     #[test]

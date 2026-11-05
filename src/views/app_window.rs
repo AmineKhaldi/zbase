@@ -1,3 +1,5 @@
+use crate::models::conversation_model::AvatarParticipant;
+use super::pane_window::PaneWindowSizing;
 use crate::services::og_service::{OgFetchResult, OgService};
 use crate::state::state::{BootPhase, TimelineKey};
 use crate::{
@@ -26,11 +28,14 @@ use crate::{
         notifications_model::ToastAction,
         profile_panel_model::SocialTab,
         quick_switcher_model::QuickSwitcherResultKind,
-        sidebar_model::SidebarModel,
+        recent_sidebar::build_recent_rows,
+        settings_model::SidebarMode,
+        sidebar_model::{SidebarAvatar, SidebarModel, team_avatar_key},
         timeline_model::TeamAuthorRole,
     },
     services::{
         backends::router::BackendRouter, local_store::LocalStore, settings_store::SettingsStore,
+        window_preferences::WindowPreferences, window_preferences_writer::WindowPreferencesWriter,
     },
     state::{
         AppStore, ConnectionState, DraftKey, UiAction,
@@ -66,11 +71,11 @@ use crate::{
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, AnyView, App, AppContext, AsyncApp, ClickEvent, ClipboardItem, Context,
-    CursorStyle, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ListAlignment,
-    ListOffset, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, PathPromptOptions, Render, RenderImage, ScrollDelta, ScrollHandle,
+    CursorStyle, DispatchPhase, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
+    ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, PathPromptOptions, Render, RenderImage, ScrollDelta, ScrollHandle,
     ScrollWheelEvent, StatefulInteractiveElement, StyleRefinement, Styled, Subscription,
-    WeakEntity, Window, div, px, rgb,
+    UniformListScrollHandle, WeakEntity, Window, canvas, div, px, rgb,
 };
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -212,8 +217,22 @@ fn unique_copy_destination(downloads_dir: &PathBuf, preferred_name: &str) -> Pat
     candidate
 }
 
+// Preserve the last pane for the frame preceding native shrink, so closing
+// never replaces its pixels with an empty background in the expanded window.
+struct ClosingPane {
+    navigation: crate::models::navigation_model::NavigationModel,
+    thread: crate::models::thread_pane_model::ThreadPaneModel,
+    profile: crate::models::profile_panel_model::ProfilePanelModel,
+    conversation: crate::models::conversation_model::ConversationModel,
+}
+
 pub struct AppWindow {
     models: AppModels,
+    pane_window_sizing: PaneWindowSizing,
+    closing_pane: Option<ClosingPane>,
+    window_preferences: Option<WindowPreferences>,
+    observed_window_bounds: Option<WindowPreferences>,
+    window_preferences_writer: WindowPreferencesWriter,
     app_store: AppStore,
     backend_router: BackendRouter,
     focus_handle: FocusHandle,
@@ -251,7 +270,7 @@ pub struct AppWindow {
     jump_to_message_active: bool,
     last_thread_reply_count: usize,
     pending_thread_scroll_to_bottom: bool,
-    sidebar_dm_avatar_assets: HashMap<String, String>,
+    sidebar_conversation_avatars: HashMap<String, SidebarAvatar>,
     sidebar_view: Option<Entity<CachedSidebarView>>,
     keybase_inspector: KeybaseInspectorState,
     perf_harness: PerfHarness,
@@ -301,6 +320,7 @@ pub struct AppWindow {
     splash_boot_ready: bool,
     pending_file_upload_caption_focus: bool,
     sidebar_scroll_handle: ScrollHandle,
+    sidebar_recent_scroll: UniformListScrollHandle,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -325,18 +345,6 @@ struct ThreadResizeDrag {
     starting_width: f32,
 }
 
-#[derive(Clone, Debug)]
-struct SidebarResizeDrag;
-
-#[derive(Default)]
-struct SidebarResizeDragPreview;
-
-impl Render for SidebarResizeDragPreview {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().w(px(0.)).h(px(0.))
-    }
-}
-
 struct SidebarResizeState {
     anchor_x: f32,
     starting_width: f32,
@@ -344,14 +352,16 @@ struct SidebarResizeState {
 
 struct ShellLayout {
     show_right_pane: bool,
+    overlay_right_pane: bool,
     min_shell_width: f32,
 }
 
 #[derive(Default)]
 struct SyncCache {
+    projected_conversation_id: Option<ConversationId>,
     workspace_sig: Option<u64>,
     sidebar_sections_sig: Option<u64>,
-    dm_avatar_sig: Option<u64>,
+    sidebar_avatar_sig: Option<u64>,
     timeline_rows_sig: Option<u64>,
     timeline_link_previews_sig: Option<u64>,
     timeline_emoji_sig: Option<u64>,
@@ -366,7 +376,7 @@ struct SidebarViewState {
     connectivity: Connectivity,
     current_user_display_name: String,
     current_user_avatar_asset: Option<String>,
-    dm_avatar_assets: HashMap<String, String>,
+    conversation_avatars: HashMap<String, SidebarAvatar>,
     current_route: Route,
     theme: crate::app::theme::ThemeVariant,
 }
@@ -376,6 +386,7 @@ struct CachedSidebarView {
     state: SidebarViewState,
     hovered_row: Option<String>,
     scroll_handle: ScrollHandle,
+    recent_scroll: UniformListScrollHandle,
 }
 
 #[derive(Clone)]
@@ -384,7 +395,7 @@ struct VideoDecodeOutcome {
     render_image: Option<Arc<RenderImage>>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BenchScriptScenario {
     TimelineScroll,
     ProfileScroll,
@@ -393,6 +404,10 @@ enum BenchScriptScenario {
     ComposerTyping,
     ComposerPaste,
     ThreadOpen,
+    Navigation,
+    QuickSwitcher,
+    GlobalSearch,
+    Idle,
 }
 
 impl BenchScriptScenario {
@@ -409,6 +424,10 @@ impl BenchScriptScenario {
             }
             "composer_paste" | "composer-paste" | "paste" => Some(Self::ComposerPaste),
             "thread_open" | "thread-open" | "thread" => Some(Self::ThreadOpen),
+            "navigation" => Some(Self::Navigation),
+            "quick_switcher" => Some(Self::QuickSwitcher),
+            "global_search" => Some(Self::GlobalSearch),
+            "idle" => Some(Self::Idle),
             _ => None,
         }
     }
@@ -422,6 +441,10 @@ impl BenchScriptScenario {
             Self::ComposerTyping => "composer_typing",
             Self::ComposerPaste => "composer_paste",
             Self::ThreadOpen => "thread_open",
+            Self::Navigation => "navigation",
+            Self::QuickSwitcher => "quick_switcher",
+            Self::GlobalSearch => "global_search",
+            Self::Idle => "idle",
         }
     }
 }
@@ -449,12 +472,17 @@ impl BenchScriptConfig {
 }
 
 impl CachedSidebarView {
-    fn new(owner: WeakEntity<AppWindow>, state: SidebarViewState) -> Self {
+    fn new(
+        owner: WeakEntity<AppWindow>,
+        state: SidebarViewState,
+        recent_scroll: UniformListScrollHandle,
+    ) -> Self {
         Self {
             owner,
             state,
             hovered_row: None,
             scroll_handle: ScrollHandle::new(),
+            recent_scroll,
         }
     }
 
@@ -475,10 +503,11 @@ impl Render for CachedSidebarView {
                 &self.state.connectivity,
                 &self.state.current_user_display_name,
                 self.state.current_user_avatar_asset.as_deref(),
-                &self.state.dm_avatar_assets,
+                &self.state.conversation_avatars,
                 &self.state.current_route,
                 self.hovered_row.as_deref(),
                 &self.scroll_handle,
+                &self.recent_scroll,
                 cx,
             )
         })
@@ -486,6 +515,13 @@ impl Render for CachedSidebarView {
 }
 
 impl SidebarHost for CachedSidebarView {
+    fn sidebar_set_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>) {
+        let owner = self.owner.clone();
+        cx.defer(move |cx| {
+            let _ = owner.update(cx, |owner, cx| owner.set_sidebar_mode(mode, cx));
+        });
+    }
+
     fn sidebar_toggle_quick_switcher(&mut self, cx: &mut Context<Self>) {
         let owner = self.owner.clone();
         cx.defer(move |cx| {
@@ -580,6 +616,10 @@ impl SidebarHost for CachedSidebarView {
 }
 
 impl SidebarHost for AppWindow {
+    fn sidebar_set_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>) {
+        self.set_sidebar_mode(mode, cx);
+    }
+
     fn sidebar_toggle_quick_switcher(&mut self, cx: &mut Context<Self>) {
         self.toggle_quick_switcher(cx);
     }
@@ -670,6 +710,11 @@ impl AppWindow {
 
         Self {
             models,
+            pane_window_sizing: PaneWindowSizing::default(),
+            closing_pane: None,
+            window_preferences: None,
+            observed_window_bounds: None,
+            window_preferences_writer: WindowPreferencesWriter::default(),
             app_store,
             backend_router,
             focus_handle,
@@ -709,7 +754,7 @@ impl AppWindow {
             jump_to_message_active: false,
             last_thread_reply_count,
             pending_thread_scroll_to_bottom: false,
-            sidebar_dm_avatar_assets: HashMap::new(),
+            sidebar_conversation_avatars: HashMap::new(),
             sidebar_view: None,
             keybase_inspector: KeybaseInspectorState::default(),
             perf_harness: PerfHarness::from_env(),
@@ -759,10 +804,15 @@ impl AppWindow {
             splash_boot_ready: false,
             pending_file_upload_caption_focus: false,
             sidebar_scroll_handle: ScrollHandle::new(),
+            sidebar_recent_scroll: UniformListScrollHandle::new(),
         }
     }
 
     pub fn init(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.perf_harness.config().autostart {
+            cx.activate(true);
+            window.activate_window();
+        }
         self.window_is_focused = window.is_window_active();
         if !self.bench_skip_backend {
             self.dispatch_ui_action(UiAction::StartApp);
@@ -771,7 +821,21 @@ impl AppWindow {
 
         self.sync_sidebar_view_state(cx);
 
+        let owner = cx.weak_entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            let Ok(flush) = owner.update(cx, |this, _| this.window_preferences_writer.flush())
+            else {
+                return true;
+            };
+            Self::close_window_after_preferences(window, cx, flush);
+            false
+        });
         self.subscriptions = vec![
+            cx.observe_window_bounds(window, |_, _, cx| cx.notify()),
+            cx.on_app_quit(|this, _| {
+                let flush = this.window_preferences_writer.flush();
+                async move { let _ = flush.await; }
+            }),
             cx.observe_window_activation(window, |this, window, cx| {
                 this.window_is_focused = window.is_window_active();
                 if this.window_is_focused && this.request_mark_conversation_read_if_needed() {
@@ -791,6 +855,7 @@ impl AppWindow {
                 if this.models.quick_switcher.query == query {
                     return;
                 }
+                this.last_text_input_activity = Some(Instant::now());
                 if this.models.flush_quick_switcher_local_search_corpus_if_dirty() {
                     this.quick_switcher_last_local_query.clear();
                     this.quick_switcher_last_local_matched_entry_indices = Arc::new(Vec::new());
@@ -1040,12 +1105,33 @@ impl AppWindow {
         } else {
             tracing::warn!("bench.backend.skip enabled");
         }
-        if let Some(message_count) =
-            env_usize(ENV_BENCH_TIMELINE_MESSAGES).filter(|count| *count > 0)
+        #[cfg(any(test, feature = "demo-fixtures"))]
+        if self.bench_skip_backend
+            && env_flag("ZBASE_BENCH_USE_DEMO")
+            && let Some(message_count) =
+                env_usize(ENV_BENCH_TIMELINE_MESSAGES).filter(|count| *count > 0)
         {
             self.inflate_bench_timeline_messages(message_count);
             tracing::warn!("bench.timeline.synthetic_messages={message_count}");
             self.refresh(cx);
+        }
+        if self.bench_skip_backend && env_flag("ZBASE_BENCH_USE_DEMO") {
+            let mut state = self.app_store.snapshot().clone();
+            state.timeline.typing_text = self.models.timeline.typing_text.clone();
+            state.timeline.messages = self
+                .models
+                .timeline
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    crate::models::timeline_model::TimelineRow::Message(row) => {
+                        Some(row.message.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            self.app_store = AppStore::new(state);
+            self.splash_open = false;
         }
         if let Some(script) = self.bench_script {
             tracing::warn!(
@@ -1053,10 +1139,24 @@ impl AppWindow {
                 script.scenario.slug(),
                 script.tick.as_millis()
             );
-            self.start_bench_script_loop(cx);
+            self.start_bench_script_loop(window.window_handle(), cx);
         }
         if self.perf_harness.config().autostart {
-            self.start_perf_capture(None, cx);
+            let warmup = env_usize("ZBASE_BENCH_WARMUP_SECS").unwrap_or(0);
+            if warmup == 0 {
+                self.start_perf_capture(None, cx);
+            } else {
+                cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                    let background = cx.background_executor().clone();
+                    let mut async_app = cx.clone();
+                    async move {
+                        background.timer(Duration::from_secs(warmup as u64)).await;
+                        let _ = this
+                            .update(&mut async_app, |this, cx| this.start_perf_capture(None, cx));
+                    }
+                })
+                .detach();
+            }
         }
     }
 
@@ -1121,7 +1221,8 @@ impl AppWindow {
         let mut needs_refresh = self.drain_video_decode_results();
         needs_refresh |= self.drain_og_fetch_results();
         let quick_switcher_typing = self.models.overlay.quick_switcher_open
-            && !self.models.quick_switcher.query.trim().is_empty();
+            && !self.models.quick_switcher.query.trim().is_empty()
+            && self.text_input_activity_recent();
         if events.is_empty() {
             if self.sync_cache.deferred_model_sync && !quick_switcher_typing {
                 self.sync_cache.deferred_model_sync = false;
@@ -1144,6 +1245,11 @@ impl AppWindow {
         let defer_model_sync = quick_switcher_typing || self.text_input_activity_recent();
         let mut deferred_events_applied = false;
         for event in events {
+            if let BackendEvent::BenchmarkPulse(sent_at) = &event {
+                self.perf_harness
+                    .record_duration(PerfTimer::BackendDeliveryDelay, sent_at.elapsed());
+                continue;
+            }
             if defer_model_sync {
                 match &event {
                     crate::state::event::BackendEvent::BootstrapLoaded { payload, .. } => {
@@ -1448,9 +1554,7 @@ impl AppWindow {
                     break;
                 }
 
-                let Ok(events) = self.backend_router.apply_effects(&pending_effects) else {
-                    break;
-                };
+                let events = self.backend_router.apply_effects(&pending_effects);
                 if events.is_empty() {
                     break;
                 }
@@ -1741,10 +1845,12 @@ impl AppWindow {
         }
 
         if self.composer_input.read(cx).up_at_top_triggered {
-            self.composer_input.update(cx, |input, _| {
-                input.up_at_top_triggered = false;
-            });
-            self.edit_last_own_message(cx);
+            let edit_previous = self
+                .composer_input
+                .update(cx, |input, _| input.take_edit_previous_request());
+            if edit_previous {
+                self.edit_last_own_message(cx);
+            }
         }
 
         let composer_text = self
@@ -1752,7 +1858,6 @@ impl AppWindow {
             .read(cx)
             .text_if_different(&self.models.composer.draft_text);
         if let Some(composer_text) = composer_text {
-            let was_near_bottom = self.timeline_is_near_bottom();
             let key = DraftKey::Conversation(self.models.composer.conversation_id.clone());
             self.models
                 .update_composer_draft_text(composer_text.clone());
@@ -1761,9 +1866,6 @@ impl AppWindow {
                 text: composer_text,
             });
             self.last_text_input_activity = Some(Instant::now());
-            if was_near_bottom {
-                scroll_list_to_bottom(&self.timeline_list_state);
-            }
         }
 
         let thread_text = self
@@ -2019,6 +2121,7 @@ impl AppWindow {
         if !self.perf_harness.stop_capture() {
             return;
         }
+        self.log_bench_state("stop");
         self.perf_capture_generation = self.perf_capture_generation.wrapping_add(1);
         if self.perf_exit_on_stop {
             tracing::warn!("bench.capture.exit_on_stop enabled");
@@ -2057,7 +2160,7 @@ impl AppWindow {
         .detach();
     }
 
-    fn start_bench_script_loop(&mut self, cx: &mut Context<Self>) {
+    fn start_bench_script_loop(&mut self, handle: gpui::AnyWindowHandle, cx: &mut Context<Self>) {
         let Some(script) = self.bench_script else {
             return;
         };
@@ -2067,17 +2170,46 @@ impl AppWindow {
             let mut async_app = cx.clone();
             async move {
                 loop {
+                    let wake_started = Instant::now();
                     background.timer(tick).await;
-                    let _ = this.update(&mut async_app, |this, cx| {
-                        this.run_bench_script_tick(cx);
-                    });
+                    if async_app
+                        .update_window(handle, |_, window, cx| {
+                            let result = this.update(cx, |this, cx| {
+                                this.perf_harness.record_duration(
+                                    PerfTimer::UiLoopDelay,
+                                    wake_started.elapsed().saturating_sub(tick),
+                                );
+                                this.run_bench_script_tick(window, cx)
+                            });
+                            // Build the real GPUI scene without presenting it. This keeps
+                            // CPU/layout benchmarks valid when the display is locked or
+                            // the window is occluded; it does not measure GPU presentation.
+                            if env_flag("ZBASE_BENCH_FORCE_DRAW")
+                                && script.scenario != BenchScriptScenario::Idle
+                            {
+                                window.refresh();
+                                let frame_started = Instant::now();
+                                window.draw(cx).clear();
+                                let _ = this.update(cx, |this, _cx| {
+                                    this.perf_harness.record_duration(
+                                        PerfTimer::FrameBuild,
+                                        frame_started.elapsed(),
+                                    );
+                                });
+                            }
+                            result
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
             }
         })
         .detach();
     }
 
-    fn run_bench_script_tick(&mut self, cx: &mut Context<Self>) {
+    fn run_bench_script_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.perf_harness.is_capturing() {
             return;
         }
@@ -2085,6 +2217,7 @@ impl AppWindow {
             return;
         };
 
+        let step_started = Instant::now();
         self.ensure_bench_profile_initialized();
         self.bench_script_step = self.bench_script_step.wrapping_add(1);
         match script.scenario {
@@ -2147,6 +2280,9 @@ impl AppWindow {
                 self.refresh(cx);
             }
             BenchScriptScenario::ComposerPaste => {
+                if !self.bench_script_step.is_multiple_of(48) {
+                    return;
+                }
                 if self.bench_script_step.is_multiple_of(96) {
                     self.composer_input
                         .update(cx, |input, cx| input.set_text(String::new(), cx));
@@ -2161,9 +2297,126 @@ impl AppWindow {
                 self.refresh(cx);
             }
             BenchScriptScenario::ThreadOpen => {
+                if !self.bench_script_step.is_multiple_of(24) {
+                    return;
+                }
+                if self.bench_thread_root_id.is_none()
+                    && self.bench_thread_root_ids.is_empty()
+                    && self.bench_thread_root_candidate().is_none()
+                {
+                    return;
+                }
                 self.run_bench_thread_open_tick(cx);
             }
+            BenchScriptScenario::Navigation => {
+                if self.bench_script_step.is_multiple_of(24) {
+                    let routes = self
+                        .models
+                        .workspace
+                        .channels
+                        .iter()
+                        .chain(self.models.workspace.direct_messages.iter())
+                        .take(8)
+                        .map(|summary| {
+                            route_for_conversation_id(
+                                &self.models.app.active_workspace_id,
+                                &summary.id,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    if !routes.is_empty() {
+                        let route =
+                            routes[(self.bench_script_step as usize / 24) % routes.len()].clone();
+                        self.navigate_to(route, window, cx);
+                    }
+                } else {
+                    return;
+                }
+            }
+            BenchScriptScenario::QuickSwitcher => {
+                if !self.models.overlay.quick_switcher_open {
+                    self.toggle_quick_switcher(cx);
+                }
+                if self.bench_script_step.is_multiple_of(12) {
+                    let queries = ["", "g", "ge", "gen", "general", "", "a", "al", "test"];
+                    let query = queries[(self.bench_script_step as usize / 12) % queries.len()];
+                    self.quick_switcher_input
+                        .update(cx, |input, cx| input.set_text(query, cx));
+                    self.refresh(cx);
+                } else {
+                    return;
+                }
+            }
+            BenchScriptScenario::GlobalSearch => {
+                if self.bench_script_step % 48 == 0 {
+                    let queries = ["test", "update", "the", "build"];
+                    let query = queries[(self.bench_script_step as usize / 48) % queries.len()];
+                    self.search_input
+                        .update(cx, |input, cx| input.set_text(query, cx));
+                } else if self.bench_script_step % 48 == 1 {
+                    self.submit_search_input(window, cx);
+                } else {
+                    return;
+                }
+            }
+            BenchScriptScenario::Idle => {
+                return;
+            }
         }
+        self.perf_harness
+            .record_duration(PerfTimer::ScenarioStep, step_started.elapsed());
+        if self.bench_script_step.is_multiple_of(60) {
+            self.log_bench_state("tick");
+        }
+    }
+
+    fn log_bench_state(&self, phase: &str) {
+        let state = self.app_store.snapshot();
+        let message_provenance_matches = self.models.timeline.rows.iter().all(|row| match row {
+            crate::models::timeline_model::TimelineRow::Message(row) => {
+                row.message.conversation_id == self.models.timeline.conversation_id
+                    && state.timeline.messages.iter().any(|stored| {
+                        stored.id == row.message.id
+                            && stored.conversation_id == row.message.conversation_id
+                    })
+            }
+            _ => true,
+        });
+        let sidebar_team_groups = state
+            .sidebar
+            .sections
+            .iter()
+            .filter(|section| {
+                section
+                    .id
+                    .as_ref()
+                    .is_some_and(|id| id.0.starts_with("group_"))
+            })
+            .map(|section| section.title.as_str())
+            .collect::<Vec<_>>();
+        let model_count = timeline_message_count(&self.models);
+        let route_matches =
+            state.navigation.current_route.as_ref() == Some(&self.models.navigation.current);
+        let conversation_matches =
+            state.timeline.conversation_id.as_ref() == Some(&self.models.timeline.conversation_id);
+        tracing::warn!(
+            phase,
+            model_messages = model_count,
+            store_messages = state.timeline.messages.len(),
+            conversations = state.workspace.channels.len() + state.workspace.direct_messages.len(),
+            route_matches,
+            conversation_matches,
+            message_provenance_matches,
+            typing_matches = self.models.timeline.typing_text == state.timeline.typing_text,
+            splash = self.splash_open,
+            search_results = state.search.results.len(),
+            search_loading = state.search.is_loading,
+            thread_replies = state.thread.replies.len(),
+            thread_loading = state.thread.loading,
+            sidebar_team_groups = ?sidebar_team_groups,
+            simple_team_conversations = state.workspace.channels.iter().filter(|summary| summary.is_simple_team()).count(),
+            "bench.state"
+        );
     }
 
     fn run_bench_profile_scroll_tick(&mut self, cx: &mut Context<Self>) {
@@ -2323,6 +2576,7 @@ impl AppWindow {
         self.bench_profile_initialized = true;
     }
 
+    #[cfg(any(test, feature = "demo-fixtures"))]
     fn inflate_bench_timeline_messages(&mut self, message_count: usize) {
         if message_count <= timeline_message_count(&self.models) {
             return;
@@ -2398,7 +2652,7 @@ impl AppWindow {
                 } else {
                     0
                 },
-                send_state: MessageSendState::Sent,
+                send_state: crate::domain::message::MessageSendState::Sent,
                 edited: None,
             };
 
@@ -2415,7 +2669,7 @@ impl AppWindow {
             rows.insert(
                 rows.len() / 2,
                 crate::models::timeline_model::TimelineRow::UnreadDivider(
-                    "Unread messages".to_string(),
+                    "New messages".to_string(),
                 ),
             );
         }
@@ -2446,7 +2700,7 @@ impl AppWindow {
             connectivity: self.models.app.connectivity.clone(),
             current_user_display_name: self.models.app.current_user_display_name.clone(),
             current_user_avatar_asset: self.models.app.current_user_avatar_asset.clone(),
-            dm_avatar_assets: self.sidebar_dm_avatar_assets.clone(),
+            conversation_avatars: self.sidebar_conversation_avatars.clone(),
             current_route: self.models.navigation.current.clone(),
             theme: self.resolved_theme,
         }
@@ -2456,8 +2710,13 @@ impl AppWindow {
         let sidebar_state = self.sidebar_view_state();
         if self.sidebar_view.is_none() {
             let owner = cx.entity().downgrade();
-            self.sidebar_view =
-                Some(cx.new(|_| CachedSidebarView::new(owner, sidebar_state.clone())));
+            self.sidebar_view = Some(cx.new(|_| {
+                CachedSidebarView::new(
+                    owner,
+                    sidebar_state.clone(),
+                    self.sidebar_recent_scroll.clone(),
+                )
+            }));
         }
         if let Some(sidebar_view) = self.sidebar_view.as_ref() {
             sidebar_view.update(cx, |view, cx| {
@@ -2467,6 +2726,9 @@ impl AppWindow {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        for error in self.app_store.take_toasts() {
+            self.models.push_toast(error, None);
+        }
         self.sync_sidebar_view_state(cx);
         self.sync_timeline_list_state_len(self.models.timeline.rows.len());
         self.perf_harness.record_refresh();
@@ -2521,6 +2783,21 @@ impl AppWindow {
 
     fn timeline_is_near_top(&self) -> bool {
         is_list_near_top(&self.timeline_list_state)
+    }
+
+    pub(crate) fn anchor_timeline_before_layout(&self) {
+        let previous_height = self.timeline_list_state.viewport_bounds().size.height;
+        let explicit_scroll_pending = self.jump_to_message_active
+            || self.models.timeline.pending_scroll_target.is_some()
+            || self.pending_older_scroll_anchor.is_some()
+            || self.suppress_next_timeline_bottom_snap;
+        if crate::views::timeline::layout_anchor::should_follow_latest(
+            previous_height,
+            self.timeline_is_near_bottom(),
+            explicit_scroll_pending,
+        ) {
+            self.scroll_timeline_list_to_bottom();
+        }
     }
 
     fn scroll_timeline_list_to_bottom(&self) {
@@ -2672,9 +2949,7 @@ impl AppWindow {
 
         loop {
             let apply_started_at = profile_open_thread.then(Instant::now);
-            let Ok(events) = self.backend_router.apply_effects(&pending_effects) else {
-                break;
-            };
+            let events = self.backend_router.apply_effects(&pending_effects);
             if let Some(apply_started_at) = apply_started_at {
                 backend_apply_elapsed += apply_started_at.elapsed();
                 backend_apply_calls = backend_apply_calls.saturating_add(1);
@@ -2818,6 +3093,21 @@ impl AppWindow {
         let t0 = Instant::now();
         let snapshot = self.app_store.snapshot();
 
+        self.models.app.connectivity = if snapshot
+            .backend
+            .accounts
+            .values()
+            .any(|account| matches!(account.connection_state, ConnectionState::Connected))
+        {
+            Connectivity::Online
+        } else if matches!(
+            snapshot.app.boot_phase,
+            BootPhase::Launching | BootPhase::HydratingLocalState | BootPhase::ConnectingBackend
+        ) {
+            Connectivity::Reconnecting
+        } else {
+            Connectivity::Offline
+        };
         self.models.sidebar.filter = snapshot.sidebar.filter.clone();
         self.models.search.query = snapshot.search.query.clone();
         self.models.search.filters = snapshot.search.filters.clone();
@@ -2923,9 +3213,20 @@ impl AppWindow {
             .unwrap_or_else(|| self.models.navigation.current.clone());
         let route_changed = self.models.navigation.current != next_route;
         if route_changed {
+            if conversation_id_from_navigated_route(&self.models.navigation.current)
+                != conversation_id_from_navigated_route(&next_route)
+            {
+                self.models.navigation.right_pane = RightPaneMode::Hidden;
+            }
             self.models.navigation.current = next_route.clone();
         }
 
+        self.models.profile_panel.user_id = snapshot.backend.profile_panel.selected_user.clone();
+        self.models.profile_panel.active_social_tab =
+            match snapshot.backend.profile_panel.active_social_tab {
+                SocialGraphListType::Followers => SocialTab::Followers,
+                SocialGraphListType::Following => SocialTab::Following,
+            };
         if let Some(user_id) = self.models.profile_panel.user_id.clone() {
             self.models.profile_panel.profile = snapshot
                 .backend
@@ -2935,21 +3236,37 @@ impl AppWindow {
                 .cloned();
             self.models.profile_panel.loading =
                 snapshot.backend.profile_panel.loading.contains(&user_id);
-            self.models.profile_panel.loading_social_list = snapshot
+            self.models.profile_panel.social_list_status = snapshot
                 .backend
                 .profile_panel
-                .loading_social_list
-                .contains(&user_id);
+                .social_lists
+                .get(&(
+                    user_id.clone(),
+                    self.models.profile_panel.active_social_tab.as_list_type(),
+                ))
+                .copied();
         } else {
             self.models.profile_panel.profile = None;
             self.models.profile_panel.loading = false;
-            self.models.profile_panel.loading_social_list = false;
+            self.models.profile_panel.social_list_status = None;
         }
 
         let sidebar_sections_sig = sidebar_sections_state_signature(&snapshot.sidebar.sections);
         let sidebar_sections_changed =
             self.sync_cache.sidebar_sections_sig != Some(sidebar_sections_sig);
-        if sidebar_sections_changed {
+        if sidebar_sections_changed || workspace_changed {
+            let channel_teams = snapshot
+                .workspace
+                .channels
+                .iter()
+                .filter(|summary| !summary.is_simple_team())
+                .filter_map(|summary| {
+                    summary
+                        .group
+                        .as_ref()
+                        .map(|group| (summary.id.0.as_str(), group))
+                })
+                .collect::<HashMap<_, _>>();
             self.models.sidebar.sections = snapshot
                 .sidebar
                 .sections
@@ -2967,6 +3284,12 @@ impl AppWindow {
                             row.route.clone().map(|route| {
                                 crate::models::sidebar_model::SidebarRow {
                                     label: row.label.clone(),
+                                    team: match &route {
+                                        Route::Channel { channel_id, .. } => channel_teams
+                                            .get(channel_id.0.as_str())
+                                            .map(|group| (*group).clone()),
+                                        _ => None,
+                                    },
                                     unread_count: row.unread_count,
                                     mention_count: row.mention_count,
                                     route,
@@ -2987,35 +3310,60 @@ impl AppWindow {
             self.models.expand_section_for_route(&next_route);
         }
 
-        let dm_avatar_sig = dm_avatar_inputs_signature(
+        self.models.restore_sidebar_mode();
+        if sidebar_sections_changed || workspace_changed || active_workspace_changed {
+            self.models.sidebar.recent_rows = build_recent_rows(
+                &snapshot.workspace.channels,
+                &snapshot.workspace.direct_messages,
+                &self.models.sidebar.sections,
+                &self.models.app.active_workspace_id,
+            );
+        }
+
+        if route_changed {
+            self.reveal_recent_sidebar_route(&next_route);
+        }
+
+        let sidebar_avatar_sig = sidebar_avatar_inputs_signature(
             &self.models.sidebar.sections,
             &snapshot.workspace.direct_messages,
+            &snapshot.workspace.channels,
             &snapshot.backend.user_profiles,
         );
-        if self.sync_cache.dm_avatar_sig != Some(dm_avatar_sig) {
+        if self.sync_cache.sidebar_avatar_sig != Some(sidebar_avatar_sig) {
             let dm_conversation_avatar_assets = snapshot
                 .workspace
                 .direct_messages
                 .iter()
-                .filter_map(|summary| {
-                    if !matches!(
-                        summary.kind,
-                        crate::domain::conversation::ConversationKind::DirectMessage
-                    ) {
-                        return None;
-                    }
-
-                    let username = first_dm_username(&summary.title)?;
-                    let avatar_asset = snapshot
-                        .backend
-                        .user_profiles
-                        .get(&UserId::new(username.to_string()))
-                        .and_then(|profile| profile.avatar_asset.clone())?;
-                    Some((summary.id.0.clone(), avatar_asset))
+                .map(|summary| {
+                    (
+                        summary.id.0.clone(),
+                        SidebarAvatar::Participants(dm_participant_avatars(
+                            summary,
+                            &snapshot.backend.user_profiles,
+                        )),
+                    )
                 })
                 .collect::<HashMap<_, _>>();
 
-            let mut dm_avatar_assets = HashMap::new();
+            let team_avatars = snapshot
+                .workspace
+                .channels
+                .iter()
+                .filter_map(|summary| {
+                    simple_team_avatar_asset(summary, &snapshot.backend.user_profiles)
+                        .map(|asset| (summary.id.0.clone(), asset))
+                })
+                .collect::<HashMap<_, _>>();
+            let mut conversation_avatars = HashMap::new();
+            for summary in &snapshot.workspace.channels {
+                if let Some(group) = &summary.group
+                    && let Some(asset) = team_avatar_asset(summary, &snapshot.backend.user_profiles)
+                {
+                    conversation_avatars
+                        .insert(team_avatar_key(&group.id), SidebarAvatar::Team(asset));
+                }
+            }
             for row in self
                 .models
                 .sidebar
@@ -3026,16 +3374,31 @@ impl AppWindow {
                 if let Route::DirectMessage { dm_id, .. } = &row.route
                     && let Some(avatar_asset) = dm_conversation_avatar_assets.get(&dm_id.0)
                 {
-                    dm_avatar_assets.insert(row.route.label(), avatar_asset.clone());
+                    conversation_avatars.insert(row.route.label(), avatar_asset.clone());
+                }
+                if let Route::Channel { channel_id, .. } = &row.route
+                    && let Some(asset) = team_avatars.get(&channel_id.0)
+                {
+                    conversation_avatars
+                        .insert(row.route.label(), SidebarAvatar::Team(asset.clone()));
                 }
             }
-            self.sidebar_dm_avatar_assets = dm_avatar_assets;
-            self.sync_cache.dm_avatar_sig = Some(dm_avatar_sig);
+            self.sidebar_conversation_avatars = conversation_avatars;
+            self.sync_cache.sidebar_avatar_sig = Some(sidebar_avatar_sig);
         }
 
-        let mut conversation_changed = false;
+        self.models.conversation.participant_avatars = self
+            .sidebar_conversation_avatars
+            .get(&next_route.label())
+            .map(|avatar| avatar.participants().to_vec())
+            .unwrap_or_default();
+
+        // Compare with the last store projection, not a view model that navigation
+        // may already have reset to the destination conversation.
+        let conversation_changed =
+            self.sync_cache.projected_conversation_id != snapshot.timeline.conversation_id;
+        self.sync_cache.projected_conversation_id = snapshot.timeline.conversation_id.clone();
         if let Some(conversation_id) = snapshot.timeline.conversation_id.clone() {
-            conversation_changed = self.models.timeline.conversation_id != conversation_id;
             self.models.timeline.conversation_id = conversation_id;
         }
         if conversation_changed {
@@ -3235,6 +3598,7 @@ impl AppWindow {
         self.models.timeline.highlighted_message_id =
             snapshot.timeline.highlighted_message_id.clone();
         self.models.timeline.unread_marker = snapshot.timeline.unread_marker.clone();
+        self.models.timeline.typing_text = snapshot.timeline.typing_text.clone();
         self.models.timeline.current_user_id = current_user_id.clone();
         self.models.timeline.affinity_index = snapshot.backend.user_affinities.clone();
         self.models.timeline.older_cursor = snapshot.timeline.older_cursor.clone();
@@ -3265,25 +3629,13 @@ impl AppWindow {
                 .cloned()
             {
                 self.models.conversation.summary = active_conversation.clone();
-                self.models.composer.conversation_id = active_conversation.id;
+                self.models.composer.conversation_id = active_conversation.id.clone();
                 self.models.conversation.can_post = true;
                 self.models.conversation.is_archived = false;
                 self.models.conversation.avatar_asset = match active_conversation.kind {
-                    crate::domain::conversation::ConversationKind::Channel => active_conversation
-                        .group
-                        .as_ref()
-                        .and_then(|group| {
-                            let team_name = group.id.trim();
-                            if team_name.is_empty() {
-                                None
-                            } else {
-                                snapshot
-                                    .backend
-                                    .user_profiles
-                                    .get(&UserId::new(format!("team:{team_name}")))
-                            }
-                        })
-                        .and_then(|profile| profile.avatar_asset.clone()),
+                    crate::domain::conversation::ConversationKind::Channel => {
+                        team_avatar_asset(&active_conversation, &snapshot.backend.user_profiles)
+                    }
                     crate::domain::conversation::ConversationKind::DirectMessage => {
                         let username = first_dm_username(&active_conversation.title)
                             .unwrap_or("")
@@ -3386,14 +3738,30 @@ impl AppWindow {
             .as_ref()
             .filter(|conversation_id| **conversation_id == self.models.conversation.summary.id)
             .map(|_| {
-                build_channel_details(
+                let mut details = build_channel_details(
                     &self.models.conversation.summary,
                     self.models.conversation.member_count,
                     self.models.conversation.can_post,
                     self.models.conversation.is_archived,
                     &snapshot.backend,
                     current_user_id.as_ref(),
-                )
+                );
+                details.can_leave &= snapshot
+                    .workspace
+                    .channels
+                    .iter()
+                    .any(|channel| channel.id == details.conversation_id)
+                    && !self
+                        .preview_summaries
+                        .contains_key(&details.conversation_id);
+                details.leave_error = snapshot.workspace.leave_channel_errors
+                    .get(&details.conversation_id)
+                    .cloned();
+                details.is_leaving = snapshot
+                    .workspace
+                    .leaving_conversation_ids
+                    .contains(&details.conversation_id);
+                details
             });
         let has_pinned_banner = self.models.conversation.pinned_message.is_some();
         let pinned_banner_visibility_changed = previous_has_pinned_banner != has_pinned_banner;
@@ -3419,7 +3787,8 @@ impl AppWindow {
             current_user_id.as_ref(),
             current_user_avatar.as_deref(),
         );
-        let timeline_rows_changed = self.sync_cache.timeline_rows_sig != Some(timeline_rows_sig);
+        let timeline_rows_changed =
+            conversation_changed || self.sync_cache.timeline_rows_sig != Some(timeline_rows_sig);
         if timeline_rows_changed {
             let mut rows: Vec<crate::models::timeline_model::TimelineRow> = Vec::new();
             let unread_marker = snapshot.timeline.unread_marker.clone();
@@ -3428,12 +3797,12 @@ impl AppWindow {
 
             for message in &timeline_messages {
                 if !unread_divider_inserted
-                    && unread_marker
-                        .as_ref()
-                        .is_some_and(|marker| message_id_is_after(&message.id, marker))
+                    && unread_marker.as_ref().is_some_and(|marker| {
+                        message_starts_unread_region(message, marker, current_user_id.as_ref())
+                    })
                 {
                     rows.push(crate::models::timeline_model::TimelineRow::UnreadDivider(
-                        "Unread messages".to_string(),
+                        "New messages".to_string(),
                     ));
                     unread_divider_inserted = true;
                     previous_message = None;
@@ -3571,7 +3940,6 @@ impl AppWindow {
                 ));
             }
 
-            self.models.timeline.typing_text = snapshot.timeline.typing_text.clone();
             if loading_older {
                 rows.insert(
                     0,
@@ -3979,6 +4347,13 @@ impl AppWindow {
         }
     }
 
+    pub(crate) fn leave_current_channel(&mut self, cx: &mut Context<Self>) {
+        self.capture_live_inputs(cx);
+        let conversation_id = self.models.conversation.summary.id.clone();
+        self.dispatch_ui_action(UiAction::LeaveChannel { conversation_id });
+        self.refresh(cx);
+    }
+
     pub(crate) fn join_current_channel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(conversation_id) = conversation_id_from_navigated_route(&self.models.navigation.current)
         else {
@@ -4006,7 +4381,17 @@ impl AppWindow {
             cx.notify();
             return;
         }
-        tracing::info!("join_current_channel: successfully joined {}", conversation_id.0);
+        tracing::info!(
+            "join_current_channel: successfully joined {}",
+            conversation_id.0
+        );
+        self.apply_backend_events_inline(events);
+        self.apply_backend_events_inline(vec![BackendEvent::WorkspaceConversationsExtended {
+            workspace_id: workspace_id.clone(),
+            channels: vec![self.models.conversation.summary.clone()],
+            direct_messages: Vec::new(),
+            conversation_bindings: Vec::new(),
+        }]);
         self.preview_summaries.remove(&conversation_id);
 
         if let Ok(workspace_events) = self
@@ -4040,15 +4425,10 @@ impl AppWindow {
                 != conversation_id_from_navigated_route(&route)
             && self.models.navigation.right_pane != RightPaneMode::Hidden
         {
-            self.dispatch_ui_action(UiAction::CloseRightPane);
-            self.models.set_right_pane(RightPaneMode::Hidden);
-            self.models.profile_panel.user_id = None;
-            self.models.profile_panel.profile = None;
-            self.reset_thread_scroll_state();
+            self.close_right_pane_state(cx);
         }
         if route_changed {
             self.models.navigate_to(route.clone());
-            self.sync_models_from_store();
         }
         self.dispatch_ui_action(UiAction::Navigate(route.clone()));
         if let Some(conversation_id) = conversation_id_from_navigated_route(&route) {
@@ -4065,6 +4445,9 @@ impl AppWindow {
         }
         self.sync_inputs_from_models(cx);
         self.restore_chat_focus(window, cx);
+        if self.perf_harness.is_capturing() {
+            self.log_bench_state("navigate");
+        }
         self.refresh(cx);
     }
 
@@ -4159,9 +4542,7 @@ impl AppWindow {
             if pending_effects.is_empty() {
                 break;
             }
-            let Ok(events) = self.backend_router.apply_effects(&pending_effects) else {
-                break;
-            };
+            let events = self.backend_router.apply_effects(&pending_effects);
             if events.is_empty() {
                 break;
             }
@@ -4231,11 +4612,7 @@ impl AppWindow {
                 != conversation_id_from_navigated_route(&route)
             && self.models.navigation.right_pane != RightPaneMode::Hidden
         {
-            self.dispatch_ui_action(UiAction::CloseRightPane);
-            self.models.set_right_pane(RightPaneMode::Hidden);
-            self.models.profile_panel.user_id = None;
-            self.models.profile_panel.profile = None;
-            self.reset_thread_scroll_state();
+            self.close_right_pane_state(cx);
         }
         if route_changed {
             self.models.navigate_to(route.clone());
@@ -4346,12 +4723,103 @@ impl AppWindow {
         }
     }
 
+    fn sync_pane_window_size(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let viewport = window.viewport_size();
+        let pane_width = (!matches!(self.models.navigation.right_pane, RightPaneMode::Hidden))
+            .then_some(self.models.thread_pane.width_px);
+        let layout = shell_layout(
+            &self.models.navigation.right_pane,
+            self.models.thread_pane.width_px,
+            self.models.sidebar.width_px,
+            f32::from(viewport.width),
+        );
+        let maximum = window
+            .display(cx)
+            .map(|display| f32::from(display.bounds().size.width))
+            .unwrap_or(f32::from(viewport.width) + pane_width.unwrap_or(0.));
+        if let Some(width) = self.pane_window_sizing.sync(
+            f32::from(viewport.width),
+            pane_width,
+            layout.min_shell_width,
+            maximum,
+            !window.is_fullscreen() && !window.is_maximized(),
+        ) {
+            // Native resizing is asynchronous on macOS. Submit it after this
+            // frame rather than changing the platform window during rendering.
+            let generation = self.pane_window_sizing.queued_generation().unwrap();
+            let owner = cx.weak_entity();
+            window.on_next_frame(move |window, cx| {
+                if window.is_fullscreen() || window.is_maximized() {
+                    return;
+                }
+                let _ = owner.update(cx, |this, _| {
+                    if this.pane_window_sizing.submit(generation) {
+                        window.resize(gpui::size(px(width), viewport.height));
+                    }
+                });
+            });
+        }
+    }
+
+    fn remember_window_preferences(&mut self, window: &Window) {
+        if window.is_fullscreen() || window.is_maximized() {
+            return;
+        }
+        let bounds = window.bounds();
+        let viewport = window.viewport_size();
+        let observed = WindowPreferences {
+            x: bounds.origin.x.into(),
+            y: bounds.origin.y.into(),
+            width: viewport.width.into(),
+            height: viewport.height.into(),
+        };
+        let moved = self
+            .observed_window_bounds
+            .is_none_or(|old| old.x != observed.x || old.y != observed.y);
+        self.observed_window_bounds = Some(observed);
+        let mut preferred = self.window_preferences.unwrap_or(observed);
+        if moved && !self.pane_window_sizing.automatic_resize() {
+            preferred.x = observed.x;
+            preferred.y = observed.y;
+        }
+        preferred.width = self
+            .pane_window_sizing
+            .base_width(observed.width)
+            .max(crate::views::WINDOW_MIN_WIDTH_PX);
+        preferred.height = observed.height.max(crate::views::WINDOW_MIN_HEIGHT_PX);
+        if self.window_preferences == Some(preferred) {
+            return;
+        }
+        self.window_preferences = Some(preferred);
+        self.window_preferences_writer.update(preferred);
+    }
+
+    fn close_window_after_preferences(
+        window: &Window,
+        cx: &mut App,
+        flush: tokio::sync::oneshot::Receiver<()>,
+    ) {
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                async move {
+                    let _ = flush.await;
+                    let _ = cx.update(|window, _| window.remove_window());
+                }
+            })
+            .detach();
+    }
+
     pub(crate) fn toggle_pane(
         &mut self,
         pane: RightPaneMode,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.toggle_simple_pane(pane, cx);
+    }
+
+    fn toggle_simple_pane(&mut self, pane: RightPaneMode, cx: &mut Context<Self>) {
         if pane != RightPaneMode::Hidden && !self.models.settings.show_right_pane {
             self.models.push_toast(
                 "Right pane is disabled in preferences",
@@ -4361,12 +4829,11 @@ impl AppWindow {
             return;
         }
 
-        let next = if self.models.navigation.right_pane == pane {
-            RightPaneMode::Hidden
+        if self.models.navigation.right_pane == pane {
+            self.close_right_pane_state(cx);
         } else {
-            pane
-        };
-        self.models.set_right_pane(next);
+            self.models.set_right_pane(pane);
+        }
         self.refresh(cx);
     }
 
@@ -4391,6 +4858,11 @@ impl AppWindow {
     }
 
     pub(crate) fn open_user_profile_card(&mut self, user_id: UserId, cx: &mut Context<Self>) {
+        if self.models.navigation.right_pane == RightPaneMode::Profile(user_id.clone()) {
+            self.close_right_pane_state(cx);
+            self.refresh(cx);
+            return;
+        }
         if !self.models.settings.show_right_pane {
             self.models.push_toast(
                 "Right pane is disabled in preferences",
@@ -4410,7 +4882,6 @@ impl AppWindow {
             user_id: user_id.clone(),
             conversation_id: self.app_store.snapshot().timeline.conversation_id.clone(),
         });
-        self.maybe_load_profile_social_tab(&user_id);
         self.refresh(cx);
     }
 
@@ -4420,28 +4891,7 @@ impl AppWindow {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.models.settings.show_right_pane {
-            self.models.push_toast(
-                "Right pane is disabled in preferences",
-                Some(ToastAction::OpenPreferences),
-            );
-            self.refresh(cx);
-            return;
-        }
-
-        self.models.hide_profile_card();
-        self.models.profile_panel.user_id = Some(user_id.clone());
-        self.models
-            .set_right_pane(RightPaneMode::Profile(user_id.clone()));
-        self.dispatch_ui_action(UiAction::ShowUserProfilePanel {
-            user_id: user_id.clone(),
-        });
-        self.dispatch_ui_action(UiAction::RefreshProfilePresence {
-            user_id: user_id.clone(),
-            conversation_id: self.app_store.snapshot().timeline.conversation_id.clone(),
-        });
-        self.maybe_load_profile_social_tab(&user_id);
-        self.refresh(cx);
+        self.open_user_profile_card(user_id, cx);
     }
 
     pub(crate) fn profile_open_message(&mut self, user_id: UserId, cx: &mut Context<Self>) {
@@ -4454,10 +4904,6 @@ impl AppWindow {
         list_type: SocialGraphListType,
         cx: &mut Context<Self>,
     ) {
-        self.models.profile_panel.active_social_tab = match list_type {
-            SocialGraphListType::Followers => SocialTab::Followers,
-            SocialGraphListType::Following => SocialTab::Following,
-        };
         let Some(user_id) = self.models.profile_panel.user_id.clone() else {
             return;
         };
@@ -4475,32 +4921,6 @@ impl AppWindow {
         self.refresh(cx);
     }
 
-    fn maybe_load_profile_social_tab(&mut self, user_id: &UserId) {
-        let Some(profile) = self.models.profile_panel.profile.as_ref() else {
-            return;
-        };
-        let active_tab = self.models.profile_panel.active_social_tab.as_list_type();
-        let list_loaded = profile
-            .sections
-            .iter()
-            .find_map(|section| match section {
-                crate::domain::profile::ProfileSection::SocialGraph(graph) => {
-                    Some(match active_tab {
-                        SocialGraphListType::Followers => graph.followers.is_some(),
-                        SocialGraphListType::Following => graph.following.is_some(),
-                    })
-                }
-                _ => None,
-            })
-            .unwrap_or(false);
-        if !list_loaded {
-            self.dispatch_ui_action(UiAction::LoadSocialGraphList {
-                user_id: user_id.clone(),
-                list_type: active_tab,
-            });
-        }
-    }
-
     pub(crate) fn open_thread(
         &mut self,
         root_id: MessageId,
@@ -4514,6 +4934,14 @@ impl AppWindow {
                 Some(ToastAction::OpenPreferences),
             );
             self.refresh(cx);
+            return;
+        }
+
+        if self.models.navigation.right_pane == RightPaneMode::Thread
+            && self.models.thread_pane.root_message_id.as_ref() == Some(&root_id)
+        {
+            self.close_right_pane(window, cx);
+            self.restore_chat_focus(window, cx);
             return;
         }
 
@@ -4565,13 +4993,25 @@ impl AppWindow {
     }
 
     pub(crate) fn close_right_pane(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.close_right_pane_state(cx);
+        self.refresh(cx);
+    }
+
+    fn close_right_pane_state(&mut self, cx: &mut Context<Self>) {
         self.capture_live_inputs(cx);
+        if self.models.navigation.right_pane != RightPaneMode::Hidden {
+            self.closing_pane = Some(ClosingPane {
+                navigation: self.models.navigation.clone(),
+                thread: self.models.thread_pane.clone(),
+                profile: self.models.profile_panel.clone(),
+                conversation: self.models.conversation.clone(),
+            });
+        }
         self.dispatch_ui_action(UiAction::CloseRightPane);
         self.models.set_right_pane(RightPaneMode::Hidden);
         self.models.profile_panel.user_id = None;
         self.models.profile_panel.profile = None;
         self.reset_thread_scroll_state();
-        self.refresh(cx);
     }
 
     fn timeline_interactions_blocked_by_overlay(&self) -> bool {
@@ -5329,6 +5769,26 @@ impl AppWindow {
         self.refresh(cx);
     }
 
+    fn reveal_recent_sidebar_route(&self, route: &Route) {
+        if self.models.sidebar.mode == SidebarMode::Recent
+            && let Some(index) = self
+                .models
+                .sidebar
+                .visible_recent_rows()
+                .position(|recent| &recent.row.route == route)
+        {
+            self.sidebar_recent_scroll
+                .scroll_to_item(index, gpui::ScrollStrategy::Center);
+        }
+    }
+
+    fn set_sidebar_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>) {
+        self.models.set_sidebar_mode(mode);
+        self.reveal_recent_sidebar_route(&self.models.navigation.current);
+        self.persist_settings();
+        self.refresh(cx);
+    }
+
     pub(crate) fn toggle_sidebar_section_click(
         &mut self,
         section_id: SidebarSectionId,
@@ -5421,6 +5881,7 @@ impl AppWindow {
             starting_width: self.models.sidebar.width_px,
         });
         self.refresh(cx);
+        cx.stop_propagation();
     }
 
     fn update_thread_resize_drag(
@@ -5457,20 +5918,61 @@ impl AppWindow {
         self.refresh(cx);
     }
 
-    fn update_sidebar_resize_drag_on_drag(
+    fn update_sidebar_resize(
         &mut self,
-        event: &gpui::DragMoveEvent<SidebarResizeDrag>,
+        event: &MouseMoveEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(drag) = self.sidebar_resize_drag.as_ref() else {
             return;
         };
-
-        // Sidebar handle sits on the right edge of the sidebar: drag right = wider.
-        let next_width = drag.starting_width + (f32::from(event.event.position.x) - drag.anchor_x);
+        // Recover if the button was released outside the window.
+        if !event.dragging() {
+            self.sidebar_resize_drag = None;
+            return;
+        }
+        let next_width = drag.starting_width + (f32::from(event.position.x) - drag.anchor_x);
         self.models.set_sidebar_width(next_width);
         self.refresh(cx);
+        cx.stop_propagation();
+    }
+
+    fn finish_sidebar_resize(
+        &mut self,
+        event: &MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.button == MouseButton::Left && self.sidebar_resize_drag.take().is_some() {
+            self.refresh(cx);
+            cx.stop_propagation();
+        }
+    }
+
+    // Window listeners run in capture before chat hover/selection handlers can
+    // consume the first move. Resizing does not need drag-and-drop's threshold.
+    fn sidebar_resize_capture(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on_move = cx.listener(Self::update_sidebar_resize);
+        let on_up = cx.listener(Self::finish_sidebar_resize);
+        canvas(
+            |_, _, _| (),
+            move |_, _, window, _| {
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    if phase == DispatchPhase::Capture {
+                        on_move(event, window, cx);
+                    }
+                });
+                window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                    if phase == DispatchPhase::Capture {
+                        on_up(event, window, cx);
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_full()
+        .into_any_element()
     }
 
     fn finish_thread_resize_drag(
@@ -5481,9 +5983,6 @@ impl AppWindow {
     ) {
         let mut changed = false;
         if self.thread_resize_drag.take().is_some() {
-            changed = true;
-        }
-        if self.sidebar_resize_drag.take().is_some() {
             changed = true;
         }
         if changed {
@@ -5779,41 +6278,21 @@ impl AppWindow {
 
     pub(crate) fn composer_insert_mention(&mut self, cx: &mut Context<Self>) {
         self.composer_input
-            .update(cx, |input, cx| input.insert_text("@Alice ", cx));
-        self.models
-            .set_composer_autocomplete(Some(AutocompleteState {
-                trigger: '@',
-                query: "alice".to_string(),
-                trigger_offset: 0,
-                selected_index: 0,
-                candidates: Vec::new(),
-            }));
+            .update(cx, |input, cx| input.insert_text("@", cx));
+        self.sync_drafts_from_inputs(cx);
         self.refresh(cx);
     }
 
     pub(crate) fn thread_insert_mention(&mut self, cx: &mut Context<Self>) {
         self.thread_input
-            .update(cx, |input, cx| input.insert_text("@Sam ", cx));
-        self.models.set_thread_autocomplete(Some(AutocompleteState {
-            trigger: '@',
-            query: "sam".to_string(),
-            trigger_offset: 0,
-            selected_index: 0,
-            candidates: Vec::new(),
-        }));
+            .update(cx, |input, cx| input.insert_text("@", cx));
+        self.sync_drafts_from_inputs(cx);
         self.refresh(cx);
     }
 
     pub(crate) fn composer_insert_formatting(&mut self, cx: &mut Context<Self>) {
         self.composer_input
             .update(cx, |input, cx| input.insert_text("*bold* ", cx));
-        self.refresh(cx);
-    }
-
-    pub(crate) fn composer_insert_link(&mut self, cx: &mut Context<Self>) {
-        self.composer_input.update(cx, |input, cx| {
-            input.insert_text("https://docs.acme.dev/gpui ", cx)
-        });
         self.refresh(cx);
     }
 
@@ -6055,6 +6534,7 @@ impl AppWindow {
             self.models.timeline.hovered_message_window_left = None;
             self.models.timeline.hovered_message_window_top = None;
             self.models.timeline.hovered_message_window_width = None;
+            self.models.timeline.hovered_message_viewport_size = None;
             self.models.timeline.hover_toolbar_settled = false;
             needs_refresh = true;
         }
@@ -6096,6 +6576,7 @@ impl AppWindow {
             self.models.timeline.hovered_message_window_left = None;
             self.models.timeline.hovered_message_window_top = None;
             self.models.timeline.hovered_message_window_width = None;
+            self.models.timeline.hovered_message_viewport_size = None;
             needs_refresh = true;
             // Require a new hover-settle delay when switching rows.
             self.models.timeline.hover_toolbar_settled = false;
@@ -6134,6 +6615,7 @@ impl AppWindow {
         self.models.timeline.hovered_message_window_left = None;
         self.models.timeline.hovered_message_window_top = None;
         self.models.timeline.hovered_message_window_width = None;
+        self.models.timeline.hovered_message_viewport_size = None;
         self.models.timeline.hover_toolbar_settled = true;
         self.refresh(cx);
     }
@@ -6164,6 +6646,7 @@ impl AppWindow {
         window_left: f32,
         window_top: f32,
         window_width: f32,
+        viewport_size: gpui::Size<f32>,
         cx: &mut Context<Self>,
     ) {
         if self.models.timeline.hovered_message_id.as_ref() != Some(&message_id)
@@ -6171,11 +6654,13 @@ impl AppWindow {
         {
             return;
         }
-        let needs_refresh = self
-            .models
-            .timeline
-            .hovered_message_window_left
-            .is_none_or(|x| (x - window_left).abs() > 0.5)
+        let needs_refresh = self.models.timeline.hovered_message_viewport_size
+            != Some(viewport_size)
+            || self
+                .models
+                .timeline
+                .hovered_message_window_left
+                .is_none_or(|x| (x - window_left).abs() > 0.5)
             || self
                 .models
                 .timeline
@@ -6192,6 +6677,7 @@ impl AppWindow {
         self.models.timeline.hovered_message_window_left = Some(window_left);
         self.models.timeline.hovered_message_window_top = Some(window_top);
         self.models.timeline.hovered_message_window_width = Some(window_width);
+        self.models.timeline.hovered_message_viewport_size = Some(viewport_size);
         cx.notify();
     }
 
@@ -6259,6 +6745,7 @@ impl AppWindow {
             self.models.timeline.hovered_message_window_left = None;
             self.models.timeline.hovered_message_window_top = None;
             self.models.timeline.hovered_message_window_width = None;
+            self.models.timeline.hovered_message_viewport_size = None;
             self.models.timeline.hover_toolbar_settled = false;
             self.hover_settle_seq = self.hover_settle_seq.wrapping_add(1);
             needs_refresh = true;
@@ -6551,18 +7038,19 @@ impl AppWindow {
     }
 
     pub(crate) fn open_files_pane(&mut self, cx: &mut Context<Self>) {
-        self.models.set_right_pane(RightPaneMode::Files);
-        self.refresh(cx);
+        self.toggle_simple_pane(RightPaneMode::Files, cx);
     }
 
     pub(crate) fn open_search_pane(&mut self, cx: &mut Context<Self>) {
-        self.models.set_right_pane(RightPaneMode::Search);
-        self.refresh(cx);
+        self.toggle_simple_pane(RightPaneMode::Search, cx);
     }
 
     pub(crate) fn start_or_open_call(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let route = self.models.start_or_open_call();
-        self.navigate_to(route, window, cx);
+        if let Some(route) = self.models.start_or_open_call() {
+            self.navigate_to(route, window, cx);
+        } else {
+            self.refresh(cx);
+        }
     }
 
     pub(crate) fn leave_call(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -6734,6 +7222,12 @@ impl AppWindow {
         }
         self.splash_boot_ready = true;
         let elapsed = self.splash_shown_at.elapsed();
+        if self.perf_harness.config().autostart {
+            tracing::warn!(
+                ready_ms = elapsed.as_millis() as u64,
+                "bench.startup.data_ready"
+            );
+        }
         if elapsed >= Self::SPLASH_MIN_DURATION {
             self.splash_open = false;
         } else {
@@ -7754,6 +8248,9 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         self.models.move_sidebar_highlight(-1);
+        if let Some(route) = self.models.sidebar.highlighted_route.as_ref() {
+            self.reveal_recent_sidebar_route(route);
+        }
         self.refresh(cx);
     }
 
@@ -7764,6 +8261,9 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         self.models.move_sidebar_highlight(1);
+        if let Some(route) = self.models.sidebar.highlighted_route.as_ref() {
+            self.reveal_recent_sidebar_route(route);
+        }
         self.refresh(cx);
     }
 
@@ -7874,18 +8374,27 @@ impl AppWindow {
         &mut self,
         _: &commands::CloseWindow,
         window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
-        window.remove_window();
+        Self::close_window_after_preferences(window, cx, self.window_preferences_writer.flush());
     }
 
     fn quit_app_action(
         &mut self,
         _: &commands::QuitApp,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        cx.quit();
+        let flush = self.window_preferences_writer.flush();
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                async move {
+                    let _ = flush.await;
+                    let _ = cx.update(|_, cx| cx.quit());
+                }
+            })
+            .detach();
     }
 
     fn toggle_benchmark_capture_action(
@@ -7962,6 +8471,8 @@ impl AppWindow {
 impl Render for AppWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let render_t0 = Instant::now();
+        self.sync_pane_window_size(window, cx);
+        self.remember_window_preferences(window);
         if self.pending_file_upload_caption_focus {
             self.pending_file_upload_caption_focus = false;
             window.focus(&self.file_upload_caption_input.focus_handle(cx));
@@ -7977,21 +8488,53 @@ impl Render for AppWindow {
         }
 
         let element = with_theme(resolved_theme, || {
-            let shell_layout = shell_layout(
+            let mut shell_layout = shell_layout(
                 &self.models.navigation.right_pane,
                 self.models.thread_pane.width_px,
                 self.models.sidebar.width_px,
                 f32::from(window.viewport_size().width),
             );
+            if self.pane_window_sizing.expanding() {
+                shell_layout.show_right_pane = false;
+                shell_layout.overlay_right_pane = false;
+            }
+            let closing = self.pane_window_sizing.closing_width().is_some()
+                && self.models.navigation.right_pane == RightPaneMode::Hidden;
+            if !closing {
+                self.closing_pane = None;
+            }
+            if closing && self.closing_pane.is_some() {
+                shell_layout.show_right_pane = true;
+                shell_layout.overlay_right_pane = false;
+            }
+            let closing_main_width = self.pane_window_sizing.closing_width().map(|width| {
+                (width - self.models.sidebar.width_px - RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX
+                    - SHELL_HORIZONTAL_PADDING_PX - SHELL_GAP_PX)
+                    .max(MAIN_PANEL_MIN_WIDTH_PX)
+            });
             let capabilities = current_backend_capabilities(&self.app_store.snapshot());
 
             let t_right = Instant::now();
             let right_pane = shell_layout.show_right_pane.then(|| {
-                RightPaneHost.render(
-                    &self.models.navigation,
-                    &self.models.thread_pane,
-                    &self.models.conversation,
-                    &self.models.profile_panel,
+                let (navigation, thread, conversation, profile) = match &self.closing_pane {
+                    Some(pane) if closing => (
+                        &pane.navigation,
+                        &pane.thread,
+                        &pane.conversation,
+                        &pane.profile,
+                    ),
+                    _ => (
+                        &self.models.navigation,
+                        &self.models.thread_pane,
+                        &self.models.conversation,
+                        &self.models.profile_panel,
+                    ),
+                };
+                let pane = RightPaneHost.render(
+                    navigation,
+                    thread,
+                    conversation,
+                    profile,
                     &self.models.search,
                     &self.models.timeline,
                     &self.video_render_cache,
@@ -8004,7 +8547,20 @@ impl Render for AppWindow {
                     self.thread_unseen_count,
                     &capabilities,
                     cx,
-                )
+                );
+                div()
+                    .h_full()
+                    .w(px(self.models.thread_pane.width_px))
+                    .flex_shrink_0()
+                    .when(shell_layout.overlay_right_pane, |pane| {
+                        pane.absolute()
+                            .right_0()
+                            .top_0()
+                            .bottom_0()
+                            .block_mouse_except_scroll()
+                    })
+                    .child(pane)
+                    .into_any_element()
             });
             let right_elapsed = t_right.elapsed();
             self.perf_harness
@@ -8019,6 +8575,7 @@ impl Render for AppWindow {
 
             div()
                 .size_full()
+                .relative()
                 .flex()
                 .bg(app_backdrop())
                 .overflow_hidden()
@@ -8064,9 +8621,6 @@ impl Render for AppWindow {
                 .on_drag_move::<RightPaneResizeDrag>(
                     cx.listener(Self::update_thread_resize_drag_on_drag),
                 )
-                .on_drag_move::<SidebarResizeDrag>(
-                    cx.listener(Self::update_sidebar_resize_drag_on_drag),
-                )
                 .on_mouse_move(cx.listener(Self::update_thread_resize_drag))
                 .on_mouse_move(cx.listener(|this, _, _, cx| {
                     this.clear_hovered_message(cx);
@@ -8108,10 +8662,11 @@ impl Render for AppWindow {
                                 &self.models.app.connectivity,
                                 &self.models.app.current_user_display_name,
                                 self.models.app.current_user_avatar_asset.as_deref(),
-                                &self.sidebar_dm_avatar_assets,
+                                &self.sidebar_conversation_avatars,
                                 &self.models.navigation.current,
                                 None,
                                 &self.sidebar_scroll_handle,
+                                &self.sidebar_recent_scroll,
                                 cx,
                             )
                         },
@@ -8148,9 +8703,7 @@ impl Render for AppWindow {
                         })
                         .cursor(CursorStyle::ResizeColumn)
                         .id("sidebar-resize-handle")
-                        .on_drag(SidebarResizeDrag, |_, _, _, cx| {
-                            cx.new(|_| SidebarResizeDragPreview)
-                        })
+                        .flex_shrink_0()
                         .on_mouse_down(MouseButton::Left, cx.listener(Self::begin_sidebar_resize))
                         .flex()
                         .items_center()
@@ -8170,6 +8723,7 @@ impl Render for AppWindow {
                     let t = Instant::now();
                     let el = MainPanelHost.render(
                         &self.models,
+                        closing_main_width,
                         &self.video_render_cache,
                         &self.search_input,
                         &self.find_in_chat_input,
@@ -8195,6 +8749,7 @@ impl Render for AppWindow {
                 })
                 .when_some(right_pane, |div, pane| div.child(pane))
                 .when_some(call_dock, |div, dock| div.child(dock))
+                .child(self.sidebar_resize_capture(cx))
                 .child({
                     let overlay_t0 = Instant::now();
                     let quick_switcher_indexing_status = self.quick_switcher_indexing_status_text();
@@ -8231,6 +8786,7 @@ impl Render for AppWindow {
                         custom_emoji_index,
                         supports_custom_emoji,
                         quick_switcher_indexing_status.as_deref(),
+                        window.viewport_size(),
                         cx,
                     );
                     if self.models.overlay.quick_switcher_open {
@@ -8388,8 +8944,11 @@ fn shell_layout(
     sidebar_width_px: f32,
     viewport_width_px: f32,
 ) -> ShellLayout {
-    let base_shell_width =
-        SHELL_HORIZONTAL_PADDING_PX + sidebar_width_px + MAIN_PANEL_MIN_WIDTH_PX + SHELL_GAP_PX;
+    let base_shell_width = SHELL_HORIZONTAL_PADDING_PX
+        + sidebar_width_px
+        + RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX
+        + MAIN_PANEL_MIN_WIDTH_PX
+        + SHELL_GAP_PX;
 
     let right_pane_width = match right_pane_mode {
         RightPaneMode::Hidden => 0.0,
@@ -8404,16 +8963,11 @@ fn shell_layout(
         base_shell_width
     };
 
-    let show_right_pane =
-        !matches!(right_pane_mode, RightPaneMode::Hidden) && viewport_width_px >= full_shell_width;
-
+    let show_right_pane = !matches!(right_pane_mode, RightPaneMode::Hidden);
     ShellLayout {
         show_right_pane,
-        min_shell_width: if show_right_pane {
-            full_shell_width
-        } else {
-            base_shell_width
-        },
+        overlay_right_pane: show_right_pane && viewport_width_px < full_shell_width,
+        min_shell_width: full_shell_width,
     }
 }
 
@@ -8544,7 +9098,9 @@ fn build_channel_details(
         can_edit_topic: can_manage_members,
         can_manage_members,
         can_archive: can_manage_members,
-        can_leave: matches!(summary.kind, ConversationKind::Channel),
+        can_leave: summary.can_leave_channel(),
+        is_leaving: false,
+        leave_error: None,
         can_post,
         created_at: None,
         description: (!topic.is_empty()).then_some(topic),
@@ -8707,6 +9263,7 @@ fn mix_sig_conversation_summary(
         },
     );
     mix_sig_str(sig, &summary.topic);
+    mix_sig(sig, summary.last_activity_ms as u64);
     mix_sig(sig, summary.unread_count as u64);
     mix_sig(sig, summary.mention_count as u64);
     mix_sig_bool(sig, summary.muted);
@@ -8715,6 +9272,14 @@ fn mix_sig_conversation_summary(
             mix_sig(sig, 1);
             mix_sig_str(sig, &group.id);
             mix_sig_str(sig, &group.display_name);
+            mix_sig(
+                sig,
+                match group.team_type {
+                    crate::domain::conversation::ConversationTeamType::Unknown => 0,
+                    crate::domain::conversation::ConversationTeamType::Simple => 1,
+                    crate::domain::conversation::ConversationTeamType::Complex => 2,
+                },
+            );
         }
         None => mix_sig(sig, 0),
     }
@@ -8779,45 +9344,96 @@ fn first_dm_username(title: &str) -> Option<&str> {
         .find(|value| !value.is_empty())
 }
 
-fn dm_avatar_inputs_signature(
+fn dm_participant_avatars(
+    summary: &crate::domain::conversation::ConversationSummary,
+    profiles: &HashMap<UserId, crate::state::state::UserProfileState>,
+) -> Vec<AvatarParticipant> {
+    let mut usernames = summary
+        .title
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    usernames.sort();
+    usernames.dedup();
+    usernames
+        .into_iter()
+        .take(2)
+        .map(|username| {
+            let profile = profiles.get(&UserId::new(username.clone()));
+            AvatarParticipant {
+                display_name: profile
+                    .map(|profile| profile.display_name.clone())
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or(username),
+                asset: profile.and_then(|profile| profile.avatar_asset.clone()),
+            }
+        })
+        .collect()
+}
+
+fn team_avatar_asset(
+    summary: &ConversationSummary,
+    profiles: &HashMap<UserId, crate::state::state::UserProfileState>,
+) -> Option<String> {
+    let team = summary.group.as_ref()?.id.trim();
+    if team.is_empty() {
+        return None;
+    }
+    profiles
+        .get(&UserId::new(format!("team:{team}")))?
+        .avatar_asset
+        .clone()
+}
+
+fn simple_team_avatar_asset(
+    summary: &ConversationSummary,
+    profiles: &HashMap<UserId, crate::state::state::UserProfileState>,
+) -> Option<String> {
+    summary
+        .is_simple_team()
+        .then(|| team_avatar_asset(summary, profiles))
+        .flatten()
+}
+
+fn sidebar_avatar_inputs_signature(
     sections: &[crate::models::sidebar_model::SidebarSection],
     direct_messages: &[crate::domain::conversation::ConversationSummary],
+    channels: &[crate::domain::conversation::ConversationSummary],
     user_profiles: &HashMap<UserId, crate::state::state::UserProfileState>,
 ) -> u64 {
     let mut sig = SIG_SEED;
     for row in sections.iter().flat_map(|section| section.rows.iter()) {
-        if let Route::DirectMessage { dm_id, .. } = &row.route {
-            mix_sig_str(&mut sig, &dm_id.0);
-            mix_sig_str(&mut sig, &row.label);
-        }
+        mix_sig_str(&mut sig, &row.route.label());
+        mix_sig_str(&mut sig, &row.label);
     }
 
-    for summary in direct_messages {
-        if !matches!(
-            summary.kind,
-            crate::domain::conversation::ConversationKind::DirectMessage
-        ) {
-            continue;
+    for summary in channels {
+        mix_sig_str(&mut sig, &summary.id.0);
+        mix_sig_bool(&mut sig, summary.is_simple_team());
+        if let Some(group) = &summary.group {
+            mix_sig_str(&mut sig, &group.id);
         }
+        if let Some(asset) = team_avatar_asset(summary, user_profiles) {
+            mix_sig_str(&mut sig, &asset);
+        }
+    }
+    for summary in direct_messages {
         mix_sig_str(&mut sig, &summary.id.0);
         mix_sig_str(&mut sig, &summary.title);
-        if let Some(username) = first_dm_username(&summary.title) {
-            mix_sig_str(&mut sig, username);
+        for username in summary
+            .title
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
             let user_id = UserId::new(username.to_ascii_lowercase());
-            if let Some(profile) = user_profiles.get(&user_id).or_else(|| {
-                if user_id.0 == username {
-                    None
-                } else {
-                    user_profiles.get(&UserId::new(username.to_string()))
-                }
-            }) {
+            if let Some(profile) = user_profiles.get(&user_id) {
                 mix_sig_str(&mut sig, &profile.display_name);
                 if let Some(asset) = profile.avatar_asset.as_deref() {
                     mix_sig_str(&mut sig, asset);
-                } else {
-                    mix_sig(&mut sig, 0);
                 }
-                mix_sig(&mut sig, profile.updated_ms as u64);
             }
         }
     }
@@ -9785,6 +10401,18 @@ fn conversation_id_from_navigated_route(route: &Route) -> Option<ConversationId>
     }
 }
 
+fn message_starts_unread_region(
+    message: &MessageRecord,
+    read_upto: &MessageId,
+    current_user: Option<&UserId>,
+) -> bool {
+    message.send_state == MessageSendState::Sent
+        && !current_user.is_some_and(|user| user.0.eq_ignore_ascii_case(&message.author_id.0))
+        && !is_non_text_placeholder_message(message)
+        && !matches!(message.event, Some(ChatEvent::MessageDeleted { .. }))
+        && message_id_is_after(&message.id, read_upto)
+}
+
 fn message_id_is_after(candidate: &MessageId, baseline: &MessageId) -> bool {
     match (
         candidate.0.parse::<u64>().ok(),
@@ -9871,6 +10499,134 @@ mod tests {
     };
     use crate::models::overlay_model::OverlayModel;
 
+    #[test]
+    fn group_dm_avatar_projection_is_stable_and_tracks_every_peers_image() {
+        use crate::domain::conversation::{ConversationKind, ConversationSummary};
+        use crate::state::state::UserProfileState;
+        let summary = ConversationSummary {
+            id: ConversationId::new("group"),
+            title: "bob, alice, bob".into(),
+            kind: ConversationKind::GroupDirectMessage,
+            topic: String::new(),
+            group: None,
+            unread_count: 0,
+            mention_count: 0,
+            muted: false,
+            last_activity_ms: 0,
+        };
+        let mut profiles = std::collections::HashMap::from([
+            (
+                UserId::new("alice"),
+                UserProfileState {
+                    display_name: "Alice".into(),
+                    avatar_asset: Some("/cache/alice.png".into()),
+                    updated_ms: 1,
+                },
+            ),
+            (
+                UserId::new("bob"),
+                UserProfileState {
+                    display_name: "Robert".into(),
+                    avatar_asset: Some("/cache/bob.png".into()),
+                    updated_ms: 1,
+                },
+            ),
+        ]);
+        let avatars = super::dm_participant_avatars(&summary, &profiles);
+        assert_eq!(avatars.len(), 2);
+        assert_eq!(avatars[0].display_name, "Alice");
+        assert_eq!(avatars[1].asset.as_deref(), Some("/cache/bob.png"));
+        let before =
+            super::sidebar_avatar_inputs_signature(&[], &[summary.clone()], &[], &profiles);
+        profiles.get_mut(&UserId::new("bob")).unwrap().avatar_asset =
+            Some("/cache/bob-new.png".into());
+        assert_ne!(
+            before,
+            super::sidebar_avatar_inputs_signature(&[], &[summary], &[], &profiles)
+        );
+    }
+
+    #[test]
+    fn simple_team_sidebar_icons_share_header_assets_and_invalidate_when_loaded() {
+        use crate::domain::conversation::{
+            ConversationGroup, ConversationKind, ConversationSummary, ConversationTeamType,
+        };
+        let mut summary = ConversationSummary {
+            id: ConversationId::new("annar-general"),
+            title: "general".into(),
+            kind: ConversationKind::Channel,
+            topic: String::new(),
+            group: Some(ConversationGroup {
+                id: "annar".into(),
+                display_name: "annar".into(),
+                team_type: ConversationTeamType::Simple,
+            }),
+            unread_count: 0,
+            mention_count: 0,
+            muted: false,
+            last_activity_ms: 0,
+        };
+        let mut profiles = std::collections::HashMap::new();
+        let missing =
+            super::sidebar_avatar_inputs_signature(&[], &[], &[summary.clone()], &profiles);
+        assert_eq!(super::simple_team_avatar_asset(&summary, &profiles), None);
+        profiles.insert(
+            UserId::new("team:annar"),
+            crate::state::state::UserProfileState {
+                display_name: "annar".into(),
+                avatar_asset: Some("/cache/annar.png".into()),
+                updated_ms: 1,
+            },
+        );
+        assert_eq!(
+            super::simple_team_avatar_asset(&summary, &profiles),
+            super::team_avatar_asset(&summary, &profiles)
+        );
+        assert_eq!(
+            super::simple_team_avatar_asset(&summary, &profiles).as_deref(),
+            Some("/cache/annar.png")
+        );
+        assert_ne!(
+            missing,
+            super::sidebar_avatar_inputs_signature(&[], &[], &[summary.clone()], &profiles),
+            "an asynchronously loaded team icon must invalidate the sidebar cache"
+        );
+        summary.group.as_mut().unwrap().team_type = ConversationTeamType::Complex;
+        assert_eq!(
+            super::simple_team_avatar_asset(&summary, &profiles),
+            None,
+            "ordinary channel rows keep their hash icon"
+        );
+        let before =
+            super::sidebar_avatar_inputs_signature(&[], &[], &[summary.clone()], &profiles);
+        profiles
+            .get_mut(&UserId::new("team:annar"))
+            .unwrap()
+            .avatar_asset = Some("/cache/annar-updated.png".into());
+        assert_ne!(
+            before,
+            super::sidebar_avatar_inputs_signature(&[], &[], &[summary], &profiles),
+            "complex team header icons must also refresh when their image changes"
+        );
+    }
+
+    #[test]
+    fn requested_panes_stay_visible_while_waiting_for_expansion_or_when_space_is_limited() {
+        use crate::models::navigation_model::RightPaneMode;
+        for mode in [
+            RightPaneMode::Thread,
+            RightPaneMode::Profile(UserId::new("alice")),
+        ] {
+            let small = super::shell_layout(&mode, 360., 200., 780.);
+            assert!(small.show_right_pane && small.overlay_right_pane);
+            assert_eq!(small.min_shell_width, 1124.);
+            let wide = super::shell_layout(&mode, 360., 200., 1400.);
+            assert!(wide.show_right_pane && !wide.overlay_right_pane);
+        }
+        let closed = super::shell_layout(&RightPaneMode::Hidden, 360., 200., 780.);
+        assert!(!closed.show_right_pane && !closed.overlay_right_pane);
+    }
+
     fn test_message(id: &str, event: Option<ChatEvent>) -> MessageRecord {
         MessageRecord {
             id: MessageId::new(id),
@@ -9890,6 +10646,49 @@ mod tests {
             send_state: MessageSendState::Sent,
             edited: None,
         }
+    }
+
+    #[test]
+    fn own_messages_never_start_an_unread_region_but_incoming_messages_still_do() {
+        let current = UserId::new("ALICE");
+        let marker = MessageId::new("42");
+        let mut message = test_message("local-pending-send", None);
+        for state in [
+            MessageSendState::Pending,
+            MessageSendState::Failed,
+            MessageSendState::Sent,
+        ] {
+            message.send_state = state;
+            assert!(!super::message_starts_unread_region(
+                &message,
+                &marker,
+                Some(&current)
+            ));
+        }
+        message.id = MessageId::new("43");
+        assert!(
+            !super::message_starts_unread_region(&message, &marker, Some(&current)),
+            "the confirmed self-message must not create the divider either"
+        );
+        message.author_id = UserId::new("bob");
+        assert!(
+            super::message_starts_unread_region(&message, &marker, Some(&current)),
+            "an incoming message after an outgoing one still starts the unread region"
+        );
+        message.id = marker.clone();
+        assert!(!super::message_starts_unread_region(
+            &message,
+            &marker,
+            Some(&current)
+        ));
+        message.id = MessageId::new("44");
+        message.event = Some(ChatEvent::MessageDeleted {
+            target_message_id: None,
+        });
+        assert!(
+            !super::message_starts_unread_region(&message, &marker, Some(&current)),
+            "hidden deleted messages must not leave an orphan divider"
+        );
     }
 
     fn test_overlay() -> OverlayModel {

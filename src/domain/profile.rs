@@ -1,9 +1,16 @@
 use crate::domain::{affinity::Affinity, ids::UserId, presence::Presence};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum SocialGraphListType {
+    #[default]
     Followers,
     Following,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SocialListLoadState {
+    Loading,
+    Failed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

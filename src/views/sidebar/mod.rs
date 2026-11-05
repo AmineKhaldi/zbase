@@ -1,22 +1,27 @@
+mod recent;
+mod team_group;
+
+use team_group::{TeamGroup, TeamGroupMode};
+
 use crate::{
     domain::{ids::SidebarSectionId, route::Route},
     models::{
         app_model::Connectivity,
-        sidebar_model::{SidebarModel, SidebarRow, SidebarSection},
+        settings_model::SidebarMode,
+        sidebar_model::{SidebarAvatar, SidebarModel, SidebarRow, SidebarSection},
     },
     views::{
-        accent,
-        avatar::{Avatar, default_avatar_background, demo_avatar_asset},
-        chevron_down_icon, chevron_right_icon, glass_surface_dark, hash_icon, is_dark_theme,
-        mention, plus_icon, search_icon, sidebar_bg, subtle_surface, success, success_soft,
-        text_primary, text_secondary, tint,
+        accent, avatar::Avatar, chevron_down_icon, chevron_right_icon, glass_surface_dark,
+        hash_icon, history_icon, is_dark_theme, panel_bg, plus_icon, search_icon,
+        shell_border_strong, sidebar_bg, subtle_surface, success, success_soft, text_primary,
+        text_secondary, tint, unread_indicator,
     },
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, AppContext, ClickEvent, Context, DragMoveEvent, FontWeight, InteractiveElement,
-    IntoElement, MouseMoveEvent, ParentElement, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px, rgb,
+    IntoElement, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
+    Styled, UniformListScrollHandle, Window, div, px, rgb,
 };
 use std::collections::HashMap;
 
@@ -41,10 +46,71 @@ impl Render for DragPreview {
     }
 }
 
+/// GPUI supplies the hover delay and removes this tooltip on pointer exit.
+struct SidebarTooltip {
+    text: String,
+    theme: crate::app::theme::ThemeVariant,
+    single_line: bool,
+}
+
+impl SidebarTooltip {
+    fn builder(text: String) -> impl Fn(&mut Window, &mut gpui::App) -> gpui::AnyView + 'static {
+        Self::build(text, false)
+    }
+
+    fn single_line(
+        text: String,
+    ) -> impl Fn(&mut Window, &mut gpui::App) -> gpui::AnyView + 'static {
+        Self::build(text, true)
+    }
+
+    fn build(
+        text: String,
+        single_line: bool,
+    ) -> impl Fn(&mut Window, &mut gpui::App) -> gpui::AnyView + 'static {
+        let theme = crate::views::current_theme();
+        move |_, cx| {
+            cx.new(|_| Self {
+                text: text.clone(),
+                theme,
+                single_line,
+            })
+            .into()
+        }
+    }
+}
+
+impl Render for SidebarTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        crate::views::with_theme(self.theme, || {
+            div()
+                .max_w(px(360.))
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .bg(rgb(panel_bg()))
+                .border_1()
+                .border_color(shell_border_strong())
+                .text_xs()
+                .text_color(rgb(text_primary()))
+                .when(self.single_line, |tooltip| tooltip.whitespace_nowrap())
+                .child(self.text.clone())
+        })
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ToolbarAction {
+    ToggleRecent,
+    Search,
+    NewChat,
+}
+
 #[derive(Default)]
 pub struct Sidebar;
 
 pub trait SidebarHost: Sized + 'static {
+    fn sidebar_set_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>);
     fn sidebar_toggle_quick_switcher(&mut self, cx: &mut Context<Self>);
     fn sidebar_open_new_chat(&mut self, window: &mut Window, cx: &mut Context<Self>);
     fn sidebar_open_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>);
@@ -75,10 +141,11 @@ impl Sidebar {
         connectivity: &Connectivity,
         current_user_display_name: &str,
         current_user_avatar_asset: Option<&str>,
-        dm_avatar_assets: &HashMap<String, String>,
+        conversation_avatars: &HashMap<String, SidebarAvatar>,
         current_route: &Route,
         hovered_row: Option<&str>,
         scroll_handle: &ScrollHandle,
+        recent_scroll: &UniformListScrollHandle,
         cx: &mut Context<H>,
     ) -> AnyElement {
         let connectivity_tint = match connectivity {
@@ -88,6 +155,7 @@ impl Sidebar {
         };
 
         let drag_scroll_handle = scroll_handle.clone();
+        let mut previous_section_is_team = false;
 
         div()
             .w(px(sidebar.width_px))
@@ -103,30 +171,73 @@ impl Sidebar {
             })
             .overflow_hidden()
             .text_color(rgb(text_primary()))
-            .child(Self::render_title_bar_row(cx))
-            .child(
-                div()
-                    .flex_1()
-                    .id("sidebar-sections-scroll")
-                    .overflow_y_scroll()
-                    .scrollbar_width(px(8.))
-                    .track_scroll(scroll_handle)
-                    .on_drag_move::<DraggedSection>(move |event, _, _| {
-                        Self::auto_scroll_during_drag(event, &drag_scroll_handle);
-                    })
-                    .pr_2()
-                    .pt_2()
-                    .children(sidebar.sections.iter().map(|section| {
-                        Self::render_section(
-                            section,
-                            &section.rows,
-                            dm_avatar_assets,
-                            current_route,
-                            hovered_row,
-                            cx,
-                        )
-                    })),
-            )
+            .child(Self::render_title_bar_row(
+                sidebar.mode,
+                sidebar.width_px,
+                cx,
+            ))
+            .when(sidebar.mode == SidebarMode::Recent, |root| {
+                root.child(
+                    div()
+                        .px_2()
+                        .pt_2()
+                        .pb_1()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(text_secondary()))
+                        .child("Recent"),
+                )
+                .child(recent::render(
+                    sidebar,
+                    conversation_avatars,
+                    current_route,
+                    hovered_row,
+                    recent_scroll,
+                    cx,
+                ))
+            })
+            .when(sidebar.mode == SidebarMode::Grouped, |root| {
+                root.child(
+                    div()
+                        .flex_1()
+                        .id("sidebar-sections-scroll")
+                        .overflow_y_scroll()
+                        .scrollbar_width(px(8.))
+                        .track_scroll(scroll_handle)
+                        .on_drag_move::<DraggedSection>(move |event, _, _| {
+                            Self::auto_scroll_during_drag(event, &drag_scroll_handle);
+                        })
+                        .pr_2()
+                        .pt_2()
+                        .children(sidebar.sections.iter().flat_map(|section| {
+                            let is_team = section.id.0.starts_with("group_");
+                            let mut elements = Vec::new();
+                            if is_team && !previous_section_is_team {
+                                elements.push(
+                                    div()
+                                        .px_2()
+                                        .pt_2()
+                                        .pb_1()
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(rgb(text_secondary()))
+                                        .child("Teams")
+                                        .into_any_element(),
+                                );
+                            }
+                            previous_section_is_team = is_team;
+                            elements.push(Self::render_section(
+                                section,
+                                &section.rows,
+                                conversation_avatars,
+                                current_route,
+                                hovered_row,
+                                cx,
+                            ));
+                            elements
+                        })),
+                )
+            })
             .child(Self::render_profile_footer(
                 connectivity_tint,
                 current_user_display_name,
@@ -136,71 +247,74 @@ impl Sidebar {
             .into_any_element()
     }
 
-    fn render_title_bar_row<H: SidebarHost>(cx: &mut Context<H>) -> AnyElement {
-        let search_tooltip = format!("Search ({})", command_shortcut_label("K"));
-        let new_chat_tooltip = format!("New chat ({})", command_shortcut_label("N"));
+    fn render_title_bar_row<H: SidebarHost>(
+        mode: SidebarMode,
+        width_px: f32,
+        cx: &mut Context<H>,
+    ) -> AnyElement {
+        let recent = mode == SidebarMode::Recent;
+        let next_mode = if recent {
+            SidebarMode::Grouped
+        } else {
+            SidebarMode::Recent
+        };
+        let buttons = [
+            (
+                "sidebar-recent-trigger",
+                if recent {
+                    "Show grouped teams and conversations".to_string()
+                } else {
+                    "Show recent conversations".to_string()
+                },
+                history_icon(if recent { accent() } else { text_secondary() }),
+                ToolbarAction::ToggleRecent,
+            ),
+            (
+                "sidebar-search-trigger",
+                format!("Search ({})", command_shortcut_label("K")),
+                search_icon(text_secondary()),
+                ToolbarAction::Search,
+            ),
+            (
+                "sidebar-new-chat-trigger",
+                format!("New chat ({})", command_shortcut_label("N")),
+                plus_icon(text_secondary()),
+                ToolbarAction::NewChat,
+            ),
+        ];
+        let compact = width_px < 184.;
         div()
-            .when(cfg!(target_os = "macos"), |d| d.h(px(44.)))
+            .when(cfg!(target_os = "macos"), |row| row.h(px(44.)))
             .flex()
             .items_end()
             .justify_end()
-            .gap_1()
-            .child(
+            .gap(px(if compact { 2. } else { 4. }))
+            .children(buttons.map(|(id, tooltip, icon, action)| {
                 div()
-                    .id(SharedString::from("sidebar-search-trigger"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.sidebar_hide_hover_tooltip(cx);
-                        this.sidebar_toggle_quick_switcher(cx);
-                    }))
-                    .on_mouse_move(cx.listener({
-                        let search_tooltip = search_tooltip.clone();
-                        move |this, event: &MouseMoveEvent, _, cx| {
-                            this.sidebar_show_hover_tooltip(
-                                search_tooltip.clone(),
-                                f32::from(event.position.x),
-                                f32::from(event.position.y),
-                                cx,
-                            );
-                            cx.stop_propagation();
-                        }
-                    }))
-                    .w(px(24.))
+                    .id(id)
+                    .w(px(if compact { 20. } else { 24. }))
                     .h(px(24.))
+                    .flex_shrink_0()
                     .rounded_full()
+                    .cursor_pointer()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .hover(|s| s.bg(subtle_surface()))
-                    .child(search_icon(text_secondary())),
-            )
-            .child(
-                div()
-                    .id(SharedString::from("sidebar-new-chat-trigger"))
-                    .on_click(cx.listener(|this, _, window, cx| {
+                    .when(recent && action == ToolbarAction::ToggleRecent, |button| {
+                        button.bg(rgb(crate::views::accent_soft()))
+                    })
+                    .hover(|style| style.bg(subtle_surface()))
+                    .tooltip(SidebarTooltip::single_line(tooltip))
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         this.sidebar_hide_hover_tooltip(cx);
-                        this.sidebar_open_new_chat(window, cx);
-                    }))
-                    .on_mouse_move(cx.listener({
-                        let new_chat_tooltip = new_chat_tooltip.clone();
-                        move |this, event: &MouseMoveEvent, _, cx| {
-                            this.sidebar_show_hover_tooltip(
-                                new_chat_tooltip.clone(),
-                                f32::from(event.position.x),
-                                f32::from(event.position.y),
-                                cx,
-                            );
-                            cx.stop_propagation();
+                        match action {
+                            ToolbarAction::ToggleRecent => this.sidebar_set_mode(next_mode, cx),
+                            ToolbarAction::Search => this.sidebar_toggle_quick_switcher(cx),
+                            ToolbarAction::NewChat => this.sidebar_open_new_chat(window, cx),
                         }
                     }))
-                    .w(px(24.))
-                    .h(px(24.))
-                    .rounded_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .hover(|s| s.bg(subtle_surface()))
-                    .child(plus_icon(text_secondary())),
-            )
+                    .child(icon)
+            }))
             .into_any_element()
     }
 
@@ -233,7 +347,11 @@ impl Sidebar {
                         current_user_avatar_asset,
                         24.,
                         success_soft(),
-                        0xffffff,
+                        if is_dark_theme() {
+                            0xffffff
+                        } else {
+                            crate::views::affinity_positive()
+                        },
                     ))
                     .child(
                         div()
@@ -282,11 +400,27 @@ impl Sidebar {
     fn render_section<H: SidebarHost>(
         section: &SidebarSection,
         visible_rows: &[SidebarRow],
-        dm_avatar_assets: &HashMap<String, String>,
+        conversation_avatars: &HashMap<String, SidebarAvatar>,
         current_route: &Route,
         hovered_row: Option<&str>,
         cx: &mut Context<H>,
     ) -> AnyElement {
+        if section.id.0.starts_with("group_")
+            && let Some(team) = section.rows.iter().find_map(|row| row.team.as_ref())
+        {
+            return TeamGroup {
+                team,
+                section_id: &section.id,
+                rows: visible_rows,
+                mode: TeamGroupMode::Collapsible {
+                    collapsed: section.collapsed,
+                },
+                avatars: conversation_avatars,
+                current_route,
+                hovered_row,
+            }
+            .render(cx);
+        }
         let section_id = section.id.clone();
         let section_id_for_drop = section.id.clone();
         let drag_title = section.title.clone();
@@ -346,10 +480,39 @@ impl Sidebar {
                         })
                     }),
             )
-            .when(is_unread_section || !section.collapsed, |div| {
-                div.children(visible_rows.iter().map(|row| {
-                    Self::render_row(&section.id, row, dm_avatar_assets, current_route, hovered_row, cx)
-                }))
+            .when(is_unread_section || !section.collapsed, |container| {
+                let mut children = Vec::new();
+                for rows in visible_rows.chunk_by(|left, right| {
+                    left.team.as_ref().map(|team| &team.id)
+                        == right.team.as_ref().map(|team| &team.id)
+                }) {
+                    if is_unread_section && let Some(team) = &rows[0].team {
+                        children.push(
+                            TeamGroup {
+                                team,
+                                section_id: &section.id,
+                                rows,
+                                mode: TeamGroupMode::Unread,
+                                avatars: conversation_avatars,
+                                current_route,
+                                hovered_row,
+                            }
+                            .render(cx),
+                        );
+                    } else {
+                        children.extend(rows.iter().map(|row| {
+                            Self::render_row(
+                                &section.id,
+                                row,
+                                conversation_avatars,
+                                current_route,
+                                hovered_row,
+                                cx,
+                            )
+                        }));
+                    }
+                }
+                container.children(children)
             })
             .into_any_element()
     }
@@ -357,7 +520,7 @@ impl Sidebar {
     fn render_row<H: SidebarHost>(
         section_id: &SidebarSectionId,
         row: &SidebarRow,
-        dm_avatar_assets: &HashMap<String, String>,
+        conversation_avatars: &HashMap<String, SidebarAvatar>,
         current_route: &Route,
         hovered_row: Option<&str>,
         cx: &mut Context<H>,
@@ -367,24 +530,35 @@ impl Sidebar {
         let has_mention = row.mention_count > 0;
         let route_label = row.route.label();
         let route = row.route.clone();
-        let is_hovered = hovered_row == Some(route_label.as_str());
-        let hover_label = route_label.clone();
+        let row_id = format!("sidebar-{}-{route_label}", section_id.0);
+        let is_hovered = hovered_row == Some(row_id.as_str());
+        let hover_label = row_id.clone();
+        let tooltip = row.full_label();
 
+        let row_color = if selected {
+            if is_dark_theme() {
+                accent()
+            } else {
+                crate::views::text_inverted()
+            }
+        } else {
+            text_primary()
+        };
         div()
             // Rows can appear in multiple sections (e.g. Unread + Channels/DMs). Keep ids unique so
             // hit-testing and click dispatch remain reliable.
-            .id(SharedString::from(format!(
-                "sidebar-{}-{route_label}",
-                section_id.0
-            )))
+            .id(SharedString::from(row_id))
             .w_full()
+            .h(px(28.))
+            .overflow_hidden()
             .rounded_md()
             .px_2()
-            .py_1()
             .flex()
             .items_center()
             .justify_between()
             .cursor_pointer()
+            .when(selected && !is_dark_theme(), |row| row.bg(rgb(accent())))
+            .when(is_hovered && !selected, |row| row.bg(subtle_surface()))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 this.sidebar_set_hovered_row(
                     if *hovered {
@@ -395,32 +569,51 @@ impl Sidebar {
                     cx,
                 );
             }))
+            .tooltip(SidebarTooltip::builder(tooltip))
             .on_click(cx.listener(move |this, _, window, cx| {
+                this.sidebar_hide_hover_tooltip(cx);
                 this.sidebar_navigate_to(route.clone(), window, cx);
             }))
             .child(
                 div()
                     .flex()
+                    .flex_1()
+                    .min_w(px(0.))
                     .items_center()
                     .gap_1p5()
                     .text_xs()
-                    .when(selected || has_unread || is_hovered, |d| {
-                        d.font_weight(FontWeight::BOLD)
-                    })
-                    .text_color(rgb(if selected { accent() } else { text_primary() }))
+                    .when(selected || has_unread, |d| d.font_weight(FontWeight::BOLD))
+                    .text_color(rgb(row_color))
                     .child(Self::leading_element(
                         row,
                         &route_label,
-                        dm_avatar_assets,
-                        selected,
+                        conversation_avatars,
+                        if selected {
+                            row_color
+                        } else {
+                            text_secondary()
+                        },
                     ))
-                    .child(row.label.clone()),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .whitespace_normal()
+                            .line_clamp(1)
+                            .text_ellipsis()
+                            .child(row.label.clone()),
+                    ),
             )
-            .when(has_mention, |d| {
-                d.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(mention())))
-            })
-            .when(has_unread && !has_mention, |d| {
-                d.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(accent())))
+            .when(has_unread || has_mention, |d| {
+                d.child(
+                    div()
+                        .flex_shrink_0()
+                        .ml_1()
+                        .w(px(6.))
+                        .h(px(6.))
+                        .rounded_full()
+                        .bg(rgb(unread_indicator())),
+                )
             })
             .into_any_element()
     }
@@ -428,32 +621,38 @@ impl Sidebar {
     fn leading_element(
         row: &SidebarRow,
         route_label: &str,
-        dm_avatar_assets: &HashMap<String, String>,
-        selected: bool,
+        conversation_avatars: &HashMap<String, SidebarAvatar>,
+        channel_color: u32,
     ) -> AnyElement {
         match &row.route {
-            Route::Channel { .. } => div()
-                .w(px(16.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(hash_icon(if selected {
-                    accent()
+            Route::Channel { .. } => {
+                if let Some(SidebarAvatar::Team(asset)) = conversation_avatars.get(route_label) {
+                    Avatar::render_square(
+                        &row.label,
+                        Some(asset),
+                        20.,
+                        crate::views::accent_soft(),
+                        accent(),
+                    )
                 } else {
-                    text_secondary()
-                }))
-                .into_any_element(),
-            Route::DirectMessage { .. } => {
-                let live_asset = dm_avatar_assets.get(route_label).map(String::as_str);
-                let asset = live_asset.or_else(|| demo_avatar_asset(&row.label));
-                Avatar::render(
-                    &row.label,
-                    asset,
-                    20.,
-                    default_avatar_background(&row.label),
-                    text_primary(),
-                )
+                    div()
+                        .w(px(16.))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(hash_icon(channel_color))
+                        .into_any_element()
+                }
             }
+            Route::DirectMessage { .. } => Avatar::render_participants(
+                conversation_avatars
+                    .get(route_label)
+                    .map(SidebarAvatar::participants)
+                    .unwrap_or_default(),
+                &row.label,
+                20.,
+            ),
             _ => div()
                 .w(px(16.))
                 .flex()

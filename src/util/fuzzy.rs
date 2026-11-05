@@ -149,27 +149,33 @@ fn word_match_prepared(
             continue;
         }
         let word_str: String = word.iter().collect();
-        let mut best_pos: Option<usize> = None;
+        let mut best_index: Option<usize> = None;
         let mut best_boundary = false;
         let mut search_start = 0usize;
         while let Some(rel_pos) = candidate_lower[search_start..].find(&word_str) {
-            let pos = search_start + rel_pos;
-            let at_boundary = is_boundary_byte_pos(&candidate.chars, pos);
-            if best_pos.is_none() || (at_boundary && !best_boundary) {
-                best_pos = Some(pos);
+            let byte_pos = search_start + rel_pos;
+            // String matching returns byte offsets; boundary/range helpers use
+            // character indices. ASCII folding preserves the original byte map.
+            let index = candidate
+                .chars
+                .binary_search_by_key(&byte_pos, |ch| ch.start)
+                .ok()?;
+            let at_boundary = is_boundary_char_index(&candidate.chars, index);
+            if best_index.is_none() || (at_boundary && !best_boundary) {
+                best_index = Some(index);
                 best_boundary = at_boundary;
                 if at_boundary {
                     break;
                 }
             }
-            search_start = pos + 1;
+            search_start = candidate.chars[index].end;
             if search_start >= candidate_lower.len() {
                 break;
             }
         }
-        let pos = best_pos?;
-        let byte_start = candidate.chars[pos].start;
-        let byte_end = candidate.chars[pos + word.len() - 1].end;
+        let index = best_index?;
+        let byte_start = candidate.chars[index].start;
+        let byte_end = candidate.chars.get(index + word.len() - 1)?.end;
         all_ranges.push((byte_start, byte_end));
 
         score += word.len() as i32 * 2;
@@ -203,7 +209,7 @@ fn word_match_prepared(
     })
 }
 
-fn is_boundary_byte_pos(chars: &[CandidateChar], char_index: usize) -> bool {
+fn is_boundary_char_index(chars: &[CandidateChar], char_index: usize) -> bool {
     if char_index == 0 {
         return true;
     }
@@ -343,6 +349,29 @@ fn to_ranges(chars: &[CandidateChar], matched_indices: &[usize]) -> Vec<(usize, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn multiword_matches_use_utf8_offsets_and_skip_to_character_boundaries() {
+        for (query, candidate, expected) in [
+            (
+                "Alexander Mey",
+                "👤 Rémi, Alexander Mey",
+                vec!["Alexander", "Mey"],
+            ),
+            ("alpha é", "alpha préé é", vec!["alpha", "é"]),
+        ] {
+            let matched = super::fuzzy_match(query, candidate).unwrap();
+            let spans = matched
+                .ranges
+                .iter()
+                .map(|(start, end)| {
+                    assert!(candidate.is_char_boundary(*start) && candidate.is_char_boundary(*end));
+                    &candidate[*start..*end]
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(spans, expected);
+        }
+    }
+
     use super::*;
 
     #[test]

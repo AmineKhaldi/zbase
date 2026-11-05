@@ -11,6 +11,11 @@ pub struct FramedMsgpackTransport {
 }
 
 impl FramedMsgpackTransport {
+    #[cfg(test)]
+    pub(crate) fn from_stream(stream: UnixStream) -> Self {
+        Self { stream }
+    }
+
     pub async fn connect(path: &std::path::Path) -> io::Result<Self> {
         let stream = UnixStream::connect(path).await?;
         Ok(Self { stream })

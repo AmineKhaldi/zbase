@@ -1,178 +1,139 @@
 name: Release
 
 on:
-  push:
-    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
-    runs-on: macos-latest
+  build:
+    runs-on: macos-15
+    timeout-minutes: 120
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      DEPS_DIR: ${{ github.workspace }}/dist/macos-deps
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Read version
+      - uses: actions/checkout@v7
+      - name: Validate release version and platform
         id: version
-        run: |
-          VERSION=$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Check if tag exists
-        id: check
-        run: |
-          if git ls-remote --tags origin "refs/tags/${{ steps.version.outputs.tag }}" | grep -q .; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create tag
-        if: steps.check.outputs.exists == 'false'
-        run: |
-          git tag -a "${{ steps.version.outputs.tag }}" -m "zBase ${{ steps.version.outputs.tag }}"
-          git push origin "${{ steps.version.outputs.tag }}"
-
-      - name: Create GitHub release
-        if: steps.check.outputs.exists == 'false'
-        run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --title "zBase ${{ steps.version.outputs.tag }}" \
-            --generate-notes \
-            --latest
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Update Homebrew formula
-        if: steps.check.outputs.exists == 'false'
+          RELEASE_BUILD: ${{ github.event_name == 'release' }}
         run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          VERSION="${{ steps.version.outputs.version }}"
-          REPO="${{ github.repository }}"
-          TAP_REPO="cameroncooper/homebrew-tap"
-
-          TARBALL_URL="https://github.com/${REPO}/archive/refs/tags/${TAG}.tar.gz"
-          SHA=$(curl -sL "${TARBALL_URL}" | shasum -a 256 | awk '{print $1}')
-
-          FORMULA=$(cat <<RUBY
-          class Zbase < Formula
-            desc "A fast, native chat client"
-            homepage "https://github.com/${REPO}"
-            url "${TARBALL_URL}"
-            sha256 "${SHA}"
-            license "MIT"
-
-            depends_on "rust" => :build
-            depends_on "cmake" => :build
-            depends_on "pkg-config" => :build
-            depends_on :macos
-            depends_on "ffmpeg"
-
-            def install
-              system "cargo", "build", "--release", "--locked"
-
-              bin.install "target/release/zbase"
-
-              app = prefix/"zBase.app/Contents"
-              (app/"MacOS").mkpath
-              (app/"Resources").mkpath
-
-              cp bin/"zbase", app/"MacOS/zbase"
-              cp "assets/macos/AppIcon.icns", app/"Resources/AppIcon.icns" if File.exist?("assets/macos/AppIcon.icns")
-
-              (app/"Info.plist").write <<~PLIST
-                <?xml version="1.0" encoding="UTF-8"?>
-                <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-                <plist version="1.0">
-                <dict>
-                  <key>CFBundleDevelopmentRegion</key>
-                  <string>en</string>
-                  <key>CFBundleDisplayName</key>
-                  <string>zBase</string>
-                  <key>CFBundleExecutable</key>
-                  <string>zbase</string>
-                  <key>CFBundleIconFile</key>
-                  <string>AppIcon</string>
-                  <key>CFBundleIdentifier</key>
-                  <string>com.zbase.app</string>
-                  <key>CFBundleInfoDictionaryVersion</key>
-                  <string>6.0</string>
-                  <key>CFBundleName</key>
-                  <string>zBase</string>
-                  <key>CFBundlePackageType</key>
-                  <string>APPL</string>
-                  <key>CFBundleShortVersionString</key>
-                  <string>#{version}</string>
-                  <key>CFBundleVersion</key>
-                  <string>#{version}</string>
-                  <key>LSMinimumSystemVersion</key>
-                  <string>13.0</string>
-                  <key>NSHighResolutionCapable</key>
-                  <true/>
-                </dict>
-                </plist>
-              PLIST
-            end
-
-            def caveats
-              <<~EOS
-                The zBase.app bundle has been installed to:
-                  #{prefix}/zBase.app
-
-                To add it to your Applications folder:
-                  ln -sf #{prefix}/zBase.app /Applications/zBase.app
-              EOS
-            end
-
-            test do
-              assert_predicate bin/"zbase", :executable?
-            end
-          end
-          RUBY
-          )
-
-          TMPFILE=$(mktemp)
-          echo "${FORMULA}" > "${TMPFILE}"
-          CONTENT=$(base64 < "${TMPFILE}")
-          rm -f "${TMPFILE}"
-
-          EXISTING=$(gh api "repos/${TAP_REPO}/contents/Formula/zbase.rb" --jq '.sha' 2>/dev/null || true)
-
-          if [[ -n "${EXISTING}" ]]; then
-            gh api --method PUT "repos/${TAP_REPO}/contents/Formula/zbase.rb" \
-              -f message="Update zbase formula to ${TAG}" \
-              -f content="${CONTENT}" \
-              -f sha="${EXISTING}" \
-              --silent
-          else
-            gh api --method PUT "repos/${TAP_REPO}/contents/Formula/zbase.rb" \
-              -f message="Add zbase formula ${TAG}" \
-              -f content="${CONTENT}" \
-              --silent
+          test "$(uname -m)" = arm64
+          VERSION=$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)
+          if [[ "$RELEASE_BUILD" == true ]]; then
+            if [[ "$GITHUB_REF" != "refs/tags/v${VERSION}" ]]; then
+              echo 'Release tag must match the package version in Cargo.toml' >&2
+              exit 1
+            fi
+            if ! jq -e '.release.immutable != true' "$GITHUB_EVENT_PATH"; then
+              echo 'This workflow attaches assets after publication; immutable releases must be disabled' >&2
+              exit 1
+            fi
           fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Install build tools
+        run: |
+          brew install cmake pkgconf meson ninja
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: actions/cache@v6
+        with:
+          path: |
+            dist/macos-deps/prefix
+            dist/macos-deps/downloads
+          key: media-macos15-arm64-${{ hashFiles('scripts/macos/build_media_deps.sh') }}
+      - name: Build pinned media libraries
+        run: |
+          scripts/macos/build_media_deps.sh
+          echo "PKG_CONFIG_PATH=$DEPS_DIR/prefix/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_LIBDIR=$DEPS_DIR/prefix/lib/pkgconfig" >> "$GITHUB_ENV"
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-macos15-arm64-${{ hashFiles('Cargo.lock', 'scripts/macos/build_media_deps.sh') }}-${{ github.sha }}
+          restore-keys: |
+            rust-macos15-arm64-${{ hashFiles('Cargo.lock', 'scripts/macos/build_media_deps.sh') }}-
+      - name: Test and build app
+        run: |
+          python3 -m unittest discover -s scripts/macos -p test_bundle_dylibs.py -v
+          cargo test --locked --all-targets --features gpui/runtime_shaders
+          scripts/macos/build_app_bundle.sh release
+          python3 scripts/macos/bundle_dylibs.py dist/macos/zBase.app --prefix "$DEPS_DIR/prefix"
+      - name: Import signing credentials
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: scripts/macos/import_signing_identity.sh
+      - name: Sign, notarize, and validate app and DMG
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ vars.APPLE_API_ISSUER_ID }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/macos/package_release.sh dist/macos/zBase.app "dist/release/zBase-${VERSION}-macos-arm64.dmg"
+      - name: Include corresponding media sources and build information
+        run: |
+          cp "$DEPS_DIR"/downloads/*.tar.* dist/release/
+          cp -R dist/macos/zBase.app/Contents/Resources/Licenses/Media dist/release/media-build-info
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-release
+          path: dist/release/
+          if-no-files-found: error
+      - name: Remove signing credentials
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/zbase-signing/release.keychain-db" 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP/zbase-signing"
 
-          echo "Formula updated to ${TAG} (sha256: ${SHA})"
+  attach:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.build.outputs.version }}
+      RELEASE_ID: ${{ github.event.release.id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: macos-release
+          path: dist/release
+      - name: Attach verified assets to the published release
+        run: |
+          TAG="v${VERSION}"
+          # Check the original release still exists and accepts asset uploads.
+          gh api "repos/$GH_REPO/releases/tags/$TAG" > release-state.json
+          jq -e --argjson id "$RELEASE_ID" \
+            '.id == $id and .draft == false and .immutable != true' release-state.json
+          tar -czf dist/release/media-build-info.tar.gz -C dist/release media-build-info
+          gh release upload "$TAG" dist/release/*.dmg dist/release/*.sha256 dist/release/*.tar.* --clobber
+      - name: Update Homebrew source formula
+        if: github.event.release.prerelease == false
         env:
           GH_TOKEN: ${{ secrets.TAP_TOKEN }}
-
-      - name: Bump patch version
-        if: steps.check.outputs.exists == 'false'
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          MAJOR=$(echo "${VERSION}" | cut -d. -f1)
-          MINOR=$(echo "${VERSION}" | cut -d. -f2)
-          PATCH=$(echo "${VERSION}" | cut -d. -f3)
-          NEXT="${MAJOR}.${MINOR}.$((PATCH + 1))"
-
-          sed -i '' "1,/^version = \"${VERSION}\"/ s/^version = \"${VERSION}\"/version = \"${NEXT}\"/" Cargo.toml
-          sed -i '' "/^name = \"zbase\"/{n;s/^version = \"${VERSION}\"/version = \"${NEXT}\"/;}" Cargo.lock
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock
-          git commit -m "Bump version to ${NEXT} [skip ci]"
-          git push origin main
+        run: python3 scripts/update_homebrew.py "v${VERSION}"

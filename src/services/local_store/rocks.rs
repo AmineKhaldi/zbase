@@ -1,8 +1,10 @@
+mod membership;
+
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -14,15 +16,23 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
     domain::{
+        attachment::AttachmentSummary,
         backend::{ProviderConversationRef, ProviderMessageRef},
-        conversation::{ConversationKind, ConversationSummary},
+        conversation::{
+            ConversationBadgeCounts, ConversationBadgeState, ConversationKind, ConversationSummary,
+        },
         ids::{ConversationId, MessageId, UserId, WorkspaceId},
-        message::{EmojiSourceRef, LinkPreview, MessageReaction, MessageRecord},
+        message::{
+            EmojiSourceRef, LinkPreview, MessageReaction, MessageRecord, apply_attachment_paths,
+            merge_message_version,
+        },
     },
     state::event::BootstrapPayload,
 };
 
 use super::{
+    MessageChanges,
+    message_changes::MessageWrites,
     paths,
     schema::{
         CachedConversationBinding, CachedConversationEmoji, CachedConversationSummary,
@@ -133,6 +143,10 @@ impl StoredCrawlCheckpoint {
 
 pub struct LocalStore {
     db: DBWithThreadMode<MultiThreaded>,
+    message_writes: Mutex<MessageWrites>,
+    profile_writes: Mutex<()>,
+    membership_writes: Mutex<HashMap<ConversationId, u64>>,
+    conversation_badges: Mutex<ConversationBadgeState>,
 }
 
 impl LocalStore {
@@ -206,7 +220,25 @@ impl LocalStore {
                 open_with_names(&retry_names).map_err(io::Error::other)?
             }
         };
-        Ok(Self { db })
+        let store = Self {
+            db,
+            message_writes: Mutex::default(),
+            profile_writes: Mutex::default(),
+            membership_writes: Mutex::default(),
+            conversation_badges: Mutex::default(),
+        };
+        // Validate before a search observer can snapshot an incompatible cache.
+        if let Some(bytes) = store
+            .db
+            .get_cf(&store.cf(CF_META)?, META_KEY)
+            .map_err(io::Error::other)?
+        {
+            let meta: CachedMeta = decode(&bytes)?;
+            if meta.schema_version != SCHEMA_VERSION {
+                store.clear_cache_for_schema_refresh()?;
+            }
+        }
+        Ok(store)
     }
 
     pub fn load_account_display_name(&self) -> Option<String> {
@@ -262,6 +294,10 @@ impl LocalStore {
             .selected_conversation_id
             .as_ref()
             .map(|value| ConversationId::new(value.clone()))
+            .filter(|id| {
+                self.is_excluded_conversation(id)
+                    .is_ok_and(|internal| !internal)
+            })
             .or_else(|| ordered_ids.first().cloned());
 
         let selected_messages = if let Some(conversation_id) = selected_conversation_id.as_ref() {
@@ -292,58 +328,32 @@ impl LocalStore {
     }
 
     pub fn persist_bootstrap_payload(&self, payload: &BootstrapPayload) -> io::Result<()> {
+        let badges = self
+            .conversation_badges
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut batch = WriteBatch::default();
         let conversations_cf = self.cf(CF_CONVERSATIONS)?;
-        let activity_cf = self.cf(CF_ACTIVITY)?;
-        let messages_cf = self.cf(CF_MESSAGES)?;
         let bindings_cf = self.cf(CF_BINDINGS)?;
         let meta_cf = self.cf(CF_META)?;
 
-        // Replace conversation/activity snapshots atomically so stale channels from
-        // earlier bootstraps do not linger in the sidebar cache.
-        {
-            let iter = self.db.iterator_cf(&conversations_cf, IteratorMode::Start);
-            for item in iter {
-                let (key, _) = item.map_err(io::Error::other)?;
-                batch.delete_cf(&conversations_cf, key);
-            }
-        }
-        {
-            let iter = self.db.iterator_cf(&activity_cf, IteratorMode::Start);
-            for item in iter {
-                let (key, _) = item.map_err(io::Error::other)?;
-                batch.delete_cf(&activity_cf, key);
-            }
-        }
-
+        // Bootstrap can be a partial inbox page. Merge it into the cache instead
+        // of erasing conversations loaded by notifications or background paging.
         let mut ordered_conversations = Vec::new();
         ordered_conversations.extend(payload.channels.iter().cloned());
         ordered_conversations.extend(payload.direct_messages.iter().cloned());
 
-        let now_ms = now_unix_ms();
-        for (index, summary) in ordered_conversations.iter().enumerate() {
-            let synthetic_activity = now_ms.saturating_sub(index as i64);
-            let cached = CachedConversationSummary::from_domain(summary, synthetic_activity);
+        for summary in &mut ordered_conversations {
+            if let Some(previous) = self.get_conversation(&summary.id)? {
+                summary.preserve_known_metadata(&previous);
+            }
+            badges.apply(summary);
+            let cached = CachedConversationSummary::from_domain(summary, summary.last_activity_ms);
             batch.put_cf(
                 &conversations_cf,
                 conversation_key(&summary.id),
                 encode(&cached)?,
             );
-            batch.put_cf(
-                &activity_cf,
-                activity_key(&summary.id, synthetic_activity),
-                Vec::<u8>::new(),
-            );
-        }
-
-        for message in &payload.selected_messages {
-            let cached = CachedMessageRecord::from_domain(message);
-            batch.put_cf(
-                &messages_cf,
-                message_key(&message.conversation_id, &message.id),
-                encode(&cached)?,
-            );
-            write_thread_index_entries(&mut batch, &messages_cf, message)?;
         }
 
         for binding in &payload.conversation_bindings {
@@ -381,7 +391,12 @@ impl LocalStore {
         };
         batch.put_cf(&meta_cf, META_KEY, encode(&meta)?);
 
-        self.db.write(batch).map_err(io::Error::other)
+        self.db.write(batch).map_err(io::Error::other)?;
+        drop(badges);
+        for message in &payload.selected_messages {
+            self.persist_message(message)?;
+        }
+        Ok(())
     }
 
     pub fn clear_unread_marker(&self) -> io::Result<()> {
@@ -404,14 +419,116 @@ impl LocalStore {
     }
 
     pub fn persist_message(&self, message: &MessageRecord) -> io::Result<()> {
+        self.upsert_message(message).map(|_| ())
+    }
+
+    pub fn is_message_deleted(
+        &self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+    ) -> io::Result<bool> {
+        self.db
+            .get_cf(
+                &self.cf(CF_META)?,
+                deleted_message_key(conversation_id, message_id),
+            )
+            .map(|value| value.is_some())
+            .map_err(io::Error::other)
+    }
+
+    pub fn upsert_message(&self, message: &MessageRecord) -> io::Result<Option<MessageRecord>> {
+        let mut writes = self
+            .message_writes
+            .lock()
+            .map_err(|_| io::Error::other("message write lock poisoned"))?;
+        if self.is_message_deleted(&message.conversation_id, &message.id)? {
+            return Ok(None);
+        }
+        let canonical = match self.get_canonical_message(&message.conversation_id, &message.id)? {
+            Some(existing) => merge_message_version(&existing, message),
+            None => message.clone(),
+        };
+        if self.write_message(&canonical)? {
+            writes.changed(&canonical.conversation_id, &canonical.id);
+        }
+        Ok(Some(canonical))
+    }
+
+    pub fn patch_attachment_paths(
+        &self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+        attachments: &[AttachmentSummary],
+    ) -> io::Result<Option<MessageRecord>> {
+        let mut writes = self
+            .message_writes
+            .lock()
+            .map_err(|_| io::Error::other("message write lock poisoned"))?;
+        let Some(mut latest) = self.get_canonical_message(conversation_id, message_id)? else {
+            return Ok(None);
+        };
+        if self.is_message_deleted(conversation_id, message_id)? {
+            return Ok(None);
+        }
+        apply_attachment_paths(&mut latest, attachments);
+        if self.write_message(&latest)? {
+            writes.changed(&latest.conversation_id, &latest.id);
+        }
+        Ok(Some(latest))
+    }
+
+    /// Subscribe and take a consistent database snapshot under the write lock.
+    /// Replay happens after releasing the lock, so a large history does not block
+    /// live writes. Bounded identity invalidations follow the snapshot; overflow
+    /// requires a fresh replay instead of retaining an unbounded write backlog.
+    pub fn replay_messages_and_subscribe(
+        &self,
+        mut visit: impl FnMut(MessageRecord) -> io::Result<()>,
+    ) -> io::Result<MessageChanges> {
+        let (snapshot, changes) = {
+            let mut writes = self
+                .message_writes
+                .lock()
+                .map_err(|_| io::Error::other("message write lock poisoned"))?;
+            let changes = writes.subscribe();
+            (self.db.snapshot(), changes)
+        };
+        let messages_cf = self.cf(CF_MESSAGES)?;
+        for entry in snapshot.iterator_cf(
+            &messages_cf,
+            IteratorMode::From(b"msg:", Direction::Forward),
+        ) {
+            let (key, value) = entry.map_err(io::Error::other)?;
+            if !key.starts_with(b"msg:") {
+                break;
+            }
+            let message: CachedMessageRecord = decode(&value)?;
+            visit(message.to_domain())?;
+        }
+        Ok(changes)
+    }
+
+    fn write_message(&self, message: &MessageRecord) -> io::Result<bool> {
         let messages_cf = self.cf(CF_MESSAGES)?;
         let cached = CachedMessageRecord::from_domain(message);
-        let existing = self.get_message(&message.conversation_id, &message.id)?;
+        let encoded = encode(&cached)?;
+        let existing_bytes = self
+            .db
+            .get_cf(&messages_cf, message_key(&message.conversation_id, &message.id))
+            .map_err(io::Error::other)?;
+        if existing_bytes.as_deref() == Some(encoded.as_slice()) {
+            return Ok(false);
+        }
+        let existing = existing_bytes
+            .as_deref()
+            .map(decode::<CachedMessageRecord>)
+            .transpose()?
+            .map(|cached| cached.to_domain());
         let mut batch = WriteBatch::default();
         batch.put_cf(
             &messages_cf,
             message_key(&message.conversation_id, &message.id),
-            encode(&cached)?,
+            encoded,
         );
         if let Some(previous) = existing.as_ref() {
             if previous.thread_root_id != message.thread_root_id
@@ -440,7 +557,8 @@ impl LocalStore {
             }
         }
         write_thread_index_entries(&mut batch, &messages_cf, message)?;
-        self.db.write(batch).map_err(io::Error::other)
+        self.db.write(batch).map_err(io::Error::other)?;
+        Ok(true)
     }
 
     pub fn persist_thread_index_entry(
@@ -464,9 +582,18 @@ impl LocalStore {
         conversation_id: &ConversationId,
         message_id: &MessageId,
     ) -> io::Result<()> {
+        let mut writes = self
+            .message_writes
+            .lock()
+            .map_err(|_| io::Error::other("message write lock poisoned"))?;
         let messages_cf = self.cf(CF_MESSAGES)?;
-        let existing = self.get_message(conversation_id, message_id)?;
+        let existing = self.get_canonical_message(conversation_id, message_id)?;
         let mut batch = WriteBatch::default();
+        batch.put_cf(
+            &self.cf(CF_META)?,
+            deleted_message_key(conversation_id, message_id),
+            b"1",
+        );
         batch.delete_cf(&messages_cf, message_key(conversation_id, message_id));
         batch.delete_cf(
             &messages_cf,
@@ -486,7 +613,9 @@ impl LocalStore {
                 );
             }
         }
-        self.db.write(batch).map_err(io::Error::other)
+        self.db.write(batch).map_err(io::Error::other)?;
+        writes.changed(conversation_id, message_id);
+        Ok(())
     }
 
     pub fn persist_conversation(
@@ -494,23 +623,63 @@ impl LocalStore {
         summary: &ConversationSummary,
         activity_time: i64,
     ) -> io::Result<()> {
+        let badges = self
+            .conversation_badges
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut summary = summary.clone();
+        summary.last_activity_ms = summary.last_activity_ms.max(activity_time);
+        if let Some(previous) = self.get_conversation(&summary.id)? {
+            summary.preserve_known_metadata(&previous);
+        }
+        badges.apply(&mut summary);
         let conversations_cf = self.cf(CF_CONVERSATIONS)?;
-        let activity_cf = self.cf(CF_ACTIVITY)?;
-        let cached = CachedConversationSummary::from_domain(summary, activity_time);
+        let cached = CachedConversationSummary::from_domain(&summary, summary.last_activity_ms);
         self.db
             .put_cf(
                 &conversations_cf,
                 conversation_key(&summary.id),
                 encode(&cached)?,
             )
-            .map_err(io::Error::other)?;
-        self.db
-            .put_cf(
-                &activity_cf,
-                activity_key(&summary.id, activity_time),
-                Vec::<u8>::new(),
-            )
             .map_err(io::Error::other)
+    }
+
+    /// Serialize authoritative badge updates with summary writes so an older
+    /// bootstrap/inbox page cannot restore stale unread counts in the cache.
+    pub fn update_conversation_badges(
+        &self,
+        counts: HashMap<ConversationId, ConversationBadgeCounts>,
+        complete: bool,
+    ) -> io::Result<()> {
+        let mut badges = self
+            .conversation_badges
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut next = badges.clone();
+        next.update(counts, complete);
+        let cf = self.cf(CF_CONVERSATIONS)?;
+        let mut batch = WriteBatch::default();
+        for entry in self.db.iterator_cf(&cf, IteratorMode::Start) {
+            let (key, value) = entry.map_err(io::Error::other)?;
+            let cached: CachedConversationSummary = decode(&value)?;
+            let mut summary = cached.to_domain();
+            next.apply(&mut summary);
+            if summary.unread_count != cached.unread_count
+                || summary.mention_count != cached.mention_count
+            {
+                batch.put_cf(
+                    &cf,
+                    key,
+                    encode(&CachedConversationSummary::from_domain(
+                        &summary,
+                        cached.last_activity_time,
+                    ))?,
+                );
+            }
+        }
+        self.db.write(batch).map_err(io::Error::other)?;
+        *badges = next;
+        Ok(())
     }
 
     pub fn persist_conversation_binding(
@@ -530,6 +699,21 @@ impl LocalStore {
                 encode(&cached)?,
             )
             .map_err(io::Error::other)
+    }
+
+    pub fn get_canonical_message(
+        &self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+    ) -> io::Result<Option<MessageRecord>> {
+        let messages_cf = self.cf(CF_MESSAGES)?;
+        // Writes and index invalidations use canonical keys. Missing/deleted
+        // records must not trigger a scan of the conversation's history.
+        self.db
+            .get_cf(&messages_cf, message_key(conversation_id, message_id))
+            .map_err(io::Error::other)?
+            .map(|bytes| decode::<CachedMessageRecord>(&bytes).map(|cached| cached.to_domain()))
+            .transpose()
     }
 
     pub fn get_message(
@@ -567,10 +751,57 @@ impl LocalStore {
         Ok(None)
     }
 
+    // Topic metadata is kept separately so older cached summaries can be repaired
+    // without deleting their messages, attachments, or changing the cache schema.
+    pub fn unverified_conversation_ids(&self) -> io::Result<Vec<ConversationId>> {
+        let meta = self.cf(CF_META)?;
+        self.load_cached_conversation_ids(usize::MAX)?
+            .into_iter()
+            .filter_map(
+                |id| match self.db.get_cf(&meta, format!("topic_type:{}", id.0)) {
+                    Ok(None) => Some(Ok(id)),
+                    Ok(Some(_)) => None,
+                    Err(error) => Some(Err(io::Error::other(error))),
+                },
+            )
+            .collect()
+    }
+
+    pub fn persist_conversation_topic_types(
+        &self,
+        topics: &[(ConversationId, i64)],
+    ) -> io::Result<()> {
+        let meta = self.cf(CF_META)?;
+        let mut batch = WriteBatch::default();
+        for (id, topic_type) in topics {
+            batch.put_cf(
+                &meta,
+                format!("topic_type:{}", id.0),
+                topic_type.to_be_bytes(),
+            );
+        }
+        self.db.write(batch).map_err(io::Error::other)
+    }
+
+    fn is_excluded_conversation(&self, id: &ConversationId) -> io::Result<bool> {
+        let meta = self.cf(CF_META)?;
+        if self.is_conversation_left(id)? {
+            return Ok(true);
+        }
+        Ok(self
+            .db
+            .get_cf(&meta, format!("topic_type:{}", id.0))
+            .map_err(io::Error::other)?
+            .is_some_and(|bytes| bytes.as_slice() != 1i64.to_be_bytes()))
+    }
+
     pub fn get_conversation(
         &self,
         conversation_id: &ConversationId,
     ) -> io::Result<Option<ConversationSummary>> {
+        if self.is_excluded_conversation(conversation_id)? {
+            return Ok(None);
+        }
         let conversations_cf = self.cf(CF_CONVERSATIONS)?;
         let Some(bytes) = self
             .db
@@ -952,6 +1183,29 @@ impl LocalStore {
         avatar_path: Option<String>,
         updated_ms: i64,
     ) -> io::Result<()> {
+        let _write = self
+            .profile_writes
+            .lock()
+            .map_err(|_| io::Error::other("profile write lock poisoned"))?;
+        let previous = self.get_user_profile(user_id)?;
+        if previous
+            .as_ref()
+            .is_some_and(|old| old.updated_ms > updated_ms)
+        {
+            return Ok(());
+        }
+        let same_avatar = previous
+            .as_ref()
+            .is_some_and(|old| avatar_url.is_none() || old.avatar_url == avatar_url);
+        let avatar_url =
+            avatar_url.or_else(|| previous.as_ref().and_then(|old| old.avatar_url.clone()));
+        let avatar_path = avatar_path.or_else(|| {
+            previous
+                .as_ref()
+                .filter(|_| same_avatar)
+                .and_then(|old| old.avatar_path.clone())
+                .filter(|path| Path::new(path).is_file())
+        });
         let users_cf = self.cf(CF_USERS)?;
         let profile = CachedUserProfile {
             username: user_id.0.clone(),
@@ -1353,6 +1607,34 @@ impl LocalStore {
             .map_err(io::Error::other)
     }
 
+    pub fn load_sync_position(&self, conversation_id: &ConversationId) -> io::Result<u64> {
+        let bytes = self
+            .db
+            .get_cf(
+                &self.cf(CF_META)?,
+                format!("sync_position:{}", conversation_id.0),
+            )
+            .map_err(io::Error::other)?;
+        bytes
+            .map(|bytes| decode::<u64>(&bytes))
+            .transpose()
+            .map(|position| position.unwrap_or(0))
+    }
+
+    pub fn save_sync_position(
+        &self,
+        conversation_id: &ConversationId,
+        position: u64,
+    ) -> io::Result<()> {
+        self.db
+            .put_cf(
+                &self.cf(CF_META)?,
+                format!("sync_position:{}", conversation_id.0),
+                encode(&position)?,
+            )
+            .map_err(io::Error::other)
+    }
+
     pub fn load_crawl_checkpoint(
         &self,
         conversation_id: &ConversationId,
@@ -1384,7 +1666,7 @@ impl LocalStore {
             .map_err(io::Error::other)
     }
 
-    fn get_conversation_binding(
+    pub fn get_conversation_binding(
         &self,
         conversation_id: &ConversationId,
     ) -> io::Result<Option<ProviderConversationRef>> {
@@ -1417,43 +1699,28 @@ impl LocalStore {
     }
 
     fn load_ordered_conversation_ids(&self, limit: usize) -> io::Result<Vec<ConversationId>> {
-        let activity_cf = self.cf(CF_ACTIVITY)?;
-        let mut ordered = Vec::new();
-        let mut seen = HashSet::new();
-
-        let iter = self.db.iterator_cf(&activity_cf, IteratorMode::Start);
-        for item in iter {
-            let (key, _) = item.map_err(io::Error::other)?;
-            let key_text = String::from_utf8_lossy(&key);
-            let Some(conversation_id) = parse_activity_conversation_id(&key_text) else {
-                continue;
-            };
-            if seen.insert(conversation_id.clone()) {
-                ordered.push(ConversationId::new(conversation_id));
-                if ordered.len() >= limit {
-                    break;
-                }
-            }
-        }
-
-        if !ordered.is_empty() {
-            return Ok(ordered);
-        }
-
+        // Sort the canonical summary metadata. The old secondary activity index
+        // accumulated synthetic startup times and stale keys, so it cannot be
+        // a trustworthy source of recency (including for cache-only startup).
         let conversations_cf = self.cf(CF_CONVERSATIONS)?;
-        let iter = self.db.iterator_cf(&conversations_cf, IteratorMode::Start);
-        for item in iter {
-            let (key, _) = item.map_err(io::Error::other)?;
-            let key_text = String::from_utf8_lossy(&key);
-            if let Some(conversation_id) = key_text.strip_prefix("conv:") {
-                ordered.push(ConversationId::new(conversation_id.to_string()));
-                if ordered.len() >= limit {
-                    break;
-                }
+        let mut summaries = Vec::new();
+        for entry in self.db.iterator_cf(&conversations_cf, IteratorMode::Start) {
+            let (key, value) = entry.map_err(io::Error::other)?;
+            if !key.starts_with(b"conv:") {
+                continue;
+            }
+            let cached: CachedConversationSummary = decode(&value)?;
+            let summary = cached.to_domain();
+            if !self.is_excluded_conversation(&summary.id)? {
+                summaries.push(summary);
             }
         }
-
-        Ok(ordered)
+        summaries.sort_by(ConversationSummary::compare_recency);
+        Ok(summaries
+            .into_iter()
+            .take(limit)
+            .map(|summary| summary.id)
+            .collect())
     }
 
     fn load_recent_messages(
@@ -1465,6 +1732,10 @@ impl LocalStore {
     }
 
     fn clear_cache_for_schema_refresh(&self) -> io::Result<()> {
+        let mut writes = self
+            .message_writes
+            .lock()
+            .map_err(|_| io::Error::other("message write lock poisoned"))?;
         let mut batch = WriteBatch::default();
         for cf_name in [
             CF_META,
@@ -1486,7 +1757,9 @@ impl LocalStore {
                 batch.delete_cf(&cf, key);
             }
         }
-        self.db.write(batch).map_err(io::Error::other)
+        self.db.write(batch).map_err(io::Error::other)?;
+        writes.reset();
+        Ok(())
     }
 
     fn cf(&self, name: &str) -> io::Result<Arc<BoundColumnFamily<'_>>> {
@@ -1512,19 +1785,8 @@ fn conversation_key(conversation_id: &ConversationId) -> String {
     format!("conv:{}", conversation_id.0)
 }
 
-fn activity_key(conversation_id: &ConversationId, activity_time: i64) -> String {
-    let normalized = activity_time.max(0) as u64;
-    let reverse = u64::MAX - normalized;
-    format!("act:{reverse:020}:{}", conversation_id.0)
-}
-
-fn parse_activity_conversation_id(key: &str) -> Option<String> {
-    let mut parts = key.splitn(3, ':');
-    if parts.next()? != "act" {
-        return None;
-    }
-    let _ = parts.next()?;
-    Some(parts.next()?.to_string())
+fn deleted_message_key(conversation_id: &ConversationId, message_id: &MessageId) -> String {
+    format!("deleted:{}:{}", conversation_id.0, message_id.0)
 }
 
 fn message_prefix(conversation_id: &ConversationId) -> String {
@@ -1802,6 +2064,7 @@ fn decode<T: DeserializeOwned>(bytes: &[u8]) -> io::Result<T> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::domain::{
         attachment::AttachmentKind,
@@ -1809,6 +2072,58 @@ mod tests {
         ids::UserId,
         message::{BroadcastKind, MessageFragment, MessageSendState},
     };
+
+    #[test]
+    fn cached_internal_topics_are_hidden_without_deleting_messages() {
+        let path = temp_rocks_path("internal-topics");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let chat = ConversationId::new("kb_conv:abcd");
+        let internal = ConversationId::new("kb_conv:1234");
+        for id in [&chat, &internal] {
+            store
+                .persist_conversation(
+                    &ConversationSummary {
+                        id: id.clone(),
+                        title: "butterbot".into(),
+                        kind: ConversationKind::DirectMessage,
+                        topic: String::new(),
+                        group: None,
+                        unread_count: 0,
+                        mention_count: 0,
+                        muted: false,
+                        last_activity_ms: 10,
+                    },
+                    10,
+                )
+                .unwrap();
+        }
+        store
+            .persist_message(&sample_message(&internal, 1))
+            .unwrap();
+        assert_eq!(store.unverified_conversation_ids().unwrap().len(), 2);
+        store
+            .persist_conversation_topic_types(&[(chat.clone(), 1), (internal.clone(), 5)])
+            .unwrap();
+        assert!(store.unverified_conversation_ids().unwrap().is_empty());
+        assert_eq!(
+            store.load_cached_conversation_ids(10).unwrap(),
+            vec![chat.clone()]
+        );
+        assert!(store.get_conversation(&internal).unwrap().is_none());
+        assert!(store.get_conversation(&chat).unwrap().is_some());
+        assert_eq!(
+            store
+                .load_recent_messages_for_conversation(&internal, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        drop(store);
+        let reopened = LocalStore::open_at(path.clone()).unwrap();
+        assert!(reopened.get_conversation(&internal).unwrap().is_none());
+        drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 
     fn temp_rocks_path(label: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
@@ -1821,7 +2136,7 @@ mod tests {
         path
     }
 
-    fn sample_message(conversation_id: &ConversationId, id: u64) -> MessageRecord {
+    pub(super) fn sample_message(conversation_id: &ConversationId, id: u64) -> MessageRecord {
         MessageRecord {
             id: MessageId::new(id.to_string()),
             conversation_id: conversation_id.clone(),
@@ -1880,6 +2195,485 @@ mod tests {
             send_state: MessageSendState::Sent,
             edited: None,
         }
+    }
+
+    #[test]
+    fn cached_recency_uses_real_metadata_and_discards_legacy_startup_times() {
+        let path = temp_rocks_path("canonical-recency");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let summary = |id: &str, activity| ConversationSummary {
+            id: ConversationId::new(id),
+            title: id.into(),
+            kind: ConversationKind::DirectMessage,
+            topic: String::new(),
+            group: None,
+            unread_count: 0,
+            mention_count: 0,
+            muted: false,
+            last_activity_ms: activity,
+        };
+        store
+            .persist_bootstrap_payload(&BootstrapPayload {
+                direct_messages: vec![summary("older", 10), summary("newer", 20)],
+                ..Default::default()
+            })
+            .unwrap();
+        let mut legacy = CachedConversationSummary::from_domain(&summary("legacy", 999999), 999999);
+        legacy.canonical_activity = false;
+        store
+            .db
+            .put_cf(
+                &store.cf(CF_CONVERSATIONS).unwrap(),
+                conversation_key(&ConversationId::new("legacy")),
+                encode(&legacy).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .load_cached_conversation_ids(10)
+                .unwrap()
+                .iter()
+                .map(|id| id.0.as_str())
+                .collect::<Vec<_>>(),
+            vec!["newer", "older", "legacy"]
+        );
+        store
+            .persist_conversation(&summary("legacy", 15), 15)
+            .unwrap();
+        store
+            .persist_conversation(&summary("legacy", 5), 5)
+            .unwrap();
+        assert_eq!(
+            store
+                .get_conversation(&ConversationId::new("legacy"))
+                .unwrap()
+                .unwrap()
+                .last_activity_ms,
+            15
+        );
+        assert_eq!(
+            store
+                .load_cached_conversation_ids(10)
+                .unwrap()
+                .iter()
+                .map(|id| id.0.as_str())
+                .collect::<Vec<_>>(),
+            vec!["newer", "legacy", "older"]
+        );
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn missing_avatar_refreshes_preserve_valid_cache_and_new_urls_replace_old_images() {
+        let path = temp_rocks_path("avatar-refresh");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let file = path.join("avatar.png");
+        std::fs::write(&file, b"avatar").unwrap();
+        let user = UserId::new("bot");
+        store
+            .upsert_user_profile(
+                &user,
+                "bot".into(),
+                Some("https://example.com/old.png".into()),
+                Some(file.to_string_lossy().into_owned()),
+                100,
+            )
+            .unwrap();
+        store
+            .upsert_user_profile(&user, "bot".into(), None, None, 200)
+            .unwrap();
+        assert!(
+            store
+                .get_user_profile(&user)
+                .unwrap()
+                .unwrap()
+                .avatar_path
+                .is_some()
+        );
+        store
+            .upsert_user_profile(
+                &user,
+                "bot".into(),
+                Some("https://example.com/new.png".into()),
+                None,
+                300,
+            )
+            .unwrap();
+        let updated = store.get_user_profile(&user).unwrap().unwrap();
+        assert!(
+            updated.avatar_path.is_none(),
+            "a changed URL must not keep a stale image path"
+        );
+        assert_eq!(
+            updated.avatar_url.as_deref(),
+            Some("https://example.com/new.png")
+        );
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn authoritative_badges_persist_and_resist_stale_summary_writes() {
+        let path = temp_rocks_path("badge-state");
+        let id = ConversationId::new("kb_conv:abcd");
+        let summary = ConversationSummary {
+            id: id.clone(),
+            title: "general".into(),
+            kind: ConversationKind::Channel,
+            topic: String::new(),
+            group: None,
+            unread_count: 8,
+            mention_count: 2,
+            muted: false,
+            last_activity_ms: 123,
+        };
+        {
+            let store = LocalStore::open_at(path.clone()).unwrap();
+            store.persist_conversation(&summary, 123).unwrap();
+            store
+                .update_conversation_badges(HashMap::new(), true)
+                .unwrap();
+            assert_eq!(
+                store.get_conversation(&id).unwrap().unwrap().unread_count,
+                0
+            );
+            store.persist_conversation(&summary, 123).unwrap();
+            store
+                .persist_bootstrap_payload(&BootstrapPayload {
+                    channels: vec![summary.clone()],
+                    ..BootstrapPayload::default()
+                })
+                .unwrap();
+            let restored = store.get_conversation(&id).unwrap().unwrap();
+            assert_eq!((restored.unread_count, restored.mention_count), (0, 0));
+            store
+                .update_conversation_badges(
+                    HashMap::from([(
+                        id.clone(),
+                        ConversationBadgeCounts {
+                            unread_count: 3,
+                            badge_count: 1,
+                        },
+                    )]),
+                    true,
+                )
+                .unwrap();
+            store.persist_conversation(&summary, 123).unwrap();
+        }
+        {
+            let store = LocalStore::open_at(path.clone()).unwrap();
+            let restored = store.get_conversation(&id).unwrap().unwrap();
+            assert_eq!((restored.unread_count, restored.mention_count), (3, 1));
+            assert_eq!(restored.last_activity_ms, 123);
+            store
+                .update_conversation_badges(HashMap::new(), true)
+                .unwrap();
+            // A conversation first discovered after the snapshot is read when omitted.
+            let mut new_summary = summary;
+            new_summary.id = ConversationId::new("kb_conv:new");
+            store.persist_conversation(&new_summary, 123).unwrap();
+            assert_eq!(
+                store
+                    .get_conversation(&new_summary.id)
+                    .unwrap()
+                    .unwrap()
+                    .unread_count,
+                0
+            );
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn attachment_download_replaces_thumbnail_and_missing_local_file() {
+        use crate::domain::attachment::{AttachmentPreview, AttachmentSource};
+        let path = temp_rocks_path("attachment-upgrade");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let mut message = sample_message(&ConversationId::new("conversation"), 1);
+        let thumbnail = AttachmentSource::LocalPath("/cache/thumbnail.png".into());
+        message.attachments[0].source = Some(thumbnail.clone());
+        message.attachments[0].preview = Some(AttachmentPreview {
+            source: thumbnail, width: Some(32), height: Some(32),
+        });
+        store.persist_message(&message).unwrap();
+        let mut downloaded = message.attachments.clone();
+        downloaded[0].source = Some(AttachmentSource::LocalPath("/cache/full.png".into()));
+        downloaded[0].preview.as_mut().unwrap().source =
+            AttachmentSource::LocalPath("/cache/repaired-preview.png".into());
+        let patched = store
+            .patch_attachment_paths(&message.conversation_id, &message.id, &downloaded)
+            .unwrap()
+            .unwrap();
+        assert_eq!(patched.attachments, downloaded);
+        downloaded[0].source = Some(AttachmentSource::LocalPath("/cache/repaired-full.png".into()));
+        let repaired = store
+            .patch_attachment_paths(&message.conversation_id, &message.id, &downloaded)
+            .unwrap()
+            .unwrap();
+        assert_eq!(repaired.attachments, downloaded);
+        // A metadata refresh cannot undo successful hydration.
+        message.attachments[0].source = None;
+        message.attachments[0].preview = None;
+        assert_eq!(
+            store.upsert_message(&message).unwrap().unwrap().attachments,
+            downloaded
+        );
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn attachment_completion_preserves_newer_edits_and_durable_deletions() {
+        use crate::domain::attachment::AttachmentSource;
+        use crate::domain::message::EditMeta;
+        let path = temp_rocks_path("attachment-races");
+        let conversation = ConversationId::new("conversation");
+        {
+            let store = LocalStore::open_at(path.clone()).unwrap();
+            let original = sample_message(&conversation, 1);
+            store.persist_message(&original).unwrap();
+            let mut downloaded = original.clone();
+            downloaded.attachments[0].source =
+                Some(AttachmentSource::LocalPath("/tmp/downloaded.txt".into()));
+            let mut edited = original.clone();
+            edited.fragments = vec![MessageFragment::Text("edited while downloading".into())];
+            edited.edited = Some(EditMeta {
+                edit_id: MessageId::new("2"),
+                edited_at_ms: Some(2),
+            });
+            store.persist_message(&edited).unwrap();
+            store.persist_message(&original).unwrap();
+            let patched = store
+                .patch_attachment_paths(&conversation, &original.id, &downloaded.attachments)
+                .unwrap()
+                .unwrap();
+            assert_eq!(patched.edited.unwrap().edit_id, MessageId::new("2"));
+            assert!(
+                matches!(&patched.fragments[0], MessageFragment::Text(text) if text == "edited while downloading")
+            );
+            assert_eq!(
+                patched.attachments[0].source,
+                downloaded.attachments[0].source
+            );
+            store.delete_message(&conversation, &original.id).unwrap();
+            assert!(
+                store
+                    .patch_attachment_paths(&conversation, &original.id, &downloaded.attachments)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(store.upsert_message(&original).unwrap().is_none());
+        }
+        let reopened = LocalStore::open_at(path.clone()).unwrap();
+        assert!(
+            reopened
+                .is_message_deleted(&conversation, &MessageId::new("1"))
+                .unwrap()
+        );
+        assert!(
+            reopened
+                .get_message(&conversation, &MessageId::new("1"))
+                .unwrap()
+                .is_none()
+        );
+        drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn metadata_replay_preserves_missing_media_references_without_validating_files() {
+        let path = temp_rocks_path("replay-media-boundary");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let conversation = ConversationId::new("conversation");
+        let mut message = sample_message(&conversation, 1);
+        message.attachments.clear();
+        let source = crate::domain::attachment::AttachmentSource::LocalPath(
+            path.join("media-that-was-never-downloaded")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        message
+            .attachments
+            .push(crate::domain::attachment::AttachmentSummary {
+                source: Some(source.clone()),
+                ..Default::default()
+            });
+        store.persist_message(&message).unwrap();
+        let mut replayed = 0;
+        let _changes = store
+            .replay_messages_and_subscribe(|message| {
+                assert_eq!(message.attachments[0].source, Some(source.clone()));
+                replayed += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(replayed, 1);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn message_replay_does_not_lose_writes_during_snapshot_iteration() {
+        let path = temp_rocks_path("replay-order");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let conversation = ConversationId::new("conversation");
+        store
+            .persist_message(&sample_message(&conversation, 1))
+            .unwrap();
+        let mut replayed = Vec::new();
+        let changes = store
+            .replay_messages_and_subscribe(|message| {
+                replayed.push(message.id);
+                store.persist_message(&sample_message(&conversation, 2))?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(replayed, vec![MessageId::new("1")]);
+        assert!(
+            matches!(changes.recv_timeout(std::time::Duration::ZERO).unwrap(), crate::services::local_store::MessageChange::Dirty { message_id, .. } if message_id == MessageId::new("2"))
+        );
+        store
+            .delete_message(&conversation, &MessageId::new("1"))
+            .unwrap();
+        assert!(
+            matches!(changes.recv_timeout(std::time::Duration::ZERO).unwrap(), crate::services::local_store::MessageChange::Dirty { message_id, .. } if message_id == MessageId::new("1"))
+        );
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn snapshot_overflow_recovers_latest_truth_without_blocking_writes() {
+        use crate::services::local_store::MessageChange;
+        use std::time::Duration;
+        let path = temp_rocks_path("replay-overflow");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let conversation = ConversationId::new("conversation");
+        store
+            .persist_message(&sample_message(&conversation, 1))
+            .unwrap();
+        let changes = store
+            .replay_messages_and_subscribe(|_| {
+                // The consumer is paused in snapshot replay while catch-up exceeds
+                // the subscription's capacity. None of these writes may block.
+                for id in 2..=4097 {
+                    store.persist_message(&sample_message(&conversation, id))?;
+                }
+                store.delete_message(&conversation, &MessageId::new("1"))?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(matches!(
+            changes.recv_timeout(Duration::ZERO).unwrap(),
+            MessageChange::ReplayRequired
+        ));
+        drop(changes);
+        let mut replayed = Vec::new();
+        let fresh = store
+            .replay_messages_and_subscribe(|message| {
+                replayed.push(message.id);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(replayed.len(), 4096);
+        assert!(!replayed.contains(&MessageId::new("1")));
+        assert!(replayed.contains(&MessageId::new("4097")));
+        assert!(fresh.recv_timeout(Duration::ZERO).is_err());
+        drop(fresh);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn identical_upserts_do_not_publish_redundant_invalidations() {
+        use std::time::Duration;
+        let path = temp_rocks_path("identical-upsert");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let message = sample_message(&ConversationId::new("conversation"), 1);
+        store.persist_message(&message).unwrap();
+        let changes = store.replay_messages_and_subscribe(|_| Ok(())).unwrap();
+        store.persist_message(&message).unwrap();
+        assert!(changes.recv_timeout(Duration::ZERO).is_err());
+        drop(changes);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn canonical_attachment_merge_handles_reordering_replacement_and_source_precedence() {
+        use crate::domain::attachment::{AttachmentPreview, AttachmentSource};
+        let path = temp_rocks_path("attachment-identity");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let assets = path.join("test-attachments");
+        std::fs::create_dir_all(&assets).unwrap();
+        for name in ["first", "second", "first-preview", "second-preview", "new-first"] {
+            std::fs::write(assets.join(name), b"attachment").unwrap();
+        }
+        let mut original = sample_message(&ConversationId::new("conversation"), 1);
+        let mut second = original.attachments[0].clone();
+        second.name = "second.txt".into();
+        original.attachments.push(second);
+        for (attachment, name) in original.attachments.iter_mut().zip(["first", "second"]) {
+            attachment.source = Some(AttachmentSource::LocalPath(assets.join(name).to_string_lossy().into_owned()));
+            attachment.preview = Some(AttachmentPreview {
+                source: AttachmentSource::LocalPath(assets.join(format!("{name}-preview")).to_string_lossy().into_owned()),
+                width: None,
+                height: None,
+            });
+        }
+        store.persist_message(&original).unwrap();
+        let mut incoming = original.clone();
+        incoming.attachments.reverse();
+        for attachment in &mut incoming.attachments {
+            attachment.source = None;
+            attachment.preview = None;
+        }
+        let reordered = store.upsert_message(&incoming).unwrap().unwrap();
+        assert!(
+            matches!(&reordered.attachments[0].source, Some(AttachmentSource::LocalPath(path)) if path.ends_with("/second"))
+        );
+        assert!(
+            matches!(&reordered.attachments[1].preview.as_ref().unwrap().source, AttachmentSource::LocalPath(path) if path.ends_with("/first-preview"))
+        );
+        incoming.attachments[0].name = "replacement.txt".into();
+        incoming.attachments[0].size_bytes = 42;
+        incoming.attachments[1].source =
+            Some(AttachmentSource::LocalPath(assets.join("new-first").to_string_lossy().into_owned()));
+        let replaced = store.upsert_message(&incoming).unwrap().unwrap();
+        assert!(replaced.attachments[0].source.is_none());
+        assert!(replaced.attachments[0].preview.is_none());
+        assert!(
+            matches!(&replaced.attachments[1].source, Some(AttachmentSource::LocalPath(path)) if path.ends_with("/new-first"))
+        );
+        // A late download for the replaced identity cannot attach its old file.
+        let patched = store
+            .patch_attachment_paths(
+                &incoming.conversation_id,
+                &incoming.id,
+                &original.attachments[1..],
+            )
+            .unwrap()
+            .unwrap();
+        assert!(patched.attachments[0].source.is_none());
+        assert!(
+            matches!(&patched.attachments[1].source, Some(AttachmentSource::LocalPath(path)) if path.ends_with("/new-first"))
+        );
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn sync_position_is_independent_of_crawl_checkpoint() {
+        let path = temp_rocks_path("sync-position");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let conversation = ConversationId::new("conversation");
+        assert_eq!(store.load_sync_position(&conversation).unwrap(), 0);
+        store.save_sync_position(&conversation, 42).unwrap();
+        store.clear_crawl_checkpoint(&conversation).unwrap();
+        assert_eq!(store.load_sync_position(&conversation).unwrap(), 42);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

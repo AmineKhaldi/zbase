@@ -9,6 +9,8 @@ pub mod search_service;
 pub mod settings_store;
 pub mod sync_service;
 pub mod uploads_service;
+pub mod window_preferences;
+pub mod window_preferences_writer;
 
 use self::{
     draft_store::DraftStore, media_service::MediaService,

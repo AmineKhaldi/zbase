@@ -6,6 +6,7 @@ pub mod channel_details;
 pub mod conversation;
 pub mod ids;
 pub mod message;
+pub mod message_formatting;
 pub mod pins;
 pub mod presence;
 pub mod profile;

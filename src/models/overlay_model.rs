@@ -26,7 +26,7 @@ pub struct FullscreenImageOverlay {
     pub height: Option<u32>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct OverlayModel {
     pub new_chat_open: bool,
     pub quick_switcher_open: bool,

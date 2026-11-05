@@ -50,17 +50,31 @@ impl BackendRouter {
             .insert(binding.message_id.clone(), binding);
     }
 
-    pub fn apply_effects(&mut self, effects: &[Effect]) -> Result<Vec<BackendEvent>, BackendError> {
+    pub fn apply_effects(&mut self, effects: &[Effect]) -> Vec<BackendEvent> {
         let mut events = Vec::new();
-
         for effect in effects {
             let Effect::Backend(command) = effect else {
                 continue;
             };
-            events.extend(self.route_command(command.clone())?);
+            match self.route_command(command.clone()) {
+                Ok(successes) => events.extend(successes),
+                Err(error) => {
+                    // Searches have UI-specific completion handlers outside the store.
+                    if let BackendCommand::Search { query_id, .. } = command {
+                        events.push(BackendEvent::SearchResults {
+                            query_id: query_id.clone(),
+                            results: Vec::new(),
+                            is_complete: true,
+                        });
+                    }
+                    events.push(BackendEvent::CommandFailed {
+                        command: Box::new(command.clone()),
+                        error: error.to_string(),
+                    });
+                }
+            }
         }
-
-        Ok(events)
+        events
     }
 
     pub fn poll_backends(&mut self) -> Vec<BackendEvent> {
@@ -587,6 +601,24 @@ impl BackendRouter {
                     workspace_id,
                 })
             }
+            BackendCommand::LeaveChannel {
+                workspace_id,
+                conversation_id,
+            } => {
+                let binding = self
+                    .conversation_bindings
+                    .get(&conversation_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        BackendError::MissingConversationBinding(conversation_id.0.clone())
+                    })?;
+                let backend = self.backend_for_binding(&binding.backend_id)?;
+                backend.execute(RoutedBackendCommand::LeaveChannel {
+                    account_id: binding.account_id,
+                    conversation: binding.provider_conversation_ref,
+                    workspace_id,
+                })
+            }
         }
     }
 
@@ -701,5 +733,56 @@ impl BackendRouter {
             .values()
             .find(|binding| &binding.account_id == account_id && &binding.backend_id == backend_id)
             .ok_or_else(|| BackendError::MissingWorkspaceBinding(account_id.0.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::backend::BackendCapabilities;
+
+    struct ConnectedBackend;
+    impl ChatBackend for ConnectedBackend {
+        fn backend_id(&self) -> BackendId {
+            BackendId::new("test")
+        }
+        fn capabilities(&self) -> BackendCapabilities {
+            BackendCapabilities::keybase_defaults()
+        }
+        fn connect_account(
+            &mut self,
+            account_id: &AccountId,
+        ) -> Result<Vec<BackendEvent>, BackendError> {
+            Ok(vec![BackendEvent::AccountConnected {
+                account_id: account_id.clone(),
+            }])
+        }
+        fn execute(&mut self, _: RoutedBackendCommand) -> Result<Vec<BackendEvent>, BackendError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn effect_failures_preserve_successful_events_and_execute_later_commands() {
+        let mut router = BackendRouter::default();
+        let account = AccountId::new("test-account");
+        router.register_backend(Box::new(ConnectedBackend));
+        router.register_account(account.clone(), BackendId::new("test"));
+        let events = router.apply_effects(&[
+            Effect::Backend(BackendCommand::ConnectAccount {
+                account_id: account.clone(),
+            }),
+            Effect::Backend(BackendCommand::LoadConversation {
+                conversation_id: ConversationId::new("missing"),
+            }),
+            Effect::Backend(BackendCommand::ConnectAccount {
+                account_id: account,
+            }),
+        ]);
+        assert!(matches!(&events[0], BackendEvent::AccountConnected { .. }));
+        assert!(
+            matches!(&events[1], BackendEvent::CommandFailed { command, .. } if matches!(command.as_ref(), BackendCommand::LoadConversation { .. }))
+        );
+        assert!(matches!(&events[2], BackendEvent::AccountConnected { .. }));
     }
 }

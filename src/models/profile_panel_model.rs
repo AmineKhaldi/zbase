@@ -1,6 +1,6 @@
 use crate::domain::{
     ids::UserId,
-    profile::{SocialGraphListType, UserProfile},
+    profile::{SocialGraphListType, SocialListLoadState, UserProfile},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -25,5 +25,5 @@ pub struct ProfilePanelModel {
     pub profile: Option<UserProfile>,
     pub loading: bool,
     pub active_social_tab: SocialTab,
-    pub loading_social_list: bool,
+    pub social_list_status: Option<SocialListLoadState>,
 }

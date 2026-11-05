@@ -17,6 +17,9 @@ pub enum DraftKey {
 #[derive(Clone, Debug)]
 pub enum UiAction {
     StartApp,
+    LeaveChannel {
+        conversation_id: ConversationId,
+    },
     Navigate(Route),
     /// Like Navigate but without triggering LoadConversation.
     /// Used by navigate_to_message to avoid a background load race with JumpToMessage.

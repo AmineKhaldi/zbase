@@ -1,3 +1,10 @@
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SidebarMode {
+    #[default]
+    Recent,
+    Grouped,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThemeMode {
     Light,
@@ -21,6 +28,7 @@ pub struct SettingsModel {
     pub show_right_pane: bool,
     pub emoji_skin_tone: Option<String>,
     pub emoji_recents: Vec<String>,
+    pub sidebar_modes: HashMap<String, SidebarMode>,
     pub sidebar_section_order: HashMap<String, Vec<String>>,
     pub sidebar_collapsed_sections: HashMap<String, HashSet<String>>,
     pub dismissed_pinned_items: HashMap<String, String>,
@@ -36,6 +44,7 @@ impl Default for SettingsModel {
             show_right_pane: true,
             emoji_skin_tone: None,
             emoji_recents: Vec::new(),
+            sidebar_modes: HashMap::new(),
             sidebar_section_order: HashMap::new(),
             sidebar_collapsed_sections: HashMap::new(),
             dismissed_pinned_items: HashMap::new(),

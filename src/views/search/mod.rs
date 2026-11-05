@@ -61,22 +61,6 @@ impl SearchView {
             .child(
                 div().flex().gap_2().children([
                     Self::filter_chip(
-                        "From Alice",
-                        search
-                            .filters
-                            .contains(&SearchFilter::FromUser("alice".to_string())),
-                        cx,
-                        SearchFilter::FromUser("alice".to_string()),
-                    ),
-                    Self::filter_chip(
-                        "In #design",
-                        search
-                            .filters
-                            .contains(&SearchFilter::InChannel("design".to_string())),
-                        cx,
-                        SearchFilter::InChannel("design".to_string()),
-                    ),
-                    Self::filter_chip(
                         "Has file",
                         search.filters.contains(&SearchFilter::HasFile),
                         cx,

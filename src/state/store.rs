@@ -29,6 +29,10 @@ impl AppStore {
         self.dispatch(AppEvent::Backend(event))
     }
 
+    pub fn take_toasts(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.state.notifications.toasts)
+    }
+
     pub fn snapshot(&self) -> &UiState {
         &self.state
     }

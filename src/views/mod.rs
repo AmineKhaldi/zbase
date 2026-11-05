@@ -1,3 +1,5 @@
+mod pane_window;
+mod quick_react_placement;
 pub mod app_window;
 pub mod avatar;
 pub mod calls;
@@ -53,6 +55,8 @@ struct Palette {
     text_inverted: u32,
     text_muted_inverted: u32,
     accent: u32,
+    link: u32,
+    unread_indicator: u32,
     accent_soft: u32,
     success: u32,
     success_soft: u32,
@@ -68,75 +72,90 @@ struct Palette {
     mention_soft: u32,
     mention_you: u32,
     mention_you_soft: u32,
+    inline_code_foreground: u32,
+    inline_code_background: u32,
     selection: u32,
 }
 
+// Light palette follows Keybase shared/styles/colors.tsx: white, blueGrey,
+// black_on_white, blue/blueDark, and the matching semantic status colors.
 const LIGHT_PALETTE: Palette = Palette {
-    app_bg: 0xf3f7fa,
-    titlebar_bg: 0xf7fbfd,
-    titlebar_surface: 0xe9eff4,
-    rail_bg: 0xf4f8fb,
-    rail_surface: 0xe5edf3,
-    sidebar_bg: 0xf7fafc,
-    main_bg: 0xfbfcfd,
+    app_bg: 0xffffff,
+    titlebar_bg: 0xffffff,
+    titlebar_surface: 0xe6e6e6,
+    rail_bg: 0x3663ea,
+    rail_surface: 0x4c8eff,
+    sidebar_bg: 0xf2f4f7,
+    main_bg: 0xffffff,
     panel_bg: 0xffffff,
-    panel_alt_bg: 0xf4f7fa,
-    border: 0xdbe3ea,
-    text_primary: 0x334155,
-    text_secondary: 0x7a8897,
-    text_inverted: 0xf7fbff,
-    text_muted_inverted: 0x93a4b8,
-    accent: 0x6f87ad,
-    accent_soft: 0xebf0f6,
-    success: 0x5e8f88,
-    success_soft: 0xe9f3f1,
-    warning: 0xa58558,
-    warning_soft: 0xf8efdf,
-    danger: 0xb47a74,
-    danger_soft: 0xf7ecea,
-    affinity_positive: 0x5e8f88,
-    affinity_positive_soft: 0xe9f3f1,
-    affinity_broken: 0xb47a74,
-    affinity_broken_soft: 0xf7ecea,
-    mention: 0x6588a7,
-    mention_soft: 0xe9f0f5,
-    mention_you: 0xa58558,
-    mention_you_soft: 0xf8efdf,
-    selection: 0x6f87ad26,
+    panel_alt_bg: 0xf0f0f0,
+    border: 0xe6e6e6,
+    text_primary: 0x262626,
+    text_secondary: 0x7f7f7f,
+    text_inverted: 0xffffff,
+    text_muted_inverted: 0xcccccc,
+    accent: 0x4c8eff,
+    link: 0x3663ea,
+    unread_indicator: 0xff6f21,
+    accent_soft: 0xebf2fc,
+    success: 0x37bd99,
+    success_soft: 0xe8faf6,
+    warning: 0x75574e,
+    warning_soft: 0xfffdcc,
+    danger: 0xeb253b,
+    danger_soft: 0xfaf2ed,
+    affinity_positive: 0x189e7a,
+    affinity_positive_soft: 0xe8faf6,
+    affinity_broken: 0xeb253b,
+    affinity_broken_soft: 0xfaf2ed,
+    mention: 0x3663ea,
+    mention_soft: 0xebf2fc,
+    mention_you: 0x191919,
+    mention_you_soft: 0xffffc0,
+    inline_code_foreground: 0x3663ea,
+    inline_code_background: 0xfaf2ed,
+    selection: 0x4c8eff4d,
 };
 
+// Keybase desktop dark colors (shared/styles/colors.tsx): white, blueGrey,
+// grey, black_on_white, blue, blueDark, greenDark and semantic status colors.
+// Soft fills composite those accents over the neutral chat background.
 const DARK_PALETTE: Palette = Palette {
-    app_bg: 0x0e1419,
-    titlebar_bg: 0x131b22,
-    titlebar_surface: 0x1a242d,
-    rail_bg: 0x10171d,
-    rail_surface: 0x18222b,
-    sidebar_bg: 0x111920,
-    main_bg: 0x0f161d,
-    panel_bg: 0x141d25,
-    panel_alt_bg: 0x1a242e,
-    border: 0x283543,
-    text_primary: 0xe4ebf3,
-    text_secondary: 0x93a3b5,
-    text_inverted: 0x081018,
-    text_muted_inverted: 0x5d7086,
-    accent: 0x8aa4c7,
-    accent_soft: 0x243242,
-    success: 0x79b2a7,
-    success_soft: 0x1e302f,
-    warning: 0xc9a978,
-    warning_soft: 0x352b1d,
-    danger: 0xc6918c,
-    danger_soft: 0x362220,
-    affinity_positive: 0x79b2a7,
-    affinity_positive_soft: 0x1e302f,
-    affinity_broken: 0xc6918c,
-    affinity_broken_soft: 0x362220,
-    mention: 0x8eb4d2,
-    mention_soft: 0x1f3140,
-    mention_you: 0xc9a978,
-    mention_you_soft: 0x352b1d,
-    selection: 0x8aa4c733,
+    app_bg: 0x191919,
+    titlebar_bg: 0x191919,
+    titlebar_surface: 0x333333,
+    rail_bg: 0x2d2d2d,
+    rail_surface: 0x3f3f3f,
+    sidebar_bg: 0x202020,
+    main_bg: 0x191919,
+    panel_bg: 0x202020,
+    panel_alt_bg: 0x2d2d2d,
+    border: 0x3b3b3b,
+    text_primary: 0xd9d9d9,
+    text_secondary: 0x8c8c8c,
+    text_inverted: 0xffffff,
+    text_muted_inverted: 0xcccccc,
+    accent: 0x4c8eff,
+    link: 0x3663ea,
+    unread_indicator: 0xff6f21,
+    accent_soft: 0x192344,
+    success: 0x37bd99,
+    success_soft: 0x1f3a33,
+    warning: 0xffb800,
+    warning_soft: 0x3b3115,
+    danger: 0xff4d61,
+    danger_soft: 0x3b2124,
+    affinity_positive: 0x189e7a,
+    affinity_positive_soft: 0x193b32,
+    affinity_broken: 0xeb253b,
+    affinity_broken_soft: 0x3b1b20,
+    mention: 0x73a6ff,
+    mention_soft: 0x192344,
+    mention_you: 0x191919,
+    mention_you_soft: 0xc3c390,
+    inline_code_foreground: 0x73a6ff,
+    inline_code_background: 0x2d2d2d,
+    selection: 0x4c8eff4d,
 };
 
 fn palette() -> Palette {
@@ -200,11 +219,11 @@ pub fn panel_alt_bg() -> u32 {
 }
 
 pub fn panel_surface() -> Hsla {
-    tint(panel_bg(), if is_dark_theme() { 0.55 } else { 0.45 })
+    tint(panel_bg(), if is_dark_theme() { 0.55 } else { 1.0 })
 }
 
 pub fn panel_alt_surface() -> Hsla {
-    tint(panel_alt_bg(), if is_dark_theme() { 0.50 } else { 0.40 })
+    tint(panel_alt_bg(), if is_dark_theme() { 0.50 } else { 1.0 })
 }
 
 pub fn border() -> u32 {
@@ -243,6 +262,14 @@ pub fn text_muted_inverted() -> u32 {
 
 pub fn accent() -> u32 {
     palette().accent
+}
+
+pub fn link() -> u32 {
+    palette().link
+}
+
+pub fn unread_indicator() -> u32 {
+    palette().unread_indicator
 }
 
 pub fn accent_soft() -> u32 {
@@ -303,6 +330,18 @@ pub fn mention_you() -> u32 {
 
 pub fn mention_you_soft() -> u32 {
     palette().mention_you_soft
+}
+
+pub fn inline_code_font_size() -> gpui::Pixels {
+    px(12.)
+}
+
+pub fn inline_code_foreground() -> u32 {
+    palette().inline_code_foreground
+}
+
+pub fn inline_code_background() -> u32 {
+    palette().inline_code_background
 }
 
 pub fn selection() -> u32 {
@@ -367,78 +406,70 @@ pub fn tint(color: u32, opacity: f32) -> Hsla {
 }
 
 pub fn app_backdrop() -> Background {
-    if is_dark_theme() {
-        linear_gradient(
-            135.,
-            linear_color_stop(tint(0x11181f, 0.72), 0.0),
-            linear_color_stop(tint(0x17212a, 0.78), 1.0),
-        )
-    } else {
-        linear_gradient(
-            135.,
-            linear_color_stop(tint(0xf0f5f9, 0.62), 0.0),
-            linear_color_stop(tint(0xeaeff5, 0.66), 1.0),
-        )
-    }
+    linear_gradient(
+        135.,
+        linear_color_stop(tint(app_bg(), 1.0), 0.0),
+        linear_color_stop(tint(main_bg(), 1.0), 1.0),
+    )
 }
 
 pub fn glass_surface() -> Hsla {
     if is_dark_theme() {
-        tint(0x121b22, 0.55)
+        tint(panel_bg(), 0.98)
     } else {
-        tint(0xffffff, 0.45)
+        tint(panel_bg(), 1.0)
     }
 }
 
 pub fn glass_surface_strong() -> Hsla {
     if is_dark_theme() {
-        tint(0x212f3e, 0.46)
+        tint(panel_alt_bg(), 0.98)
     } else {
-        tint(0xffffff, 0.88)
+        tint(panel_alt_bg(), 1.0)
     }
 }
 
 pub fn glass_surface_dark() -> Hsla {
     if is_dark_theme() {
-        tint(0x111920, 0.92)
+        tint(sidebar_bg(), 0.98)
     } else {
-        tint(0xffffff, 0.76)
+        tint(sidebar_bg(), 1.0)
     }
 }
 
 pub fn modal_surface() -> Hsla {
     if is_dark_theme() {
-        tint(0x131a22, 0.99)
+        tint(panel_bg(), 0.99)
     } else {
-        tint(0xf8f9fa, 0.99)
+        tint(panel_bg(), 1.0)
     }
 }
 
 pub fn content_surface() -> Hsla {
     if is_dark_theme() {
-        tint(0x182330, 0.65)
+        tint(main_bg(), 0.98)
     } else {
-        tint(0xffffff, 0.82)
+        tint(main_bg(), 1.0)
     }
 }
 
 pub fn subtle_surface() -> Hsla {
-    tint(panel_alt_bg(), if is_dark_theme() { 0.88 } else { 0.68 })
+    tint(panel_alt_bg(), if is_dark_theme() { 0.88 } else { 1.0 })
 }
 
 pub fn shell_border() -> Hsla {
     if is_dark_theme() {
-        tint(0x8ea3b7, 0.22)
+        tint(0xffffff, 0.10)
     } else {
-        tint(0x8ea3b7, 0.28)
+        tint(0x000000, 0.10)
     }
 }
 
 pub fn shell_border_strong() -> Hsla {
     if is_dark_theme() {
-        tint(0x8ea3b7, 0.34)
+        tint(0xffffff, 0.20)
     } else {
-        tint(0x8ea3b7, 0.44)
+        tint(0x000000, 0.20)
     }
 }
 
@@ -746,6 +777,10 @@ pub fn activity_icon(color: u32) -> AnyElement {
     icon_asset("assets/icons/activity.svg", 18., color)
 }
 
+pub fn history_icon(color: u32) -> AnyElement {
+    icon_asset("assets/icons/history.svg", 18., color)
+}
+
 pub fn search_icon(color: u32) -> AnyElement {
     icon_asset("assets/icons/search.svg", 18., color)
 }
@@ -981,4 +1016,55 @@ pub fn composer_tool(icon: AnyElement, color: u32) -> AnyElement {
         .justify_center()
         .child(div().text_color(rgb(color)).child(icon))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod highlight_color_tests {
+    use super::*;
+    use crate::domain::{affinity::Affinity, ids::UserId};
+    use std::collections::HashMap;
+
+    fn contrast(foreground: u32, background: u32) -> f64 {
+        let luminance = |color: u32| {
+            let channel = |shift: u32| {
+                let value = ((color >> shift) & 255u32) as f64 / 255.;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+        };
+        let a = luminance(foreground);
+        let b = luminance(background);
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn inline_highlights_are_readable_and_self_mentions_are_distinct_in_both_themes() {
+        for theme in [ThemeVariant::Light, ThemeVariant::Dark] {
+            with_theme(theme, || {
+                let me = UserId::new("CameronCooper");
+                let mentioned_me = UserId::new("cameroncooper");
+                let other = UserId::new("someone_else");
+                let following = HashMap::from([(mentioned_me.clone(), Affinity::Positive)]);
+                let own = mention_colors_for_user(&following, Some(&me), &mentioned_me);
+                let ordinary = mention_colors_for_user(&following, Some(&me), &other);
+                assert_ne!(own, ordinary);
+                assert_eq!(own, (mention_you(), mention_you_soft()));
+                for (foreground, background) in [
+                    own,
+                    ordinary,
+                    (inline_code_foreground(), inline_code_background()),
+                ] {
+                    assert!(
+                        contrast(foreground, background) >= 4.5,
+                        "insufficient contrast: {foreground:06x} on {background:06x}"
+                    );
+                }
+                assert_ne!(inline_code_background(), mention_soft());
+            });
+        }
+    }
 }

@@ -4,12 +4,12 @@ use crate::domain::{
     affinity::Affinity,
     backend::{AccountId, BackendCapabilities, BackendId},
     call::CallStatus,
-    conversation::ConversationSummary,
+    conversation::{ConversationBadgeState, ConversationSummary},
     ids::{CallId, ConversationId, MessageId, SidebarSectionId, UserId, WorkspaceId},
     message::{EmojiSourceRef, MessageRecord},
     pins::PinnedState,
     presence::Presence,
-    profile::UserProfile,
+    profile::{UserProfile, SocialGraphListType, SocialListLoadState},
     route::Route,
     search::{SearchFilter, SearchResult},
     user::UserSummary,
@@ -19,6 +19,7 @@ use super::{
     action::DraftKey,
     bindings::{ConversationBinding, MessageBinding, WorkspaceBinding},
     event::TeamRoleKind,
+    ids::{OpId, QueryId},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,6 +44,8 @@ pub enum TimelineKey {
     Thread {
         conversation_id: ConversationId,
         root_id: MessageId,
+        // Correlates the response even when the backend resolves a different canonical root.
+        requested_root_id: MessageId,
     },
 }
 
@@ -65,6 +68,10 @@ pub struct DraftState {
 
 #[derive(Clone, Debug, Default)]
 pub struct UiWorkspaceState {
+    pub left_conversation_ids: HashSet<ConversationId>,
+    pub leaving_conversation_ids: HashSet<ConversationId>,
+    pub leave_channel_errors: HashMap<ConversationId, String>,
+    pub excluded_conversation_ids: HashSet<ConversationId>,
     pub active_workspace_id: Option<WorkspaceId>,
     pub workspace_name: String,
     pub channels: Vec<ConversationSummary>,
@@ -89,6 +96,7 @@ pub struct UiSidebarSectionState {
 
 #[derive(Clone, Debug, Default)]
 pub struct UiSidebarState {
+    pub retained_unread_conversation: Option<ConversationId>,
     pub sections: Vec<UiSidebarSectionState>,
     pub filter: String,
     pub highlighted_route: Option<Route>,
@@ -117,6 +125,7 @@ pub struct UiThreadState {
 
 #[derive(Clone, Debug, Default)]
 pub struct UiSearchState {
+    pub active_query_id: Option<QueryId>,
     pub query: String,
     pub filters: Vec<SearchFilter>,
     pub results: Vec<SearchResult>,
@@ -126,6 +135,7 @@ pub struct UiSearchState {
 
 #[derive(Clone, Debug, Default)]
 pub struct UiNewChatState {
+    pub active_query_id: Option<QueryId>,
     pub open: bool,
     pub search_query: String,
     pub search_results: Vec<UserSummary>,
@@ -169,6 +179,11 @@ pub struct AccountState {
 
 #[derive(Clone, Debug, Default)]
 pub struct BackendRuntimeState {
+    pub conversation_badges: HashMap<BackendId, ConversationBadgeState>,
+    pub hydrated_accounts: HashSet<AccountId>,
+    pub deleted_messages: HashSet<(ConversationId, MessageId)>,
+    pub pending_reactions: HashMap<OpId, PendingReaction>,
+    pub latest_reaction_ops: HashMap<(ConversationId, MessageId), OpId>,
     pub accounts: HashMap<AccountId, AccountState>,
     pub user_profiles: HashMap<UserId, UserProfileState>,
     pub user_affinities: HashMap<UserId, Affinity>,
@@ -203,9 +218,11 @@ pub struct UserProfileState {
 
 #[derive(Clone, Debug, Default)]
 pub struct UserProfilePanelState {
+    pub selected_user: Option<UserId>,
+    pub active_social_tab: SocialGraphListType,
     pub profiles: HashMap<UserId, UserProfile>,
     pub loading: HashSet<UserId>,
-    pub loading_social_list: HashSet<UserId>,
+    pub social_lists: HashMap<(UserId, SocialGraphListType), SocialListLoadState>,
 }
 
 #[derive(Clone, Debug)]
@@ -214,6 +231,13 @@ pub struct EmojiRenderState {
     pub unicode: Option<String>,
     pub asset_path: Option<String>,
     pub updated_ms: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct PendingReaction {
+    pub conversation_id: ConversationId,
+    pub message_id: MessageId,
+    pub previous: Vec<MessageReactionState>,
 }
 
 #[derive(Clone, Debug)]
