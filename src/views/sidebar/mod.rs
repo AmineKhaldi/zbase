@@ -370,7 +370,6 @@ impl Sidebar {
             )
             .when(is_unread_section || !section.collapsed, |container| {
                 let mut children = Vec::new();
-                let mut has_team_groups = false;
                 for rows in visible_rows.chunk_by(|left, right| {
                     left.team.as_ref().map(|team| &team.id)
                         == right.team.as_ref().map(|team| &team.id)
@@ -402,19 +401,7 @@ impl Sidebar {
                                 .children(rendered_rows)
                                 .into_any_element(),
                         );
-                        has_team_groups = true;
                     } else {
-                        if is_unread_section && has_team_groups {
-                            children.push(
-                                div()
-                                    .px_2()
-                                    .pt_1()
-                                    .text_xs()
-                                    .text_color(rgb(text_secondary()))
-                                    .child("Conversations")
-                                    .into_any_element(),
-                            );
-                        }
                         children.extend(rendered_rows);
                     }
                 }

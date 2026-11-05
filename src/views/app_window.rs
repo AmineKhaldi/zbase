@@ -69,11 +69,11 @@ use crate::{
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, AnyView, App, AppContext, AsyncApp, ClickEvent, ClipboardItem, Context,
-    CursorStyle, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ListAlignment,
-    ListOffset, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, PathPromptOptions, Render, RenderImage, ScrollDelta, ScrollHandle,
+    CursorStyle, DispatchPhase, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
+    ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, PathPromptOptions, Render, RenderImage, ScrollDelta, ScrollHandle,
     ScrollWheelEvent, StatefulInteractiveElement, StyleRefinement, Styled, Subscription,
-    WeakEntity, Window, div, px, rgb,
+    WeakEntity, Window, canvas, div, px, rgb,
 };
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -340,18 +340,6 @@ struct KeybaseInspectorState {
 struct ThreadResizeDrag {
     anchor_x: f32,
     starting_width: f32,
-}
-
-#[derive(Clone, Debug)]
-struct SidebarResizeDrag;
-
-#[derive(Default)]
-struct SidebarResizeDragPreview;
-
-impl Render for SidebarResizeDragPreview {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().w(px(0.)).h(px(0.))
-    }
 }
 
 struct SidebarResizeState {
@@ -5781,6 +5769,7 @@ impl AppWindow {
             starting_width: self.models.sidebar.width_px,
         });
         self.refresh(cx);
+        cx.stop_propagation();
     }
 
     fn update_thread_resize_drag(
@@ -5817,20 +5806,61 @@ impl AppWindow {
         self.refresh(cx);
     }
 
-    fn update_sidebar_resize_drag_on_drag(
+    fn update_sidebar_resize(
         &mut self,
-        event: &gpui::DragMoveEvent<SidebarResizeDrag>,
+        event: &MouseMoveEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(drag) = self.sidebar_resize_drag.as_ref() else {
             return;
         };
-
-        // Sidebar handle sits on the right edge of the sidebar: drag right = wider.
-        let next_width = drag.starting_width + (f32::from(event.event.position.x) - drag.anchor_x);
+        // Recover if the button was released outside the window.
+        if !event.dragging() {
+            self.sidebar_resize_drag = None;
+            return;
+        }
+        let next_width = drag.starting_width + (f32::from(event.position.x) - drag.anchor_x);
         self.models.set_sidebar_width(next_width);
         self.refresh(cx);
+        cx.stop_propagation();
+    }
+
+    fn finish_sidebar_resize(
+        &mut self,
+        event: &MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.button == MouseButton::Left && self.sidebar_resize_drag.take().is_some() {
+            self.refresh(cx);
+            cx.stop_propagation();
+        }
+    }
+
+    // Window listeners run in capture before chat hover/selection handlers can
+    // consume the first move. Resizing does not need drag-and-drop's threshold.
+    fn sidebar_resize_capture(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on_move = cx.listener(Self::update_sidebar_resize);
+        let on_up = cx.listener(Self::finish_sidebar_resize);
+        canvas(
+            |_, _, _| (),
+            move |_, _, window, _| {
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    if phase == DispatchPhase::Capture {
+                        on_move(event, window, cx);
+                    }
+                });
+                window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                    if phase == DispatchPhase::Capture {
+                        on_up(event, window, cx);
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_full()
+        .into_any_element()
     }
 
     fn finish_thread_resize_drag(
@@ -5841,9 +5871,6 @@ impl AppWindow {
     ) {
         let mut changed = false;
         if self.thread_resize_drag.take().is_some() {
-            changed = true;
-        }
-        if self.sidebar_resize_drag.take().is_some() {
             changed = true;
         }
         if changed {
@@ -8476,9 +8503,6 @@ impl Render for AppWindow {
                 .on_drag_move::<RightPaneResizeDrag>(
                     cx.listener(Self::update_thread_resize_drag_on_drag),
                 )
-                .on_drag_move::<SidebarResizeDrag>(
-                    cx.listener(Self::update_sidebar_resize_drag_on_drag),
-                )
                 .on_mouse_move(cx.listener(Self::update_thread_resize_drag))
                 .on_mouse_move(cx.listener(|this, _, _, cx| {
                     this.clear_hovered_message(cx);
@@ -8560,9 +8584,7 @@ impl Render for AppWindow {
                         })
                         .cursor(CursorStyle::ResizeColumn)
                         .id("sidebar-resize-handle")
-                        .on_drag(SidebarResizeDrag, |_, _, _, cx| {
-                            cx.new(|_| SidebarResizeDragPreview)
-                        })
+                        .flex_shrink_0()
                         .on_mouse_down(MouseButton::Left, cx.listener(Self::begin_sidebar_resize))
                         .flex()
                         .items_center()
@@ -8608,6 +8630,7 @@ impl Render for AppWindow {
                 })
                 .when_some(right_pane, |div, pane| div.child(pane))
                 .when_some(call_dock, |div, dock| div.child(dock))
+                .child(self.sidebar_resize_capture(cx))
                 .child({
                     let overlay_t0 = Instant::now();
                     let quick_switcher_indexing_status = self.quick_switcher_indexing_status_text();
