@@ -25,10 +25,17 @@ Merge the workflow to the default branch first so GitHub exposes its manual Run 
 
 ## Publish
 
-1. Update the package version in `Cargo.toml` and `Cargo.lock`, and merge the release commit (including this workflow) to `main`.
-2. In GitHub, open **Releases → Draft a new release**. Choose **Create new tag**, enter `v` followed by the exact Cargo version (for example, `v1.0.13`), and target the release commit on `main`.
-3. Write your title and release notes. Save the draft while editing; click **Publish release** when ready.
-4. The `release: published` event starts the workflow. It builds, signs and notarizes the app and DMG, then attaches the DMG, checksum, corresponding media sources and build information to that same release. Your title, notes, latest selection and prerelease status are preserved. The Homebrew source formula is updated after attachment for stable releases only.
+1. Merge these workflows to `main` first. In **Actions → Prepare release → Run workflow**, select `main` and enter a new stable version without `v` (for example, `1.0.14`).
+2. Open the version-bump PR linked in the workflow summary. It updates only the app version in `Cargo.toml` and `Cargo.lock`, preserving dependency versions. CI starts automatically on its branch. Review the changes, wait for checks, and merge the PR.
+3. In GitHub, open **Releases → Draft a new release**. Choose **Create new tag**, enter the matching tag (for example, `v1.0.14`), and target the merged release-preparation commit on `main`.
+4. Write your title and release notes. Save the draft while editing; click **Publish release** when ready.
+5. The `release: published` event starts the workflow. It builds, signs and notarizes the app and DMG, then attaches the DMG, checksum, corresponding media sources and build information to that same release. Your title, notes, latest selection and prerelease status are preserved. The Homebrew source formula is updated after attachment for stable releases only.
+
+Prepare release accepts patch, minor, or major version increases. It rejects malformed, unchanged, older, or already-tagged versions. It creates neither a tag nor a release, and does not merge its PR. A rerun reuses an existing open preparation PR for that version without overwriting its branch. If a branch exists without an open PR, inspect it and open the PR manually or delete the abandoned branch before retrying.
+
+The repository setting **Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests** must be enabled. The workflow uses the built-in `GITHUB_TOKEN`; no additional secret is required. GitHub can require approval for PR-event workflows created by this token, so Prepare release explicitly dispatches `CI` on the preparation branch. See [GitHub's token-trigger rules](https://docs.github.com/en/actions/concepts/security/github_token#when-github_token-triggers-workflow-runs). It does not approve or merge PRs.
+
+You can also update the two Cargo files in an ordinary PR instead of using Prepare release. Either way, the published tag must match the version committed at its target.
 
 The release is public immediately; its DMG becomes available once the workflow succeeds. Saving a draft, editing notes, pushing a tag, or merging to `main` does not start a release build. There is no automatic tagging or version bump on merge. Manual workflow runs remain available for testing without changing any release.
 

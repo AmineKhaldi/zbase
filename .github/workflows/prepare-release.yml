@@ -1,0 +1,77 @@
+name: Prepare release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'New stable version without v (for example, 1.0.14)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - name: Require main
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo 'Run Prepare release from main after merging the workflow.' >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - name: Validate and bump package versions
+        run: python3 scripts/prepare_release.py "$RELEASE_VERSION"
+      - name: Open version bump PR
+        run: |
+          tag="$(git ls-remote --tags origin "refs/tags/v${RELEASE_VERSION}")"
+          if [[ -n "$tag" ]]; then
+            echo "Tag v${RELEASE_VERSION} already exists. Choose a new version." >&2
+            exit 1
+          fi
+          branch="release/prepare-v${RELEASE_VERSION}"
+          existing="$(git ls-remote --heads origin "refs/heads/$branch")"
+          if [[ -n "$existing" ]]; then
+            url="$(gh pr list --base main --head "$branch" --state open --json url --jq '.[0].url // empty')"
+            if [[ -z "$url" ]]; then
+              echo "Branch $branch already exists without an open PR. Inspect it before retrying; it will not be overwritten." >&2
+              exit 1
+            fi
+          else
+            git switch -c "$branch"
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add Cargo.toml Cargo.lock
+            git commit -m "Prepare release v${RELEASE_VERSION}"
+            git push origin "HEAD:refs/heads/$branch"
+            body="$RUNNER_TEMP/release-pr-body.md"
+            cat > "$body" <<EOF
+          Prepare zBase v${RELEASE_VERSION} by updating Cargo.toml and the app entry in Cargo.lock. Dependency versions are unchanged.
+
+          After CI passes and this PR is merged, create a GitHub release with tag v${RELEASE_VERSION} targeting the merged commit. Edit the release notes and publish to build and attach the signed DMG.
+
+          This PR does not create a tag or publish a release.
+          EOF
+            url="$(gh pr create --base main --head "$branch" --title "Prepare release v${RELEASE_VERSION}" --body-file "$body")"
+          fi
+          printf '## Release preparation\n\n[Open version bump PR](%s)\n\nAfter merging, create and publish release v%s in GitHub.\n' "$url" "$RELEASE_VERSION" >> "$GITHUB_STEP_SUMMARY"
+          # Explicit dispatch starts CI for this head using the built-in token.
+          # Token-created PR event runs can require manual approval.
+          gh workflow run ci.yml --ref "$branch"

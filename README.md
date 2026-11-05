@@ -174,13 +174,14 @@ This creates a development app at `dist/macos/zBase.app` using your installed me
 cargo run --locked --release --features gpui/runtime_shaders
 ```
 
-For self-contained packaging, Developer ID signing, notarization, and publishing, see [macOS releases](docs/macos-releases.md).
+To prepare a release, run **Actions → Prepare release** on `main` with the next version. Merge its version-bump PR after CI passes, then create and publish the matching release in GitHub. For self-contained packaging, Developer ID signing, notarization, and the full publishing process, see [macOS releases](docs/macos-releases.md).
 
 ### Checks before opening a PR
 
 ```sh
 cargo clippy --locked --all-targets --features gpui/runtime_shaders
 cargo test --locked --all-targets --features gpui/runtime_shaders
+python3 -m unittest discover -s scripts -p 'test_*.py' -v
 python3 -m unittest discover -s scripts/macos -p test_bundle_dylibs.py -v
 ```
 
