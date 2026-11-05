@@ -47,11 +47,14 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Install build tools
+        id: toolchain
         run: |
           brew install cmake pkgconf meson ninja
           rustup toolchain install stable --profile minimal
           rustup default stable
-      - uses: actions/cache@v6
+          echo "rust-key=$(rustc -vV | shasum -a 256 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        id: media-cache
         with:
           path: |
             dist/macos-deps/prefix
@@ -62,21 +65,42 @@ jobs:
           scripts/macos/build_media_deps.sh
           echo "PKG_CONFIG_PATH=$DEPS_DIR/prefix/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_LIBDIR=$DEPS_DIR/prefix/lib/pkgconfig" >> "$GITHUB_ENV"
-      - uses: actions/cache@v6
+      # Save expensive native dependencies before subsequent checks can fail.
+      - uses: actions/cache/save@v6
+        if: steps.media-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            dist/macos-deps/prefix
+            dist/macos-deps/downloads
+          key: ${{ steps.media-cache.outputs.cache-primary-key }}
+      - uses: actions/cache/restore@v6
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: rust-macos15-arm64-${{ hashFiles('Cargo.lock', 'scripts/macos/build_media_deps.sh') }}-${{ github.sha }}
+          key: rust-macos15-arm64-${{ steps.toolchain.outputs.rust-key }}-${{ hashFiles('Cargo.lock', 'scripts/macos/build_media_deps.sh') }}-${{ github.sha }}
           restore-keys: |
-            rust-macos15-arm64-${{ hashFiles('Cargo.lock', 'scripts/macos/build_media_deps.sh') }}-
-      - name: Test and build app
+            rust-macos15-arm64-${{ steps.toolchain.outputs.rust-key }}-${{ hashFiles('Cargo.lock', 'scripts/macos/build_media_deps.sh') }}-
+      - name: Packaging integration tests
+        run: python3 -m unittest discover -s scripts/macos -p test_bundle_dylibs.py -v
+      - name: Rust release tests
+        id: rust-tests
+        run: cargo test --release --locked --all-targets --features gpui/runtime_shaders --timings
+      - name: Build and verify self-contained app
         run: |
-          python3 -m unittest discover -s scripts/macos -p test_bundle_dylibs.py -v
-          cargo test --locked --all-targets --features gpui/runtime_shaders
           scripts/macos/build_app_bundle.sh release
           python3 scripts/macos/bundle_dylibs.py dist/macos/zBase.app --prefix "$DEPS_DIR/prefix"
+      # Preserve compiled dependencies even if a later check or signing fails.
+      - uses: actions/cache/save@v6
+        if: ${{ !cancelled() && steps.rust-tests.outcome == 'success' && steps.rust-cache.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Import signing credentials
         env:
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}

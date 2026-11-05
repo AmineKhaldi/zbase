@@ -185,7 +185,9 @@ python3 -m unittest discover -s scripts -p 'test_*.py' -v
 python3 -m unittest discover -s scripts/macos -p test_bundle_dylibs.py -v
 ```
 
-GitHub Actions runs workflow/script linting, Clippy, Rust tests, macOS packaging integration tests, and a release build on PRs and pushes to `main`. It verifies the app’s minimum OS, architecture, bundled library dependencies, and ad-hoc signatures. The `macos-development-app` artifact contains a development build for inspection; it is not Developer ID signed or notarized. Release signing credentials are used only by the separate Release workflow.
+GitHub Actions runs workflow/script linting, Clippy, Rust tests, macOS packaging integration tests, and a debug app build on PRs and pushes to `main`. The debug bundle reuses the dependencies compiled for checks and tests. CI verifies the app’s minimum OS, architecture, bundled library dependencies, and ad-hoc signatures. The `macos-development-app` artifact contains this unoptimized development build for inspection; it is not Developer ID signed or notarized. The `macos-cargo-timings` artifact contains Cargo's build timing reports.
+
+Media dependencies are cached as soon as their build succeeds. Rust build outputs are saved even if later validation fails, with compiler-specific cache keys. The separate Release workflow runs tests in release mode and builds the optimized app using the same profile, then signs and notarizes it with release credentials.
 
 Unit and packaging tests do not require Keybase or a logged-in account. Tests requiring a live service remain opt-in. Native interactive UI checks are still performed separately; CI does not verify on-screen rendering or live account synchronization.
 
