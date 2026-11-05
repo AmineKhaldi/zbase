@@ -4,7 +4,7 @@ use crate::{
     },
     views::{
         accent, accent_soft, app_window::AppWindow, card_shadow, emoji_icon, input::TextField,
-        is_dark_theme, modal_surface, paperclip_icon, shell_border, shell_border_strong,
+        is_dark_theme, modal_surface, panel_bg, paperclip_icon, shell_border, shell_border_strong,
         text_primary, text_secondary, tint,
     },
 };
@@ -64,7 +64,7 @@ impl ComposerPanel {
                 div()
                     .rounded_md()
                     .bg(if is_dark_theme() {
-                        tint(0x141d25, 0.34)
+                        rgb(panel_bg()).into()
                     } else {
                         tint(0xffffff, 0.86)
                     })

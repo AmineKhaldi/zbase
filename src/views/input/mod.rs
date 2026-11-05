@@ -1,6 +1,6 @@
 use gpui::{
     App, Bounds, ClipboardEntry, ClipboardItem, Context, CursorStyle, Element, ElementId,
-    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId,
+    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, Hsla,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
     Style, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, point,
     prelude::*, px, relative, rgb, rgba, size,
@@ -16,6 +16,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::views::{accent, selection};
 
 const DEFAULT_TEXT_FIELD_PROFILE_MIN_MS: u128 = 2;
+const PLACEHOLDER_OPACITY: f32 = 0.70;
 const ENV_INPUT_DISABLE_LAYOUT_CACHE: &str = "ZBASE_INPUT_DISABLE_LAYOUT_CACHE";
 const ENV_INPUT_PROFILE_MIN_MS: &str = "ZBASE_INPUT_PROFILE_MIN_MS";
 const ENV_INPUT_USE_LEGACY_REPLACE: &str = "ZBASE_INPUT_USE_LEGACY_REPLACE";
@@ -1183,6 +1184,11 @@ impl Element for TextLineElement {
                     } else {
                         &input.content
                     };
+                    let text_color = if is_placeholder {
+                        text_style.color.opacity(PLACEHOLDER_OPACITY)
+                    } else {
+                        text_style.color
+                    };
                     let font_size = text_style.font_size.to_pixels(window.rem_size());
                     if !text_field_layout_cache_disabled()
                         && let Some(cached_layout) = input.last_layout.as_ref().filter(|layout| {
@@ -1192,6 +1198,7 @@ impl Element for TextLineElement {
                                 Some(wrap_width),
                                 font_size,
                                 line_height,
+                                text_color,
                             )
                         })
                     {
@@ -1200,7 +1207,7 @@ impl Element for TextLineElement {
                         let run = TextRun {
                             len: display_text.len(),
                             font: text_style.font(),
-                            color: text_style.color,
+                            color: text_color,
                             background_color: None,
                             underline: None,
                             strikethrough: None,
@@ -1265,7 +1272,11 @@ impl Element for TextLineElement {
         let style = window.text_style();
 
         let (display_text, text_color, is_placeholder) = if content.is_empty() {
-            (input.placeholder.clone(), style.color.opacity(0.42), true)
+            (
+                input.placeholder.clone(),
+                style.color.opacity(PLACEHOLDER_OPACITY),
+                true,
+            )
         } else {
             (content.clone(), style.color, false)
         };
@@ -1283,6 +1294,7 @@ impl Element for TextLineElement {
                     wrap_width,
                     font_size,
                     line_height,
+                    text_color,
                 )
             }) {
             cached_layout.clone()
@@ -1354,6 +1366,7 @@ impl Element for TextLineElement {
                 content,
                 wrap_width,
                 font_size,
+                text_color,
                 marked_range: input.marked_range.clone(),
             }
         };
@@ -1530,6 +1543,7 @@ struct TextLayoutSnapshot {
     content: String,
     wrap_width: Option<Pixels>,
     font_size: Pixels,
+    text_color: Hsla,
     marked_range: Option<Range<usize>>,
 }
 
@@ -1543,6 +1557,7 @@ impl Default for TextLayoutSnapshot {
             content: String::new(),
             wrap_width: None,
             font_size: px(0.),
+            text_color: rgb(0).into(),
             marked_range: None,
         }
     }
@@ -1556,12 +1571,14 @@ impl TextLayoutSnapshot {
         wrap_width: Option<Pixels>,
         font_size: Pixels,
         line_height: Pixels,
+        text_color: Hsla,
     ) -> bool {
         self.is_placeholder == is_placeholder
             && self.marked_range.as_ref() == marked_range
             && optional_pixels_match(self.wrap_width, wrap_width)
             && pixels_match(self.font_size, font_size)
             && pixels_match(self.line_height, line_height)
+            && self.text_color == text_color
     }
 
     fn next_line_start(&self, line_start_ix: usize, line_len: usize) -> usize {
@@ -1871,6 +1888,49 @@ mod tests {
         current_line_end, current_line_start, delete_to_previous_word_start, next_word_end,
         previous_word_start,
     };
+
+    #[test]
+    fn theme_color_changes_invalidate_cached_text_and_placeholder_runs() {
+        use super::{PLACEHOLDER_OPACITY, TextLayoutSnapshot};
+        use gpui::{Hsla, px, rgb};
+        for is_placeholder in [false, true] {
+            let dark: Hsla = rgb(0xd9d9d9).into();
+            let light: Hsla = rgb(0x262626).into();
+            let dark = if is_placeholder {
+                dark.opacity(PLACEHOLDER_OPACITY)
+            } else {
+                dark
+            };
+            let light = if is_placeholder {
+                light.opacity(PLACEHOLDER_OPACITY)
+            } else {
+                light
+            };
+            let snapshot = TextLayoutSnapshot {
+                is_placeholder,
+                font_size: px(14.),
+                line_height: px(22.),
+                text_color: dark,
+                ..Default::default()
+            };
+            assert!(snapshot.matches_shape_state(
+                is_placeholder,
+                None,
+                None,
+                px(14.),
+                px(22.),
+                dark
+            ));
+            assert!(!snapshot.matches_shape_state(
+                is_placeholder,
+                None,
+                None,
+                px(14.),
+                px(22.),
+                light
+            ));
+        }
+    }
 
     #[test]
     fn previous_word_start_moves_to_prior_word() {
