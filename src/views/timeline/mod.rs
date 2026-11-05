@@ -1,3 +1,4 @@
+pub(crate) mod viewport_anchor;
 use crate::util::emoji_aliases::{normalize_emoji_alias, standard_emoji_for_alias};
 mod reply_context;
 use reply_context::cached_reply_context;
@@ -39,7 +40,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, Bounds, Context, Entity, FontWeight, ImageSource, InteractiveElement, IntoElement,
     LayoutId, ListState, ObjectFit, ParentElement, Pixels, RenderImage, SharedString,
-    StatefulInteractiveElement, Styled, StyledImage, Window, deferred, div, img, list, px,
+    StatefulInteractiveElement, Styled, StyledImage, Window, canvas, deferred, div, img, list, px,
     relative, rgb,
 };
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
@@ -262,16 +263,37 @@ impl TimelineList {
             .overflow_hidden()
             .on_scroll_wheel(cx.listener(AppWindow::timeline_scrolled))
             .pb_4()
-            .child(
-                list(
-                    list_state.clone(),
-                    cx.processor(|this, ix: usize, _window, cx| {
-                        this.render_timeline_row_virtualized(ix, cx)
-                    }),
-                )
-                .h_full()
-                .w_full(),
-            )
+            .child({
+                let owner = cx.weak_entity();
+                div()
+                    .relative()
+                    .size_full()
+                    .min_h(px(0.))
+                    // This must prepaint before the list, while its bounds and
+                    // bottom-distance still describe the previous viewport.
+                    .child(
+                        canvas(
+                            move |bounds, _, cx| {
+                                let _ = owner.update(cx, |this, _| {
+                                    this.anchor_timeline_for_viewport_resize(bounds.size.height);
+                                });
+                            },
+                            |_, _, _, _| (),
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                    .child(
+                        list(
+                            list_state.clone(),
+                            cx.processor(|this, ix: usize, _window, cx| {
+                                this.render_timeline_row_virtualized(ix, cx)
+                            }),
+                        )
+                        .h_full()
+                        .w_full(),
+                    )
+            })
             .into_any_element()
     }
 

@@ -1858,7 +1858,6 @@ impl AppWindow {
             .read(cx)
             .text_if_different(&self.models.composer.draft_text);
         if let Some(composer_text) = composer_text {
-            let was_near_bottom = self.timeline_is_near_bottom();
             let key = DraftKey::Conversation(self.models.composer.conversation_id.clone());
             self.models
                 .update_composer_draft_text(composer_text.clone());
@@ -1867,9 +1866,6 @@ impl AppWindow {
                 text: composer_text,
             });
             self.last_text_input_activity = Some(Instant::now());
-            if was_near_bottom {
-                scroll_list_to_bottom(&self.timeline_list_state);
-            }
         }
 
         let thread_text = self
@@ -2787,6 +2783,22 @@ impl AppWindow {
 
     fn timeline_is_near_top(&self) -> bool {
         is_list_near_top(&self.timeline_list_state)
+    }
+
+    pub(crate) fn anchor_timeline_for_viewport_resize(&self, next_height: gpui::Pixels) {
+        let previous_height = self.timeline_list_state.viewport_bounds().size.height;
+        let explicit_scroll_pending = self.jump_to_message_active
+            || self.models.timeline.pending_scroll_target.is_some()
+            || self.pending_older_scroll_anchor.is_some()
+            || self.suppress_next_timeline_bottom_snap;
+        if crate::views::timeline::viewport_anchor::should_follow_latest(
+            previous_height,
+            next_height,
+            self.timeline_is_near_bottom(),
+            explicit_scroll_pending,
+        ) {
+            self.scroll_timeline_list_to_bottom();
+        }
     }
 
     fn scroll_timeline_list_to_bottom(&self) {
