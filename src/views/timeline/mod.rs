@@ -959,6 +959,9 @@ impl TimelineList {
             .when(highlighted, |container| {
                 container.rounded_md().bg(tint(accent_soft(), 0.55))
             })
+            .when(message.send_state == MessageSendState::Pending, |container| {
+                container.opacity(0.5)
+            })
             .pb_0p5()
             .relative()
             .child({
@@ -2964,13 +2967,8 @@ impl TimelineList {
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         match send_state {
-            MessageSendState::Sent => div().into_any_element(),
-            MessageSendState::Pending => div()
-                .text_xs()
-                .italic()
-                .text_color(rgb(text_secondary()))
-                .child("Sending…")
-                .into_any_element(),
+            // Pending messages are faded in place instead of adding a row.
+            MessageSendState::Sent | MessageSendState::Pending => div().into_any_element(),
             MessageSendState::Failed => {
                 let retry_message_id = message_id.clone();
                 div()
