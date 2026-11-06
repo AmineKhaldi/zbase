@@ -119,6 +119,7 @@ View › Sort by Recent / Group by Team switches the sidebar order. Opening a pr
 | `Cmd+K` | Quick Switcher |
 | `Cmd+J` | Global Search |
 | `Cmd+F` | Find in Chat |
+| `Enter` / `Shift+Enter` | Next / previous match while finding in a conversation |
 | `Cmd+N` | New Chat |
 | `Cmd+Return` | New Chat: start the conversation |
 | `Cmd+B` / `Cmd+I` / `Cmd+E` | Composer: bold / italic / code (also in the **Aa** menu) |

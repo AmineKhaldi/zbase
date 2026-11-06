@@ -236,6 +236,7 @@ impl ConversationView {
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         let result_count = find_in_chat.results.len();
+        let can_navigate = result_count > 0;
         let status = if find_in_chat.query.trim().is_empty() {
             "Type to search this conversation".to_string()
         } else if find_in_chat.loading {
@@ -274,6 +275,58 @@ impl ConversationView {
                     .text_xs()
                     .text_color(rgb(text_secondary()))
                     .child(status),
+            )
+            .children(
+                [
+                    (
+                        "conversation-find-previous",
+                        "Previous match",
+                        "Shift+Enter",
+                        "assets/icons/chevron-up.svg",
+                        true,
+                    ),
+                    (
+                        "conversation-find-next",
+                        "Next match",
+                        "Enter",
+                        "assets/icons/chevron-down.svg",
+                        false,
+                    ),
+                ]
+                .into_iter()
+                .map(|(id, label, shortcut, icon, previous)| {
+                    div()
+                        .id(id)
+                        .w(px(22.))
+                        .h(px(22.))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .opacity(if can_navigate { 1. } else { 0.35 })
+                        .tooltip(TextTooltip::with_shortcut(label.into(), shortcut.into()))
+                        .when(can_navigate, |button| {
+                            button
+                                .cursor(CursorStyle::PointingHand)
+                                .hover(|style| style.bg(subtle_surface()))
+                                .on_click(cx.listener(move |_, _, window, cx| {
+                                    cx.stop_propagation();
+                                    if previous {
+                                        window.dispatch_action(
+                                            Box::new(crate::app::commands::FindPrevMatch),
+                                            cx,
+                                        );
+                                    } else {
+                                        window.dispatch_action(
+                                            Box::new(crate::app::commands::FindNextMatch),
+                                            cx,
+                                        );
+                                    }
+                                }))
+                        })
+                        .child(icon_asset(icon, 14., text_secondary()))
+                }),
             )
             .child(
                 div()
