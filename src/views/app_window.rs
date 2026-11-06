@@ -6244,6 +6244,7 @@ impl AppWindow {
             || o.fullscreen_image.is_some()
             || o.file_upload_lightbox.is_some()
             || o.profile_card_user_id.is_some()
+            || self.models.find_in_chat.open
             || self.keybase_inspector.open
             || self.splash_open
         {
@@ -7879,6 +7880,15 @@ impl AppWindow {
             return;
         }
         self.models.find_in_chat.close();
+        self.models.timeline.pending_scroll_target = None;
+        self.models.timeline.highlighted_message_id = None;
+        self.jump_to_message_active = false;
+        self.reset_timeline_scroll_state();
+        self.scroll_timeline_list_to_bottom();
+        // A find match may have replaced the loaded timeline with an older
+        // message window. Reload the conversation before returning to its end.
+        self.dispatch_ui_action(UiAction::ReturnToLatestMessages);
+        self.scroll_timeline_list_to_bottom();
         self.sync_inputs_from_models(cx);
         self.refresh(cx);
         window.focus(&self.composer_input.focus_handle(cx));

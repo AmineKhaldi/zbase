@@ -572,6 +572,18 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
                 message_id,
             })],
         },
+        UiAction::ReturnToLatestMessages => {
+            let Some(conversation_id) = state.timeline.conversation_id.clone() else {
+                return ReducerOutput::default();
+            };
+            state.timeline.highlighted_message_id = None;
+            state.timeline.loading_older = false;
+            ReducerOutput {
+                effects: vec![Effect::Backend(BackendCommand::LoadConversation {
+                    conversation_id,
+                })],
+            }
+        }
         UiAction::JumpToMessage {
             conversation_id,
             message_id,
@@ -4077,6 +4089,56 @@ mod tests {
             }),
         );
         assert!(state.sidebar.sections.iter().all(|s| s.title != "Unread"));
+    }
+
+    #[test]
+    fn reopening_conversation_after_find_loads_latest_and_clears_match() {
+        let mut state = UiState::default();
+        let conversation = ConversationId::new("chat");
+        let route = Route::DirectMessage {
+            workspace_id: WorkspaceId::new("ws"),
+            dm_id: DmId::new("chat"),
+        };
+        reduce_ui_action(&mut state, UiAction::Navigate(route.clone()));
+        reduce_ui_action(
+            &mut state,
+            UiAction::JumpToMessage {
+                conversation_id: conversation.clone(),
+                message_id: MessageId::new("10"),
+            },
+        );
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::TimelineReplaced {
+                conversation_id: conversation.clone(),
+                messages: vec![message(&conversation, "10", 100)],
+                older_cursor: Some("10".into()),
+                newer_cursor: Some("10".into()),
+            },
+        );
+
+        let output = reduce_ui_action(&mut state, UiAction::ReturnToLatestMessages);
+        assert_eq!(state.navigation.current_route, Some(route));
+        assert!(state.timeline.highlighted_message_id.is_none());
+        assert!(output.effects.iter().any(|effect| matches!(
+            effect,
+            Effect::Backend(BackendCommand::LoadConversation { conversation_id })
+                if conversation_id == &conversation
+        )));
+
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::TimelineReplaced {
+                conversation_id: conversation.clone(),
+                messages: vec![message(&conversation, "100", 1_000)],
+                older_cursor: Some("100".into()),
+                newer_cursor: Some("100".into()),
+            },
+        );
+        assert_eq!(
+            state.timeline.messages.last().unwrap().id,
+            MessageId::new("100")
+        );
     }
 
     #[test]

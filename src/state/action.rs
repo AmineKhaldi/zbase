@@ -53,6 +53,8 @@ pub enum UiAction {
         conversation_id: ConversationId,
         query: String,
     },
+    /// Leave a historical message window and reload the active chat's latest page.
+    ReturnToLatestMessages,
     ToggleSearchFilter(SearchFilter),
     UpdateDraft {
         key: DraftKey,
