@@ -8249,25 +8249,34 @@ impl AppWindow {
     fn select_sidebar_previous_action(
         &mut self,
         _: &commands::SelectSidebarPrevious,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.models.move_sidebar_highlight(-1);
-        if let Some(route) = self.models.sidebar.highlighted_route.as_ref() {
-            self.reveal_recent_sidebar_route(route);
-        }
-        self.refresh(cx);
+        self.navigate_sidebar(-1, window, cx);
     }
 
     fn select_sidebar_next_action(
         &mut self,
         _: &commands::SelectSidebarNext,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.models.move_sidebar_highlight(1);
-        if let Some(route) = self.models.sidebar.highlighted_route.as_ref() {
-            self.reveal_recent_sidebar_route(route);
+        self.navigate_sidebar(1, window, cx);
+    }
+
+    fn navigate_sidebar(
+        &mut self,
+        direction: isize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.models.move_sidebar_highlight(direction);
+        if let Some(route) = self.models.sidebar.highlighted_route.clone() {
+            self.reveal_recent_sidebar_route(&route);
+            if route != self.models.navigation.current {
+                self.navigate_to(route, window, cx);
+                return;
+            }
         }
         self.refresh(cx);
     }

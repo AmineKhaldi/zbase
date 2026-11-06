@@ -129,7 +129,7 @@ The history icon beside Search toggles Recent and Grouped sidebar views. Opening
 | `Cmd+Shift+F` | Files pane |
 | `Cmd+Shift+A` | Activity |
 | `Cmd+,` | Preferences |
-| `Alt+Up/Down` | Move sidebar selection |
+| `Alt+Up/Down` | Open the previous/next visible sidebar conversation |
 | `Escape` | Dismiss overlays |
 
 ## Architecture
