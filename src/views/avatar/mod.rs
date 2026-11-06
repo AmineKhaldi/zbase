@@ -12,6 +12,11 @@ pub const ME_AVATAR_ASSET: &str = "assets/avatars/me.svg";
 
 pub struct Avatar;
 
+enum GroupAvatarStyle {
+    Faces,
+    Count,
+}
+
 impl Avatar {
     pub fn render(
         name: &str,
@@ -61,6 +66,39 @@ impl Avatar {
         size: f32,
         surface: Hsla,
     ) -> AnyElement {
+        Self::render_participants_with_style(
+            participants,
+            fallback_name,
+            size,
+            surface,
+            GroupAvatarStyle::Faces,
+        )
+    }
+
+    pub fn render_sidebar_participants_on(
+        participants: &[AvatarParticipant],
+        fallback_name: &str,
+        size: f32,
+        surface: Hsla,
+    ) -> AnyElement {
+        Self::render_participants_with_style(
+            participants,
+            fallback_name,
+            size,
+            surface,
+            GroupAvatarStyle::Count,
+        )
+    }
+
+    // Header and sidebar use the same unique peer projection (excluding you),
+    // including the same fallback and 1:1 presence/avatar behavior.
+    fn render_participants_with_style(
+        participants: &[AvatarParticipant],
+        fallback_name: &str,
+        size: f32,
+        surface: Hsla,
+        group_style: GroupAvatarStyle,
+    ) -> AnyElement {
         if let [participant] = participants {
             let avatar = Self::render(
                 &participant.display_name,
@@ -85,6 +123,9 @@ impl Avatar {
                 crate::views::text_primary(),
             );
         }
+        if matches!(group_style, GroupAvatarStyle::Count) {
+            return Self::render_group_count(participants, size);
+        }
         let avatars = participants
             .iter()
             .take(2)
@@ -100,14 +141,18 @@ impl Avatar {
         Self::render_group_on(&avatars, size, surface)
     }
 
-    /// A group conversation at sidebar size: one neutral disc with the number of
-    /// people, which stays legible where two shrunken faces would not.
-    pub fn render_group_count(people: usize, size: f32) -> AnyElement {
-        let label = if people > 99 {
+    fn peer_count_label(participants: &[AvatarParticipant]) -> String {
+        let people = participants.len();
+        if people > 99 {
             "99+".to_string()
         } else {
             people.to_string()
-        };
+        }
+    }
+
+    /// At sidebar size, count the same peers the header represents with faces.
+    fn render_group_count(participants: &[AvatarParticipant], size: f32) -> AnyElement {
+        let label = Self::peer_count_label(participants);
         div()
             .flex_shrink_0()
             .w(px(size))
@@ -583,6 +628,21 @@ pub(crate) fn image_source_for_asset(asset_path: &str) -> Option<ImageSource> {
 #[cfg(test)]
 mod presence_tests {
     use super::*;
+
+    #[test]
+    fn group_avatar_counts_only_the_projected_peers() {
+        let peer = |name: &str| AvatarParticipant {
+            display_name: name.into(),
+            asset: None,
+            presence: None,
+        };
+        let peers = vec![peer("Alexander Mey"), peer("Craig Corning, Jr.")];
+        assert_eq!(Avatar::peer_count_label(&peers), "2");
+        let mut larger = peers.clone();
+        larger.push(peer("Gene Hoffman, Jr."));
+        assert_eq!(Avatar::peer_count_label(&larger), "3");
+        assert_eq!(Avatar::peer_count_label(&vec![peer("Guest"); 100]), "99+");
+    }
 
     #[test]
     fn every_known_state_has_a_distinct_shape_and_label() {

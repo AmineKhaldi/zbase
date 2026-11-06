@@ -50,15 +50,6 @@ impl SidebarAvatar {
             Self::Team(_) => &[],
         }
     }
-
-    /// The projection contains unique peer usernames, excluding the signed-in
-    /// user. Display names may contain commas and must never be counted.
-    pub fn group_member_count(&self) -> Option<usize> {
-        match self {
-            Self::Participants(people) if people.len() > 1 => Some(people.len() + 1),
-            _ => None,
-        }
-    }
 }
 
 impl SidebarSection {
@@ -144,32 +135,6 @@ impl SidebarModel {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn group_count_uses_peers_not_commas_in_display_names() {
-        use super::SidebarAvatar;
-        use crate::models::conversation_model::AvatarParticipant;
-        let peer = |name: &str| AvatarParticipant {
-            display_name: name.into(),
-            asset: None,
-            presence: None,
-        };
-        let direct = SidebarAvatar::Participants(vec![peer("Gene Hoffman, Jr.")]);
-        assert_eq!(direct.group_member_count(), None);
-
-        let group = SidebarAvatar::Participants(vec![
-            peer("Alexander Mey"),
-            peer("Craig Corning, Jr."),
-        ]);
-        assert_eq!(group.group_member_count(), Some(3));
-
-        let larger = SidebarAvatar::Participants(vec![
-            peer("Alice"),
-            peer("Bob"),
-            peer("Carol"),
-        ]);
-        assert_eq!(larger.group_member_count(), Some(4));
-    }
-
     use super::*;
     use crate::domain::{
         conversation::ConversationTeamType,

@@ -1154,19 +1154,15 @@ impl Sidebar {
                 .justify_center()
                 .child(hash_icon(hsla_to_rgb(colors.secondary)))
                 .into_any_element(),
-            Route::DirectMessage { .. } => {
-                let avatar = conversation_avatars.get(route_label);
-                if let Some(count) = avatar.and_then(SidebarAvatar::group_member_count) {
-                    Avatar::render_group_count(count, size)
-                } else {
-                    Avatar::render_participants_on(
-                        avatar.map(SidebarAvatar::participants).unwrap_or_default(),
-                        &row.label,
-                        size,
-                        colors.surface,
-                    )
-                }
-            }
+            Route::DirectMessage { .. } => Avatar::render_sidebar_participants_on(
+                conversation_avatars
+                    .get(route_label)
+                    .map(SidebarAvatar::participants)
+                    .unwrap_or_default(),
+                &row.label,
+                size,
+                colors.surface,
+            ),
             _ => div()
                 .w(px(size))
                 .flex()
