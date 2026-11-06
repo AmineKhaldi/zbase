@@ -1,4 +1,4 @@
-use crate::domain::ids::ConversationId;
+use crate::domain::{ids::ConversationId, message_preview::MessagePreview};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -84,6 +84,8 @@ impl ConversationSummary {
 
     pub fn preserve_known_metadata(&mut self, previous: &Self) {
         self.last_activity_ms = self.last_activity_ms.max(previous.last_activity_ms);
+        self.last_message =
+            MessagePreview::newest(previous.last_message.clone(), self.last_message.take());
         if let (Some(group), Some(old)) = (&mut self.group, &previous.group)
             && group.id == old.id
             && group.team_type == ConversationTeamType::Unknown
@@ -123,4 +125,6 @@ pub struct ConversationSummary {
     pub mention_count: u32,
     pub muted: bool,
     pub last_activity_ms: i64,
+    /// Newest message, for inbox previews. `None` until a message is known.
+    pub last_message: Option<MessagePreview>,
 }

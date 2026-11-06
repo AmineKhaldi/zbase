@@ -106,12 +106,31 @@ pub struct UiSidebarState {
 pub struct UiTimelineState {
     pub conversation_id: Option<ConversationId>,
     pub messages: Vec<MessageRecord>,
+    /// Upload progress of pending attachment messages, by pending message id.
+    pub upload_progress: HashMap<MessageId, UploadProgress>,
     pub typing_text: Option<String>,
     pub highlighted_message_id: Option<MessageId>,
     pub unread_marker: Option<MessageId>,
     pub older_cursor: Option<String>,
     pub newer_cursor: Option<String>,
     pub loading_older: bool,
+}
+
+/// How much of a pending attachment has reached the server.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UploadProgress {
+    pub sent_bytes: u64,
+    pub total_bytes: u64,
+}
+
+impl UploadProgress {
+    /// Completed share in 0..=1; 0 while the total is still unknown.
+    pub fn fraction(self) -> f32 {
+        if self.total_bytes == 0 {
+            return 0.;
+        }
+        (self.sent_bytes.min(self.total_bytes) as f64 / self.total_bytes as f64) as f32
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -127,6 +146,8 @@ pub struct UiThreadState {
 pub struct UiSearchState {
     pub active_query_id: Option<QueryId>,
     pub query: String,
+    /// The query last sent with Return; results and "no results" belong to it.
+    pub submitted_query: Option<String>,
     pub filters: Vec<SearchFilter>,
     pub results: Vec<SearchResult>,
     pub highlighted_index: Option<usize>,

@@ -322,6 +322,21 @@ impl TextField {
         self.content.clone()
     }
 
+    /// True when the field holds only whitespace; cheaper than `text()` per keystroke.
+    pub fn is_blank(&self) -> bool {
+        self.content.trim().is_empty()
+    }
+
+    pub fn set_placeholder(&mut self, placeholder: impl Into<String>, cx: &mut Context<Self>) {
+        let placeholder = placeholder.into();
+        if self.placeholder == placeholder {
+            return;
+        }
+        self.placeholder = placeholder;
+        self.clear_layout_cache();
+        cx.notify();
+    }
+
     pub fn text_if_different(&self, current: &str) -> Option<String> {
         (self.content != current).then(|| self.content.clone())
     }
@@ -869,6 +884,29 @@ impl TextField {
         )))
     }
 
+    pub fn selected_range(&self) -> Range<usize> {
+        self.selected_range.clone()
+    }
+
+    /// Replaces the whole text as one undoable edit and selects `selection`.
+    pub fn replace_all_and_select(
+        &mut self,
+        text: String,
+        selection: Range<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        let len = self.content.len();
+        self.replace_range(0..len, &text, cx);
+        let end = selection.end.min(self.content.len());
+        let start = selection.start.min(end);
+        if self.content.is_char_boundary(start) && self.content.is_char_boundary(end) {
+            self.selected_range = start..end;
+            self.selection_reversed = false;
+            self.scroll_to_cursor = true;
+        }
+        cx.notify();
+    }
+
     pub fn cursor_offset(&self) -> usize {
         if self.selection_reversed {
             self.selected_range.start
@@ -1409,7 +1447,8 @@ impl Element for TextLineElement {
             layout.selection_quads(selected_range, paint_origin)
         };
 
-        let cursor = if is_focused && selection.is_empty() {
+        // Like native fields, the caret hides while the window is in the background.
+        let cursor = if is_focused && window.is_window_active() && selection.is_empty() {
             let cursor_pos = layout.position_for_index(cursor).unwrap_or_default();
             Some(fill(
                 Bounds::new(
@@ -1478,7 +1517,16 @@ impl Element for TextLineElement {
             window.paint_quad(quad);
         }
 
-        let mut line_origin = point(bounds.origin.x, bounds.origin.y - prepaint.scroll_y);
+        // Start a placeholder 3px past the 2px caret so the two never touch.
+        let placeholder_inset = if prepaint.layout.is_placeholder {
+            px(5.)
+        } else {
+            px(0.)
+        };
+        let mut line_origin = point(
+            bounds.origin.x + placeholder_inset,
+            bounds.origin.y - prepaint.scroll_y,
+        );
         let align = window.text_style().text_align;
         for line in &prepaint.layout.lines {
             let _ = line.paint(

@@ -1,22 +1,39 @@
 use crate::{
-    domain::pins::{PinnedItem, PinnedTarget},
+    domain::{
+        conversation::ConversationKind,
+        pins::{PinnedItem, PinnedTarget},
+    },
     models::{
-        composer_model::ComposerModel, conversation_model::ConversationModel,
-        find_in_chat_model::FindInChatModel, navigation_model::RightPaneMode,
+        app_model::Connectivity,
+        composer_model::ComposerModel,
+        conversation_model::ConversationModel,
+        find_in_chat_model::FindInChatModel,
+        navigation_model::RightPaneMode,
+        settings_model::SettingsModel,
         timeline_model::TimelineModel,
     },
     views::{
-        accent, accent_soft, app_window::AppWindow, avatar::Avatar, chevron_down_icon, close_icon,
-        composer::ComposerPanel, glass_surface_dark, hash_icon, input::TextField, is_dark_theme,
-        pin_icon, search_icon, shell_border, subtle_surface, text_primary, text_secondary,
-        timeline::TimelineList, tint,
+        accent, accent_soft,
+        app_window::AppWindow,
+        avatar::{Avatar, presence_label},
+        chevron_down_icon, close_icon,
+        composer::ComposerPanel,
+        content_surface, glass_surface_dark, icon_asset,
+        input::TextField,
+        is_dark_theme, pin_icon, search_icon, shell_border, subtle_surface, text_primary,
+        text_secondary,
+        timeline::TimelineList,
+        tint,
+        tooltip::{TextTooltip, shortcut_label},
     },
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, Context, CursorStyle, Entity, ExternalPaths, FontWeight, InteractiveElement,
-    IntoElement, ListState, ParentElement, StatefulInteractiveElement, Styled, div, px, rgb,
+    Animation, AnimationExt, AnyElement, Context, CursorStyle, Entity, ExternalPaths, FontWeight,
+    InteractiveElement, IntoElement, ListState, ParentElement, StatefulInteractiveElement, Styled,
+    div, px, rgb,
 };
+use std::time::Duration;
 
 #[derive(Default)]
 pub struct ConversationView;
@@ -33,11 +50,22 @@ impl ConversationView {
         find_in_chat_input: &Entity<TextField>,
         composer: &ComposerModel,
         composer_input: &Entity<TextField>,
+        composer_state: crate::views::composer::ComposerFieldState,
+        right_pane: &RightPaneMode,
         timeline_list_state: &ListState,
         unseen_message_count: usize,
         show_jump_to_bottom: bool,
+        settings: &SettingsModel,
+        connectivity: &Connectivity,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
+        let reduced_motion = settings.reduced_motion;
+        // Overlay typing activity without changing the timeline's viewport or scroll position.
+        // Who is typing is unknown while disconnected; don't show stale news.
+        let typing_label = timeline
+            .typing_text
+            .as_ref()
+            .filter(|label| *connectivity == Connectivity::Online && !label.trim().is_empty());
         let show_jump = show_jump_to_bottom || unseen_message_count > 0;
         let jump_label = if unseen_message_count > 0 {
             format!(
@@ -98,7 +126,10 @@ impl ConversationView {
                     this.open_composer_file_upload_with_paths(file_paths, cx);
                 }
             }))
-            .child(ConversationHeader.render(conversation, cx))
+            .child(ConversationHeader.render(conversation, right_pane, find_in_chat.open, cx))
+            .when_some(connection_banner(connectivity), |container, banner| {
+                container.child(banner)
+            })
             .when_some(conversation.pinned_message.as_ref(), |container, pinned| {
                 container.child(Self::render_pinned_banner(pinned, cx))
             })
@@ -114,20 +145,15 @@ impl ConversationView {
                     .flex_col()
                     .overflow_hidden()
                     .child(TimelineList.render(timeline, timeline_list_state, cx))
-                    .when_some(timeline.typing_text.clone(), |container, typing_label| {
-                        container.child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .right_0()
-                                .bottom(px(-1.))
-                                .pl(px(16.))
-                                .pr_4()
-                                .py_0p5()
-                                .text_xs()
-                                .text_color(rgb(text_secondary()))
-                                .child(typing_label),
-                        )
+                    .when(
+                        {
+                            let top = timeline_list_state.logical_scroll_top();
+                            top.item_ix > 0 || top.offset_in_item > px(0.)
+                        },
+                        |container| container.child(crate::views::scroll_edge_shadow()),
+                    )
+                    .when_some(typing_label, |container, label| {
+                        container.child(typing_indicator(label.clone(), reduced_motion))
                     })
                     .when(show_jump, |container| {
                         container.child(
@@ -135,7 +161,7 @@ impl ConversationView {
                                 .absolute()
                                 .left_0()
                                 .right_0()
-                                .bottom(px(14.))
+                                .bottom(px(if typing_label.is_some() { 44. } else { 8. }))
                                 .flex()
                                 .justify_center()
                                 .child(jump_pill),
@@ -143,7 +169,7 @@ impl ConversationView {
                     }),
             )
             .when(conversation.can_post, |container| {
-                container.child(ComposerPanel.render(composer, composer_input, cx))
+                container.child(ComposerPanel.render(composer, composer_input, composer_state, cx))
             })
             .when(!conversation.can_post, |container| {
                 container.child(Self::render_join_bar(conversation, cx))
@@ -151,7 +177,10 @@ impl ConversationView {
             .into_any_element()
     }
 
-    fn render_join_bar(conversation: &ConversationModel, cx: &mut Context<AppWindow>) -> AnyElement {
+    fn render_join_bar(
+        conversation: &ConversationModel,
+        cx: &mut Context<AppWindow>,
+    ) -> AnyElement {
         let channel_label = conversation.summary.title.trim();
         let join_label = if channel_label.is_empty() {
             "Join Channel".to_string()
@@ -198,6 +227,7 @@ impl ConversationView {
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         let result_count = find_in_chat.results.len();
+        let can_navigate = result_count > 0;
         let status = if find_in_chat.query.trim().is_empty() {
             "Type to search this conversation".to_string()
         } else if find_in_chat.loading {
@@ -236,6 +266,58 @@ impl ConversationView {
                     .text_xs()
                     .text_color(rgb(text_secondary()))
                     .child(status),
+            )
+            .children(
+                [
+                    (
+                        "conversation-find-previous",
+                        "Previous match",
+                        "Shift+Enter",
+                        "assets/icons/chevron-up.svg",
+                        true,
+                    ),
+                    (
+                        "conversation-find-next",
+                        "Next match",
+                        "Enter",
+                        "assets/icons/chevron-down.svg",
+                        false,
+                    ),
+                ]
+                .into_iter()
+                .map(|(id, label, shortcut, icon, previous)| {
+                    div()
+                        .id(id)
+                        .w(px(22.))
+                        .h(px(22.))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .opacity(if can_navigate { 1. } else { 0.35 })
+                        .tooltip(TextTooltip::with_shortcut(label.into(), shortcut.into()))
+                        .when(can_navigate, |button| {
+                            button
+                                .cursor(CursorStyle::PointingHand)
+                                .hover(|style| style.bg(subtle_surface()))
+                                .on_click(cx.listener(move |_, _, window, cx| {
+                                    cx.stop_propagation();
+                                    if previous {
+                                        window.dispatch_action(
+                                            Box::new(crate::app::commands::FindPrevMatch),
+                                            cx,
+                                        );
+                                    } else {
+                                        window.dispatch_action(
+                                            Box::new(crate::app::commands::FindNextMatch),
+                                            cx,
+                                        );
+                                    }
+                                }))
+                        })
+                        .child(icon_asset(icon, 14., text_secondary()))
+                }),
             )
             .child(
                 div()
@@ -334,104 +416,452 @@ fn compact_pinned_preview_text(raw: &str) -> String {
     preview
 }
 
+/// One trailing header action: a 28px icon button, optionally with a count.
+struct HeaderAction {
+    id: &'static str,
+    icon: &'static str,
+    label: &'static str,
+    shortcut: &'static str,
+    count: Option<u32>,
+    active: bool,
+    pane: Option<RightPaneMode>,
+}
+
 impl ConversationHeader {
     pub fn render(
         &self,
         conversation: &ConversationModel,
+        right_pane: &RightPaneMode,
+        find_open: bool,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
-        let is_channel = matches!(
-            conversation.summary.kind,
-            crate::domain::conversation::ConversationKind::Channel
-        );
-        let title_content = div()
+        let kind = &conversation.summary.kind;
+        let is_channel = matches!(kind, ConversationKind::Channel);
+        let is_dm = matches!(kind, ConversationKind::DirectMessage);
+        let title = if is_channel {
+            conversation
+                .summary
+                .simple_team_label()
+                .unwrap_or_else(|| format!("#{}", conversation.summary.title))
+        } else {
+            conversation.summary.title.clone()
+        };
+        let subtitle = Self::subtitle(conversation);
+        let title_block = div()
+            .flex_1()
             .flex()
             .items_center()
             .gap_3()
+            .min_w(px(0.))
             .child(Self::conversation_badge(conversation))
-            .when_some(conversation.summary.group.as_ref(), |d, group| {
-                d.child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(text_secondary()))
-                        .child(group.display_name.clone()),
-                )
-                .child(div().text_sm().text_color(rgb(text_secondary())).child("›"))
-            })
             .child(
                 div()
-                    .text_xl()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(conversation.summary.title.clone()),
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .min_w(px(0.))
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .min_w(px(0.))
+                            .child(
+                                div()
+                                    .text_size(px(17.))
+                                    .line_height(px(22.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(text_primary()))
+                                    .min_w(px(0.))
+                                    .truncate()
+                                    .child(title),
+                            )
+                            .when(is_channel || is_dm, |row| {
+                                row.child(chevron_down_icon(text_secondary()))
+                            }),
+                    )
+                    .when_some(subtitle, |block, subtitle| {
+                        block.child(
+                            div().w_full().flex().child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(rgb(text_secondary()))
+                                    .whitespace_normal()
+                                    .line_clamp(1)
+                                    .text_ellipsis()
+                                    .child(subtitle),
+                            ),
+                        )
+                    }),
             );
-        let is_dm = matches!(
-            conversation.summary.kind,
-            crate::domain::conversation::ConversationKind::DirectMessage
-        );
         let title_row = if is_channel {
             div()
                 .id("conversation-header-title")
+                .flex_1()
+                .flex()
+                .min_w(px(0.))
                 .cursor(CursorStyle::PointingHand)
+                .tooltip(TextTooltip::with_shortcut(
+                    "Conversation details".to_string(),
+                    shortcut_label("⇧⌘D"),
+                ))
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.toggle_pane(RightPaneMode::Details, window, cx);
                 }))
-                .child(title_content)
+                .child(title_block)
                 .into_any_element()
         } else if is_dm {
             div()
                 .id("conversation-header-title")
+                .flex_1()
+                .flex()
+                .min_w(px(0.))
                 .cursor(CursorStyle::PointingHand)
+                .tooltip(TextTooltip::single_line("View profile".to_string()))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.open_dm_header_profile(cx);
                 }))
-                .child(title_content)
+                .child(title_block)
                 .into_any_element()
         } else {
-            div().child(title_content).into_any_element()
+            div()
+                .flex_1()
+                .flex()
+                .min_w(px(0.))
+                .child(title_block)
+                .into_any_element()
         };
+
+        let member_count = conversation
+            .details
+            .as_ref()
+            .map(|details| details.member_count)
+            .filter(|count| *count > 0)
+            .unwrap_or(conversation.member_count);
+        let mut actions = vec![HeaderAction {
+            id: "conversation-header-find",
+            icon: "assets/icons/search.svg",
+            label: "Find in conversation",
+            shortcut: "⌘F",
+            count: None,
+            active: find_open,
+            pane: None,
+        }];
+        if !is_dm {
+            actions.push(HeaderAction {
+                id: "conversation-header-members",
+                icon: "assets/icons/members.svg",
+                label: "Members",
+                shortcut: "⇧⌘M",
+                count: (member_count > 0).then_some(member_count),
+                active: *right_pane == RightPaneMode::Members,
+                pane: Some(RightPaneMode::Members),
+            });
+        }
+        actions.push(HeaderAction {
+            id: "conversation-header-files",
+            icon: "assets/icons/files.svg",
+            label: "Files",
+            shortcut: "⇧⌘F",
+            count: None,
+            active: *right_pane == RightPaneMode::Files,
+            pane: Some(RightPaneMode::Files),
+        });
+        if is_channel {
+            actions.push(HeaderAction {
+                id: "conversation-header-details",
+                icon: "assets/icons/info.svg",
+                label: "Conversation details",
+                shortcut: "⇧⌘D",
+                count: None,
+                active: *right_pane == RightPaneMode::Details,
+                pane: Some(RightPaneMode::Details),
+            });
+        }
+
         div()
+            .h(px(56.))
+            .flex_shrink_0()
             .px_4()
-            .py_3()
             .flex()
             .items_center()
             .justify_between()
+            .gap_3()
+            .border_b_1()
+            .border_color(shell_border())
             .child(title_row)
+            .child(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(2.))
+                    .children(
+                        actions
+                            .into_iter()
+                            .map(|action| Self::render_action(action, cx)),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// Channel: team and topic. DM: the other person's presence and status.
+    fn subtitle(conversation: &ConversationModel) -> Option<String> {
+        let topic = conversation.summary.topic.trim();
+        match conversation.summary.kind {
+            ConversationKind::Channel => {
+                // A single-channel team's title is the team ("bookclub"); its
+                // channel is the quiet descriptor, as in the switcher.
+                let team = if conversation.summary.is_simple_team() {
+                    Some(format!("#{}", conversation.summary.title))
+                } else {
+                    conversation
+                        .summary
+                        .group
+                        .as_ref()
+                        .map(|group| group.display_name.clone())
+                };
+                match (team, topic.is_empty()) {
+                    (Some(team), false) => Some(format!("{team} · {topic}")),
+                    (Some(team), true) => Some(team),
+                    (None, false) => Some(topic.to_string()),
+                    (None, true) => None,
+                }
+            }
+            ConversationKind::DirectMessage => {
+                let presence = conversation
+                    .participant_avatars
+                    .first()
+                    .and_then(|participant| participant.presence.as_ref())?;
+                let label = presence_label(&presence.availability)?;
+                Some(
+                    match presence
+                        .status_text
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|status| !status.is_empty())
+                    {
+                        Some(status) => format!("{label} · {status}"),
+                        None => label.to_string(),
+                    },
+                )
+            }
+            ConversationKind::GroupDirectMessage => {
+                let count = conversation
+                    .details
+                    .as_ref()
+                    .map(|details| details.member_count)
+                    .filter(|count| *count > 0)
+                    .unwrap_or(conversation.member_count);
+                (count > 0).then(|| format!("{count} members"))
+            }
+        }
+    }
+
+    fn render_action(action: HeaderAction, cx: &mut Context<AppWindow>) -> AnyElement {
+        let HeaderAction {
+            id,
+            icon,
+            label,
+            shortcut,
+            count,
+            active,
+            pane,
+        } = action;
+        let color = if active {
+            text_primary()
+        } else {
+            text_secondary()
+        };
+        div()
+            .id(id)
+            .h(px(28.))
+            .min_w(px(28.))
+            .when(count.is_some(), |button| button.px(px(6.)))
+            .rounded(px(6.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap_1()
+            .cursor(CursorStyle::PointingHand)
+            // The pressed fill recedes while the window is in the background.
+            .when(active, |button| {
+                button.bg(tint(
+                    text_primary(),
+                    if crate::views::window_is_active() {
+                        0.10
+                    } else {
+                        0.05
+                    },
+                ))
+            })
+            .when(!active, |button| {
+                button.hover(|style| style.bg(tint(text_primary(), 0.07)))
+            })
+            .tooltip(TextTooltip::with_shortcut(
+                label.to_string(),
+                shortcut_label(shortcut),
+            ))
+            .on_click(cx.listener(move |this, _, window, cx| match &pane {
+                Some(pane) => this.toggle_pane(pane.clone(), window, cx),
+                None => this.toggle_find_in_chat(window, cx),
+            }))
+            .child(icon_asset(icon, 16., color))
+            .when_some(count, |button, count| {
+                button.child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(rgb(color))
+                        .child(count.to_string()),
+                )
+            })
             .into_any_element()
     }
 
     fn conversation_badge(conversation: &ConversationModel) -> AnyElement {
         match conversation.summary.kind {
-            crate::domain::conversation::ConversationKind::Channel => {
-                if let Some(asset) = conversation.avatar_asset.as_deref() {
-                    Avatar::render_square(
-                        &conversation.summary.title,
-                        Some(asset),
-                        28.,
-                        accent_soft(),
-                        accent(),
-                    )
-                } else {
-                    div()
-                        .w(px(28.))
-                        .h(px(28.))
-                        .rounded_md()
-                        .bg(rgb(accent_soft()))
-                        .text_color(rgb(accent()))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(hash_icon(accent()))
-                        .into_any_element()
-                }
+            ConversationKind::Channel => {
+                let team_name = conversation
+                    .summary
+                    .group
+                    .as_ref()
+                    .map(|group| group.display_name.as_str())
+                    .unwrap_or(conversation.summary.title.as_str());
+                Avatar::render_team(team_name, conversation.avatar_asset.as_deref(), 32.)
             }
-            crate::domain::conversation::ConversationKind::DirectMessage
-            | crate::domain::conversation::ConversationKind::GroupDirectMessage => {
-                Avatar::render_participants(
+            ConversationKind::DirectMessage | ConversationKind::GroupDirectMessage => {
+                Avatar::render_participants_on(
                     &conversation.participant_avatars,
                     &conversation.summary.title,
-                    28.,
+                    32.,
+                    content_surface(),
                 )
             }
         }
+    }
+}
+
+/// A floating pill above the composer. Plain, noninteractive divs leave clicks
+/// and scrolling available to the messages underneath; no timeline space is reserved.
+fn typing_indicator(label: String, reduced_motion: bool) -> AnyElement {
+    let dots = (0..3).map(|index| {
+        let dot = div().size(px(4.)).rounded_full().bg(rgb(text_secondary()));
+        if reduced_motion {
+            dot.opacity(0.7).into_any_element()
+        } else {
+            dot.with_animation(
+                ("typing-dot", index),
+                Animation::new(Duration::from_millis(1200)).repeat(),
+                move |dot, delta| dot.opacity(typing_dot_opacity(delta, index)),
+            )
+            .into_any_element()
+        }
+    });
+    div()
+        .absolute()
+        .left(px(16.))
+        .right(px(16.))
+        .bottom(px(8.))
+        .flex()
+        .child(
+            div()
+                .min_w(px(0.))
+                .h(px(28.))
+                .px_3()
+                .rounded_full()
+                .bg(glass_surface_dark().opacity(0.65))
+                .border_1()
+                .border_color(shell_border())
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(div().flex_shrink_0().flex().gap(px(3.)).children(dots))
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .text_xs()
+                        .text_color(rgb(text_secondary()))
+                        .truncate()
+                        .child(label),
+                ),
+        )
+        .into_any_element()
+}
+
+/// Opacity of typing dot `index` at animation progress `delta` (0..1): each dot
+/// brightens in turn, a fifth of a cycle apart, then rests.
+fn typing_dot_opacity(delta: f32, index: usize) -> f32 {
+    let phase = (delta - index as f32 * 0.2).rem_euclid(1.0);
+    let pulse = if phase < 0.4 {
+        (phase / 0.4 * std::f32::consts::PI).sin()
+    } else {
+        0.
+    };
+    0.35 + 0.65 * pulse
+}
+
+/// Strip under the header while Keybase is unreachable: what happened and what it
+/// means for sending, as a warning (amber), not an error. Nothing while connected.
+fn connection_banner(connectivity: &Connectivity) -> Option<AnyElement> {
+    let notice = connectivity.send_notice()?;
+    let icon = match connectivity {
+        Connectivity::Offline => "assets/icons/cloud-off.svg",
+        _ => "assets/icons/info.svg",
+    };
+    let foreground = crate::views::warning_banner_fg();
+    Some(
+        div()
+            .id("conversation-connection-banner")
+            .flex_shrink_0()
+            .min_h(px(36.))
+            .px(px(16.))
+            .py(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .bg(rgb(crate::views::warning_banner_bg()))
+            .border_b_1()
+            .border_color(shell_border())
+            .text_size(px(13.))
+            .line_height(px(18.))
+            .text_color(rgb(foreground))
+            .child(icon_asset(icon, 14., foreground))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(notice.banner_title),
+            )
+            .child(div().flex_1().min_w(px(0.)).child(notice.banner_detail))
+            .into_any_element(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::typing_dot_opacity;
+
+    #[test]
+    fn typing_dots_pulse_in_turn_within_their_range() {
+        for step in 0..=100 {
+            let delta = step as f32 / 100.;
+            for index in 0..3 {
+                let opacity = typing_dot_opacity(delta, index);
+                assert!(
+                    (0.35..=1.0).contains(&opacity),
+                    "{delta} {index}: {opacity}"
+                );
+            }
+        }
+        // Each dot peaks a fifth of a cycle after the previous one.
+        assert!((typing_dot_opacity(0.2, 0) - 1.0).abs() < 1e-4);
+        assert!((typing_dot_opacity(0.4, 1) - 1.0).abs() < 1e-4);
+        assert!((typing_dot_opacity(0.6, 2) - 1.0).abs() < 1e-4);
+        assert!((typing_dot_opacity(0.6, 0) - 0.35).abs() < 1e-4);
     }
 }

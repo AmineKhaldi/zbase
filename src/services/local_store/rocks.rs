@@ -26,6 +26,7 @@ use crate::{
             EmojiSourceRef, LinkPreview, MessageReaction, MessageRecord, apply_attachment_paths,
             merge_message_version,
         },
+        message_preview::MessagePreview,
     },
     state::event::BootstrapPayload,
 };
@@ -277,7 +278,13 @@ impl LocalStore {
         let mut direct_messages = Vec::new();
         let mut conversation_bindings = Vec::new();
         for conversation_id in &ordered_ids {
-            if let Some(summary) = self.get_conversation(conversation_id)? {
+            if let Some(mut summary) = self.get_conversation(conversation_id)? {
+                // Messages that arrived after the inbox was last saved are newer
+                // than its preview; older caches have no preview at all.
+                summary.last_message = MessagePreview::newest(
+                    summary.last_message.take(),
+                    self.newest_cached_preview(conversation_id)?,
+                );
                 match summary.kind {
                     ConversationKind::Channel => channels.push(summary.clone()),
                     ConversationKind::DirectMessage | ConversationKind::GroupDirectMessage => {
@@ -1723,6 +1730,33 @@ impl LocalStore {
             .collect())
     }
 
+    /// Preview of the newest cached message that can stand for the
+    /// conversation, looking past deletion markers and empty records.
+    fn newest_cached_preview(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> io::Result<Option<MessagePreview>> {
+        const LOOKBACK: usize = 8;
+        let messages_cf = self.cf(CF_MESSAGES)?;
+        let prefix = message_prefix(conversation_id);
+        let from = format!("{prefix}~");
+        let iter = self.db.iterator_cf(
+            &messages_cf,
+            IteratorMode::From(from.as_bytes(), Direction::Reverse),
+        );
+        for item in iter.take(LOOKBACK) {
+            let (key, value) = item.map_err(io::Error::other)?;
+            if !String::from_utf8_lossy(&key).starts_with(&prefix) {
+                break;
+            }
+            let cached: CachedMessageRecord = decode(&value)?;
+            if let Some(preview) = MessagePreview::from_message(&cached.to_domain()) {
+                return Ok(Some(preview));
+            }
+        }
+        Ok(None)
+    }
+
     fn load_recent_messages(
         &self,
         conversation_id: &ConversationId,
@@ -2092,6 +2126,7 @@ mod tests {
                         mention_count: 0,
                         muted: false,
                         last_activity_ms: 10,
+                        last_message: None,
                     },
                     10,
                 )
@@ -2198,6 +2233,90 @@ mod tests {
     }
 
     #[test]
+    fn cached_inbox_previews_round_trip_and_fall_back_to_newer_cached_messages() {
+        use crate::domain::message_preview::{MessagePreview, PreviewBody};
+        let path = temp_rocks_path("inbox-preview");
+        let store = LocalStore::open_at(path.clone()).unwrap();
+        let summary = |id: &str, last_message| ConversationSummary {
+            id: ConversationId::new(id),
+            title: id.into(),
+            kind: ConversationKind::DirectMessage,
+            topic: String::new(),
+            group: None,
+            unread_count: 0,
+            mention_count: 0,
+            muted: false,
+            last_activity_ms: 10,
+            last_message,
+        };
+        let saved = MessagePreview {
+            message_id: Some(MessageId::new("5")),
+            author_id: Some(UserId::new("bob")),
+            timestamp_ms: 10,
+            body: PreviewBody::Attachment {
+                kind: AttachmentKind::Image,
+                name: "cat.png".into(),
+                caption: Some("our cat".into()),
+            },
+        };
+        let with_preview = ConversationId::new("with-preview");
+        let without = ConversationId::new("without-preview");
+        store
+            .persist_bootstrap_payload(&BootstrapPayload {
+                direct_messages: vec![
+                    summary("with-preview", Some(saved.clone())),
+                    summary("without-preview", None),
+                ],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            store.get_conversation(&with_preview).unwrap().unwrap().last_message,
+            Some(saved.clone())
+        );
+        // An older cached message never replaces the inbox's preview, and a
+        // conversation without one previews its newest cached message.
+        store.persist_message(&sample_structured_message(&with_preview, 4)).unwrap();
+        store.persist_message(&sample_message(&without, 7)).unwrap();
+        store.persist_message(&sample_message(&without, 9)).unwrap();
+        let seed = store.load_bootstrap_seed(10, 0).unwrap().unwrap();
+        let preview = |id: &ConversationId| {
+            seed.direct_messages
+                .iter()
+                .find(|summary| &summary.id == id)
+                .and_then(|summary| summary.last_message.clone())
+        };
+        assert_eq!(preview(&with_preview), Some(saved));
+        let fallback = preview(&without).expect("fallback preview");
+        assert_eq!(fallback.message_id, Some(MessageId::new("9")));
+        assert!(matches!(fallback.body, PreviewBody::Attachment { ref name, .. } if name == "file-9.txt"));
+        // Summaries written before previews existed (same fields, minus the
+        // last) still decode.
+        #[derive(serde::Serialize)]
+        struct LegacySummary<'a>(
+            &'a str,
+            &'a str,
+            &'a str,
+            &'a str,
+            Option<()>,
+            u32,
+            u32,
+            bool,
+            i64,
+            bool,
+        );
+        let old_bytes = encode(&LegacySummary(
+            "legacy", "legacy", "dm", "", None, 0, 0, false, 10, true,
+        ))
+        .unwrap();
+        let decoded: CachedConversationSummary = decode(&old_bytes).unwrap();
+        assert!(decoded.last_message.is_none());
+        assert_eq!(decoded.to_domain().last_activity_ms, 10);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn cached_recency_uses_real_metadata_and_discards_legacy_startup_times() {
         let path = temp_rocks_path("canonical-recency");
         let store = LocalStore::open_at(path.clone()).unwrap();
@@ -2211,6 +2330,7 @@ mod tests {
             mention_count: 0,
             muted: false,
             last_activity_ms: activity,
+            last_message: None,
         };
         store
             .persist_bootstrap_payload(&BootstrapPayload {
@@ -2327,6 +2447,7 @@ mod tests {
             mention_count: 2,
             muted: false,
             last_activity_ms: 123,
+            last_message: None,
         };
         {
             let store = LocalStore::open_at(path.clone()).unwrap();
@@ -3003,6 +3124,7 @@ mod tests {
                 mention_count: 0,
                 muted: false,
                 last_activity_ms: 0,
+                last_message: None,
             }],
             direct_messages: Vec::new(),
             workspace_bindings: Vec::new(),

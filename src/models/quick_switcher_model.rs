@@ -1,5 +1,5 @@
 use crate::domain::{
-    ids::{ConversationId, MessageId},
+    ids::{ConversationId, MessageId, UserId},
     route::Route,
 };
 
@@ -20,6 +20,9 @@ pub struct QuickSwitcherResult {
     pub conversation_id: ConversationId,
     pub message_id: Option<MessageId>,
     pub match_ranges: Vec<(usize, usize)>,
+    /// For message hits: who wrote it and when, shown like a Search result.
+    pub author_id: Option<UserId>,
+    pub timestamp_ms: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default)]

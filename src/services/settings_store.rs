@@ -1,4 +1,4 @@
-use crate::models::settings_model::{Density, SettingsModel, SidebarMode, ThemeMode};
+use crate::models::settings_model::{Density, SettingsModel, SidebarMode, SidebarStyle, ThemeMode};
 use std::{
     fs,
     io::{self, ErrorKind},
@@ -29,6 +29,16 @@ impl SettingsStore {
     }
 
     fn path() -> PathBuf {
+        // Demo runs must neither read nor overwrite the user's real settings.
+        #[cfg(any(test, feature = "demo-fixtures"))]
+        if std::env::var("ZBASE_BENCH_USE_DEMO").is_ok_and(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        }) {
+            return super::local_store::paths::data_root().join("settings.conf");
+        }
         std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(".zbase")
@@ -133,6 +143,12 @@ fn parse_settings(raw: &str) -> SettingsModel {
             "show_right_pane" => {
                 settings.show_right_pane = value != "false";
             }
+            "sidebar_style" => {
+                settings.sidebar_style = match value {
+                    "previews" => SidebarStyle::Previews,
+                    _ => SidebarStyle::Compact,
+                };
+            }
             "emoji_skin_tone" => {
                 settings.emoji_skin_tone = (!value.is_empty()).then(|| value.to_string());
             }
@@ -152,11 +168,15 @@ fn parse_settings(raw: &str) -> SettingsModel {
 
 fn serialize_settings(settings: &SettingsModel) -> String {
     let mut content = format!(
-        "theme={}\ndensity={}\nreduced_motion={}\nshow_right_pane={}\n",
+        "theme={}\ndensity={}\nreduced_motion={}\nshow_right_pane={}\nsidebar_style={}\n",
         theme_label(&settings.theme_mode),
         density_label(&settings.density),
         settings.reduced_motion,
-        settings.show_right_pane
+        settings.show_right_pane,
+        match settings.sidebar_style {
+            SidebarStyle::Compact => "compact",
+            SidebarStyle::Previews => "previews",
+        }
     );
     if let Some(skin_tone) = settings
         .emoji_skin_tone
@@ -264,6 +284,24 @@ mod tests {
         assert_eq!(
             parse_settings("sidebar_mode.workspace:alice=unknown").sidebar_modes["workspace:alice"],
             SidebarMode::Grouped
+        );
+    }
+
+    #[test]
+    fn sidebar_style_round_trips_and_defaults_to_compact() {
+        let mut settings = SettingsModel::default();
+        assert_eq!(settings.sidebar_style, SidebarStyle::Compact);
+        settings.sidebar_style = SidebarStyle::Previews;
+        let serialized = serialize_settings(&settings);
+        assert!(serialized.contains("sidebar_style=previews\n"));
+        assert_eq!(
+            parse_settings(&serialized).sidebar_style,
+            SidebarStyle::Previews
+        );
+        // Settings saved before the option existed keep the compact rows.
+        assert_eq!(
+            parse_settings("theme=dark\n").sidebar_style,
+            SidebarStyle::Compact
         );
     }
 

@@ -53,6 +53,8 @@ pub enum UiAction {
         conversation_id: ConversationId,
         query: String,
     },
+    /// Leave a historical message window and reload the active chat's latest page.
+    ReturnToLatestMessages,
     ToggleSearchFilter(SearchFilter),
     UpdateDraft {
         key: DraftKey,
@@ -60,6 +62,11 @@ pub enum UiAction {
     },
     SendMessage {
         key: DraftKey,
+    },
+    /// Removes a message that failed to send. It never reached Keybase, so
+    /// this is local only; messages in any other state are left alone.
+    DiscardFailedMessage {
+        message_id: MessageId,
     },
     EditMessage {
         conversation_id: ConversationId,

@@ -2,5 +2,8 @@ pub mod actions;
 pub mod assets;
 pub mod bootstrap;
 pub mod commands;
+#[cfg(any(test, feature = "demo-fixtures"))]
+pub mod demo;
+pub mod menu_state;
 pub mod theme;
 pub mod window;

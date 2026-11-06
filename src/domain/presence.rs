@@ -7,7 +7,7 @@ pub enum Availability {
     Unknown,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Presence {
     pub availability: Availability,
     pub status_text: Option<String>,

@@ -1,4 +1,5 @@
 use crate::domain::profile::SocialListLoadState;
+use crate::views::right_pane::{pane_header, pane_with_header};
 use crate::{
     domain::{
         affinity::Affinity,
@@ -8,17 +9,19 @@ use crate::{
     },
     models::profile_panel_model::{ProfilePanelModel, SocialTab},
     views::{
-        accent,
+        accent, affinity_broken, affinity_positive,
         app_window::AppWindow,
         avatar::{Avatar, default_avatar_background},
-        badge, border, close_icon, danger, panel_alt_bg, panel_alt_surface, panel_surface,
-        subtle_surface, success, text_primary, text_secondary, warning,
+        border, icon_asset, link, panel_surface, primary_button, secondary_button, section_label,
+        shell_border, text_primary, text_secondary, tint,
+        tooltip::TextTooltip,
     },
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, Context, CursorStyle, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    ScrollHandle, StatefulInteractiveElement, Styled, div, px, rgb,
+    AnyElement, Context, CursorStyle, FontWeight, InteractiveElement, IntoElement, ObjectFit,
+    ParentElement, ScrollHandle, StatefulInteractiveElement, Styled, StyledImage, div, img, px,
+    rgb,
 };
 
 const ENV_PROFILE_DISABLE_SOCIAL_VIRTUALIZATION: &str =
@@ -88,8 +91,303 @@ pub fn render_profile_panel(
         };
     let visible_social_entries = &social_entries[social_start_index..social_end_index];
 
-    div()
-        .size_full()
+    let presence_text = presence_label(&presence);
+    let hero = div()
+        .px_4()
+        .pt(px(16.))
+        .pb(px(12.))
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(12.))
+        .child(Avatar::with_presence_tooltip(
+            "profile-panel-presence",
+            Avatar::render(
+                &display_name,
+                avatar_asset,
+                64.,
+                default_avatar_background(&display_name),
+                text_primary(),
+            ),
+            64.,
+            Some(&presence.availability),
+            crate::views::right_pane_surface(),
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_size(px(17.))
+                                .line_height(px(22.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(text_primary()))
+                                .child(display_name.clone()),
+                        )
+                        .children(crate::views::identity_marker(
+                            "profile-panel-identity",
+                            affinity,
+                            &display_name,
+                            true,
+                        )),
+                )
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(rgb(text_secondary()))
+                        .child(format!("@{username}")),
+                )
+                .when_some(title, |container, title| {
+                    container.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(rgb(text_secondary()))
+                            .child(title.to_string()),
+                    )
+                })
+                .when(!presence_text.is_empty(), |container| {
+                    container.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(rgb(text_secondary()))
+                            .child(presence_text),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(px(8.))
+                .child({
+                    let user_id = user_id.clone();
+                    primary_button("profile-open-message", "Message").on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.profile_open_message(user_id.clone(), cx);
+                        },
+                    ))
+                })
+                .child({
+                    let user_id = user_id.clone();
+                    secondary_button("profile-follow-toggle", follow_label).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            if follow {
+                                this.profile_unfollow_user(user_id.clone(), cx);
+                            } else {
+                                this.profile_follow_user(user_id.clone(), cx);
+                            }
+                        },
+                    ))
+                }),
+        );
+
+    let about = has_bio_block.then(|| {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .when_some(bio, |about, bio| {
+                about.child(
+                    div()
+                        .text_size(px(13.))
+                        .line_height(px(19.))
+                        .text_color(rgb(text_primary()))
+                        .child(bio.to_string()),
+                )
+            })
+            .when_some(location, |about, location| {
+                about.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(text_secondary()))
+                        .child(location.to_string()),
+                )
+            })
+            .into_any_element()
+    });
+
+    let social = social_graph.map(|graph| {
+        let followers_count = graph.followers_count.unwrap_or(0);
+        let following_count = graph.following_count.unwrap_or(0);
+        let render_entry = |index: usize, entry: &crate::domain::profile::SocialGraphEntry| {
+            let entry_user_id = entry.user_id.clone();
+            let entry_name = if entry.display_name.trim().is_empty() {
+                entry.user_id.0.clone()
+            } else {
+                entry.display_name.clone()
+            };
+            div()
+                .id(("profile-social-entry", index))
+                .h(px(SOCIAL_ENTRY_ESTIMATED_HEIGHT_PX))
+                // Outset so avatars line up with the section text; the hover
+                // fill still gets its own padding.
+                .px(px(8.))
+                .mx(px(-8.))
+                .rounded(px(6.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .cursor(CursorStyle::PointingHand)
+                .hover(|s| s.bg(tint(text_primary(), 0.05)))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_user_profile_panel(entry_user_id.clone(), window, cx);
+                }))
+                .child(div().flex_shrink_0().child(Avatar::render(
+                    &entry_name,
+                    entry.avatar_asset.as_deref(),
+                    24.,
+                    default_avatar_background(&entry_name),
+                    text_primary(),
+                )))
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .truncate()
+                        .text_size(px(13.))
+                        .text_color(rgb(text_primary()))
+                        .child(entry_name.clone()),
+                )
+                .children(crate::views::identity_marker(
+                    gpui::SharedString::from(format!(
+                        "profile-social-identity-{}",
+                        entry.user_id.0
+                    )),
+                    entry.affinity,
+                    &entry_name,
+                    true,
+                ))
+                .into_any_element()
+        };
+        let list = if use_social_virtualization {
+            div()
+                .id("profile-social-list-scroll")
+                .flex()
+                .flex_col()
+                .when(social_top_spacer_px > 0.0, |list| {
+                    list.child(div().h(px(social_top_spacer_px)))
+                })
+                .children(visible_social_entries.iter().enumerate().map(
+                    |(visible_offset, entry)| {
+                        render_entry(social_start_index + visible_offset, entry)
+                    },
+                ))
+                .when(social_bottom_spacer_px > 0.0, |list| {
+                    list.child(div().h(px(social_bottom_spacer_px)))
+                })
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .children(
+                    social_entries
+                        .iter()
+                        .enumerate()
+                        .map(|(index, entry)| render_entry(index, entry)),
+                )
+                .into_any_element()
+        };
+        let loading = !social_list_loaded
+            && matches!(
+                profile_panel.social_list_status,
+                Some(SocialListLoadState::Loading)
+            );
+        let failed = !social_list_loaded
+            && matches!(
+                profile_panel.social_list_status,
+                Some(SocialListLoadState::Failed)
+            );
+        let empty = (social_list_loaded || profile_panel.social_list_status.is_none())
+            && social_entries.is_empty();
+        let list_type = profile_panel.active_social_tab.as_list_type();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(16.))
+                    .border_b_1()
+                    .border_color(shell_border())
+                    .child(social_tab(
+                        "Followers",
+                        followers_count,
+                        profile_panel.active_social_tab == SocialTab::Followers,
+                        "profile-followers-tab",
+                        SocialGraphListType::Followers,
+                        cx,
+                    ))
+                    .child(social_tab(
+                        "Following",
+                        following_count,
+                        profile_panel.active_social_tab == SocialTab::Following,
+                        "profile-following-tab",
+                        SocialGraphListType::Following,
+                        cx,
+                    )),
+            )
+            .when(loading, |section| {
+                section.child(quiet_note("Loading people\u{2026}"))
+            })
+            .when(empty, |section| {
+                section.child(quiet_note(match profile_panel.active_social_tab {
+                    SocialTab::Followers => "No followers yet.",
+                    SocialTab::Following => "Not following anyone yet.",
+                }))
+            })
+            .when(failed, |section| {
+                section.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(quiet_note("Couldn't load this list from Keybase."))
+                        .child(
+                            div()
+                                .id("profile-social-retry")
+                                .cursor_pointer()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(rgb(link()))
+                                .child("Retry")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.profile_select_social_tab(list_type, cx);
+                                })),
+                        ),
+                )
+            })
+            .child(list)
+            .into_any_element()
+    });
+
+    let mut sections: Vec<(&'static str, AnyElement)> = Vec::new();
+    if let Some(about) = about {
+        sections.push(("About", about));
+    }
+    if !identity_proofs.is_empty() {
+        sections.push((
+            "Identity proofs",
+            render_proofs_section(identity_proofs, cx),
+        ));
+    }
+    if !team_showcase.is_empty() {
+        sections.push(("Teams", render_teams_section(team_showcase)));
+    }
+    if !custom_fields.is_empty() {
+        sections.push(("Details", render_custom_fields_section(custom_fields)));
+    }
+
+    let body = div()
+        .flex_1()
+        .min_h(px(0.))
         .id("right-pane-profile-scroll")
         .overflow_y_scroll()
         .track_scroll(profile_scroll)
@@ -97,341 +395,75 @@ pub fn render_profile_panel(
             panel.on_scroll_wheel(cx.listener(AppWindow::profile_scrolled))
         })
         .scrollbar_width(px(8.))
-        .p_4()
         .flex()
         .flex_col()
-        .gap_3()
-        // Header with close icon (matches pane_header pattern)
-        .child(pane_header(cx))
-        // Hero card: avatar, name, presence, actions
-        .child(
-            div()
-                .rounded_lg()
-                .bg(panel_surface())
-                .border_1()
-                .border_color(rgb(border()))
-                .p_4()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap_3()
-                // Avatar with presence dot
-                .child(
-                    div()
-                        .relative()
-                        .child(Avatar::render(
-                            &display_name,
-                            avatar_asset,
-                            80.,
-                            default_avatar_background(&display_name),
-                            text_primary(),
-                        ))
-                        .child(presence_dot(&presence)),
-                )
-                // Name + username + title
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap_0p5()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(rgb(profile_name_color(affinity)))
-                                .child(display_name.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(text_secondary()))
-                                .child(format!("@{username}")),
-                        )
-                        .when_some(title, |container, title| {
-                            container.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(text_secondary()))
-                                    .child(title.to_string()),
-                            )
-                        }),
-                )
-                // Action buttons
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child({
-                            let user_id = user_id.clone();
-                            div()
-                                .id("profile-open-message")
-                                .cursor(CursorStyle::PointingHand)
-                                .hover(|s| s.opacity(0.85))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.profile_open_message(user_id.clone(), cx);
-                                }))
-                                .child(badge("Message", panel_alt_bg(), text_primary()))
-                        })
-                        .child({
-                            let user_id = user_id.clone();
-                            div()
-                                .id("profile-follow-toggle")
-                                .cursor(CursorStyle::PointingHand)
-                                .hover(|s| s.opacity(0.85))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if follow {
-                                        this.profile_unfollow_user(user_id.clone(), cx);
-                                    } else {
-                                        this.profile_follow_user(user_id.clone(), cx);
-                                    }
-                                }))
-                                .child(badge(
-                                    follow_label,
-                                    if follow { panel_alt_bg() } else { accent() },
-                                    text_primary(),
-                                ))
-                        }),
-                ),
-        )
-        // Skeleton placeholders for first load
+        .child(hero)
         .when(profile_panel.loading && profile.is_none(), |container| {
             container
                 .child(skeleton_section(vec![px(180.), px(120.)]))
                 .child(skeleton_section(vec![px(140.), px(100.), px(160.)]))
         })
-        // Identity proofs
-        .when(!identity_proofs.is_empty(), |container| {
-            container.child(render_proofs_section(identity_proofs))
+        .children(
+            sections
+                .into_iter()
+                .map(|(title, content)| profile_section(Some(title), content)),
+        )
+        .when_some(social, |container, social| {
+            container.child(profile_section(None, social))
         })
-        // Networks (teams)
-        .when(!team_showcase.is_empty(), |container| {
-            container.child(render_teams_section(team_showcase))
+        // 16px after the last row at the end. A spacer rather than bottom
+        // padding, which the scroll extent leaves out.
+        .child(div().flex_shrink_0().h(px(16.)));
+    // Fade the bottom edge only while more of the profile sits below it, so the
+    // last visible row reads as "continues"; a profile that fits, or one
+    // scrolled to the end, shows its last row unfaded.
+    let more_below = profile_has_more_below(
+        f32::from(profile_scroll.max_offset().height),
+        f32::from(-profile_scroll.offset().y),
+    );
+    let body = div()
+        .flex_1()
+        .min_h(px(0.))
+        .relative()
+        .flex()
+        .flex_col()
+        .child(body)
+        .when(more_below, |container| {
+            container.child(crate::views::scroll_edge_fade_bottom(
+                crate::views::right_pane_surface(),
+            ))
         })
-        // Bio + location block
-        .when(has_bio_block, |container| {
-            container.child(
-                div()
-                    .rounded_lg()
-                    .bg(panel_surface())
-                    .border_1()
-                    .border_color(rgb(border()))
-                    .p_3()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .when_some(bio, |card, bio| {
-                        card.child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(text_primary()))
-                                .child(bio.to_string()),
-                        )
-                    })
-                    .when_some(location, |card, location| {
-                        card.child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(text_secondary()))
-                                .child(format!("\u{1F4CD} {location}")),
-                        )
-                    }),
-            )
-        })
-        // Custom fields
-        .when(!custom_fields.is_empty(), |container| {
-            container.child(render_custom_fields_section(custom_fields))
-        })
-        // Followers / following (social graph)
-        .when_some(social_graph, |container, graph| {
-            let followers_count = graph.followers_count.unwrap_or(0);
-            let following_count = graph.following_count.unwrap_or(0);
-            container.child(
-                div()
-                    .rounded_lg()
-                    .bg(panel_surface())
-                    .border_1()
-                    .border_color(rgb(border()))
-                    .p_3()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex()
-                            .border_b_1()
-                            .border_color(rgb(border()))
-                            .gap_4()
-                            .child(social_tab(
-                                "Followers",
-                                followers_count,
-                                profile_panel.active_social_tab == SocialTab::Followers,
-                                "profile-followers-tab",
-                                SocialGraphListType::Followers,
-                                cx,
-                            ))
-                            .child(social_tab(
-                                "Following",
-                                following_count,
-                                profile_panel.active_social_tab == SocialTab::Following,
-                                "profile-following-tab",
-                                SocialGraphListType::Following,
-                                cx,
-                            )),
-                    )
-                    .when(
-                        !social_list_loaded
-                            && matches!(
-                                profile_panel.social_list_status,
-                                Some(SocialListLoadState::Loading)
-                            ),
-                        |section| {
-                            section.child(
-                                div()
-                                    .rounded_md()
-                                    .bg(panel_alt_surface())
-                                    .p_3()
-                                    .text_sm()
-                                    .text_color(rgb(text_secondary()))
-                                    .child("Loading people\u{2026}"),
-                            )
-                        },
-                    )
-                    .when(
-                        (social_list_loaded || profile_panel.social_list_status.is_none())
-                            && social_entries.is_empty(),
-                        |section| {
-                            section.child(
-                                div()
-                                    .rounded_md()
-                                    .bg(panel_alt_surface())
-                                    .p_3()
-                                    .text_sm()
-                                    .text_color(rgb(text_secondary()))
-                                    .child("No people to show yet."),
-                            )
-                        },
-                    )
-                    .when(
-                        !social_list_loaded
-                            && matches!(
-                                profile_panel.social_list_status,
-                                Some(SocialListLoadState::Failed)
-                            ),
-                        |section| {
-                            let list_type = profile_panel.active_social_tab.as_list_type();
-                            section.child(
-                                div()
-                                    .rounded_md()
-                                    .bg(panel_alt_surface())
-                                    .p_3()
-                                    .text_sm()
-                                    .text_color(rgb(text_secondary()))
-                                    .child("Couldn't load this list from Keybase.")
-                                    .child(
-                                        div()
-                                            .id("profile-social-retry")
-                                            .cursor_pointer()
-                                            .mt_2()
-                                            .text_color(rgb(accent()))
-                                            .child("Retry")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.profile_select_social_tab(list_type, cx);
-                                            })),
-                                    ),
-                            )
-                        },
-                    )
-                    .child({
-                        let render_entry =
-                            |index: usize, entry: &crate::domain::profile::SocialGraphEntry| {
-                                let entry_user_id = entry.user_id.clone();
-                                let entry_name = if entry.display_name.trim().is_empty() {
-                                    entry.user_id.0.clone()
-                                } else {
-                                    entry.display_name.clone()
-                                };
-                                div()
-                                    .id(("profile-social-entry", index))
-                                    .rounded_md()
-                                    .bg(panel_alt_surface())
-                                    .px_2()
-                                    .py_2()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .cursor(CursorStyle::PointingHand)
-                                    .hover(|s| s.bg(subtle_surface()))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_user_profile_panel(
-                                            entry_user_id.clone(),
-                                            window,
-                                            cx,
-                                        );
-                                    }))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w(px(0.))
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .child(
-                                                div().flex_shrink_0().child(Avatar::render(
-                                                    &entry_name,
-                                                    entry.avatar_asset.as_deref(),
-                                                    28.,
-                                                    default_avatar_background(&entry_name),
-                                                    text_primary(),
-                                                )),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .min_w(px(0.))
-                                                    .truncate()
-                                                    .text_sm()
-                                                    .text_color(rgb(profile_name_color(
-                                                        entry.affinity,
-                                                    )))
-                                                    .child(entry_name),
-                                            ),
-                                    )
-                                    .into_any_element()
-                            };
+        .into_any_element();
+    pane_with_header(pane_header("Profile", None, "profile-pane-close", cx), body)
+}
 
-                        if use_social_virtualization {
-                            div()
-                                .id("profile-social-list-scroll")
-                                .flex()
-                                .flex_col()
-                                .when(social_top_spacer_px > 0.0, |list_container| {
-                                    list_container.child(div().h(px(social_top_spacer_px)))
-                                })
-                                .children(visible_social_entries.iter().enumerate().map(
-                                    |(visible_offset, entry)| {
-                                        let index = social_start_index + visible_offset;
-                                        render_entry(index, entry)
-                                    },
-                                ))
-                                .when(social_bottom_spacer_px > 0.0, |list_container| {
-                                    list_container.child(div().h(px(social_bottom_spacer_px)))
-                                })
-                                .into_any_element()
-                        } else {
-                            div()
-                                .flex()
-                                .flex_col()
-                                .children(
-                                    social_entries
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(index, entry)| render_entry(index, entry)),
-                                )
-                                .into_any_element()
-                        }
-                    }),
-            )
-        })
+/// Whether content continues below the visible part of a scroll area that can
+/// scroll `max_offset` and has scrolled `scrolled`.
+fn profile_has_more_below(max_offset: f32, scrolled: f32) -> bool {
+    max_offset > 1. && scrolled < max_offset - 1.
+}
+
+/// A profile section: hairline above, 12px semibold title, content below.
+fn profile_section(title: Option<&'static str>, content: AnyElement) -> AnyElement {
+    div()
+        .mx_4()
+        .py(px(14.))
+        .border_t_1()
+        .border_color(shell_border())
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .when_some(title, |section, title| section.child(section_label(title)))
+        .child(content)
+        .into_any_element()
+}
+
+fn quiet_note(text: &'static str) -> AnyElement {
+    div()
+        .py(px(4.))
+        .text_size(px(13.))
+        .text_color(rgb(text_secondary()))
+        .child(text)
         .into_any_element()
 }
 
@@ -484,18 +516,19 @@ pub fn render_profile_card(
                 .flex()
                 .items_center()
                 .gap_3()
-                .child(
-                    div()
-                        .relative()
-                        .child(Avatar::render(
-                            &display_name,
-                            avatar_asset,
-                            48.,
-                            default_avatar_background(&display_name),
-                            text_primary(),
-                        ))
-                        .child(presence_dot_small(&presence)),
-                )
+                .child(Avatar::with_presence_tooltip(
+                    "profile-card-presence",
+                    Avatar::render(
+                        &display_name,
+                        avatar_asset,
+                        48.,
+                        default_avatar_background(&display_name),
+                        text_primary(),
+                    ),
+                    48.,
+                    Some(&presence.availability),
+                    panel_surface(),
+                ))
                 .child(
                     div()
                         .flex()
@@ -503,9 +536,21 @@ pub fn render_profile_card(
                         .gap_0p5()
                         .child(
                             div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(rgb(profile_name_color(affinity)))
-                                .child(display_name),
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(rgb(text_primary()))
+                                        .child(display_name.clone()),
+                                )
+                                .children(crate::views::identity_marker(
+                                    "profile-card-identity",
+                                    affinity,
+                                    &display_name,
+                                    true,
+                                )),
                         )
                         .child(
                             div()
@@ -545,84 +590,45 @@ pub fn render_profile_card(
             div()
                 .pt_1()
                 .flex()
-                .gap_2()
+                .gap(px(8.))
                 .child({
                     let user_id = user_id.clone();
-                    div()
-                        .id("profile-card-view-full")
-                        .cursor(CursorStyle::PointingHand)
-                        .hover(|s| s.opacity(0.85))
-                        .on_click(cx.listener(move |this, _, window, cx| {
+                    primary_button("profile-card-view-full", "View profile").on_click(cx.listener(
+                        move |this, _, window, cx| {
                             this.open_user_profile_panel(user_id.clone(), window, cx);
-                        }))
-                        .child(badge("View profile", accent(), text_primary()))
+                        },
+                    ))
                 })
                 .child({
                     let user_id = user_id.clone();
-                    div()
-                        .id("profile-card-follow-toggle")
-                        .cursor(CursorStyle::PointingHand)
-                        .hover(|s| s.opacity(0.85))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if follow {
-                                this.profile_unfollow_user(user_id.clone(), cx);
-                            } else {
-                                this.profile_follow_user(user_id.clone(), cx);
-                            }
-                        }))
-                        .child(badge(
-                            if follow { "Unfollow" } else { "Follow" },
-                            panel_alt_bg(),
-                            text_primary(),
-                        ))
+                    secondary_button(
+                        "profile-card-follow-toggle",
+                        if follow { "Unfollow" } else { "Follow" },
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if follow {
+                            this.profile_unfollow_user(user_id.clone(), cx);
+                        } else {
+                            this.profile_follow_user(user_id.clone(), cx);
+                        }
+                    }))
                 })
+                .child(div().flex_1())
                 .child(
-                    div()
-                        .id("profile-card-close")
-                        .cursor(CursorStyle::PointingHand)
-                        .hover(|s| s.opacity(0.85))
-                        .on_click(cx.listener(|this, _, _, cx| {
+                    secondary_button("profile-card-close", "Close").on_click(cx.listener(
+                        |this, _, _, cx| {
                             this.dismiss_overlays(cx);
-                        }))
-                        .child(badge("Close", panel_alt_bg(), text_primary())),
+                        },
+                    )),
                 ),
         )
         .into_any_element()
 }
 
-fn pane_header(cx: &mut Context<AppWindow>) -> AnyElement {
-    div()
-        .flex()
-        .items_center()
-        .justify_between()
-        .child(
-            div()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(text_primary()))
-                .child("Profile"),
-        )
-        .child(
-            div()
-                .id("profile-pane-close")
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.close_right_pane(window, cx);
-                }))
-                .w(px(22.))
-                .h(px(22.))
-                .rounded_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor(CursorStyle::PointingHand)
-                .hover(|s| s.bg(subtle_surface()))
-                .child(close_icon(text_secondary())),
-        )
-        .into_any_element()
-}
-
 fn empty_profile_panel(cx: &mut Context<AppWindow>) -> AnyElement {
-    div()
-        .size_full()
+    let body = div()
+        .flex_1()
+        .min_h(px(0.))
         .id("right-pane-profile-scroll")
         .overflow_y_scroll()
         .scrollbar_width(px(8.))
@@ -630,46 +636,32 @@ fn empty_profile_panel(cx: &mut Context<AppWindow>) -> AnyElement {
         .flex()
         .flex_col()
         .gap_3()
-        .child(pane_header(cx))
-        .child(
-            div()
-                .rounded_lg()
-                .bg(panel_alt_surface())
-                .p_4()
-                .text_sm()
-                .text_color(rgb(text_secondary()))
-                .child("Select a person to view their profile."),
-        )
-        .into_any_element()
+        .child(crate::views::empty_state(
+            "assets/icons/members.svg",
+            "No one selected",
+            Some("Click a name in a conversation to see their profile.".to_string()),
+        ))
+        .into_any_element();
+    pane_with_header(pane_header("Profile", None, "profile-pane-close", cx), body)
 }
 
 fn skeleton_section(widths: Vec<gpui::Pixels>) -> AnyElement {
     div()
-        .rounded_lg()
-        .bg(panel_surface())
-        .border_1()
-        .border_color(rgb(border()))
-        .p_3()
+        .mx_4()
+        .py(px(14.))
+        .border_t_1()
+        .border_color(shell_border())
         .flex()
         .flex_col()
-        .gap_2()
+        .gap(px(10.))
         .children(widths.into_iter().map(|w| {
             div()
-                .h(px(12.))
+                .h(px(10.))
                 .w(w)
-                .rounded_md()
-                .bg(panel_alt_surface())
+                .rounded_full()
+                .bg(tint(text_primary(), 0.08))
                 .into_any_element()
         }))
-        .into_any_element()
-}
-
-fn section_header(title: &str) -> AnyElement {
-    div()
-        .font_weight(FontWeight::MEDIUM)
-        .text_sm()
-        .text_color(rgb(text_secondary()))
-        .child(title.to_string())
         .into_any_element()
 }
 
@@ -683,8 +675,8 @@ fn social_tab(
 ) -> AnyElement {
     div()
         .id(id)
-        .pb_2()
-        .text_sm()
+        .pb(px(8.))
+        .text_size(px(13.))
         .font_weight(FontWeight::MEDIUM)
         .cursor(CursorStyle::PointingHand)
         .text_color(rgb(if selected {
@@ -697,127 +689,204 @@ fn social_tab(
         .on_click(cx.listener(move |this, _, _, cx| {
             this.profile_select_social_tab(list_type, cx);
         }))
-        .child(format!("{label} ({count})"))
+        .child(format!("{label} · {count}"))
         .into_any_element()
 }
 
-fn presence_dot(presence: &Presence) -> AnyElement {
-    let color = presence_dot_color(&presence.availability);
+/// One row per proof: service icon, handle, service name, and the verification
+/// state as an icon with a tooltip. Opens the proof when clicked.
+fn render_proofs_section(
+    proofs: &[crate::domain::profile::IdentityProof],
+    cx: &mut Context<AppWindow>,
+) -> AnyElement {
     div()
-        .absolute()
-        .bottom(px(0.))
-        .right(px(0.))
-        .w(px(14.))
-        .h(px(14.))
-        .rounded_full()
-        .bg(panel_surface())
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(div().w(px(10.)).h(px(10.)).rounded_full().bg(rgb(color)))
-        .into_any_element()
-}
-
-fn presence_dot_small(presence: &Presence) -> AnyElement {
-    let color = presence_dot_color(&presence.availability);
-    div()
-        .absolute()
-        .bottom(px(0.))
-        .right(px(0.))
-        .w(px(12.))
-        .h(px(12.))
-        .rounded_full()
-        .bg(panel_surface())
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(rgb(color)))
-        .into_any_element()
-}
-
-fn presence_dot_color(availability: &Availability) -> u32 {
-    match availability {
-        Availability::Active => success(),
-        Availability::Away => warning(),
-        Availability::DoNotDisturb => danger(),
-        Availability::Offline | Availability::Unknown => text_secondary(),
-    }
-}
-
-fn render_proofs_section(proofs: &[crate::domain::profile::IdentityProof]) -> AnyElement {
-    div()
-        .rounded_lg()
-        .bg(panel_surface())
-        .border_1()
-        .border_color(rgb(border()))
-        .p_3()
         .flex()
         .flex_col()
-        .gap_2()
-        .child(section_header("Identity proofs"))
-        .children(proofs.iter().map(|proof| {
-            let color = match proof.state {
-                ProofState::Verified => success(),
-                ProofState::Broken => danger(),
-                ProofState::Pending => warning(),
-                ProofState::Unknown => text_secondary(),
+        .children(proofs.iter().enumerate().map(|(index, proof)| {
+            let target = proof.proof_url.clone().or_else(|| proof.site_url.clone());
+            let status: Option<AnyElement> = match proof.state {
+                ProofState::Verified => Some(status_icon(
+                    ("profile-proof-status", index),
+                    "assets/icons/check-circle.svg",
+                    affinity_positive(),
+                    "Verified",
+                )),
+                ProofState::Broken => Some(status_icon(
+                    ("profile-proof-status", index),
+                    "assets/icons/alert-triangle.svg",
+                    affinity_broken(),
+                    "Proof is broken",
+                )),
+                ProofState::Pending => Some(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(text_secondary()))
+                        .child("Pending")
+                        .into_any_element(),
+                ),
+                ProofState::Unknown => None,
             };
+            let service = proof_service(&proof.service_name);
+            let icon = proof
+                .icon_asset
+                .as_deref()
+                .and_then(crate::views::avatar::image_source_for_asset)
+                .map(|source| {
+                    img(source)
+                        .size(px(16.))
+                        .flex_shrink_0()
+                        .object_fit(ObjectFit::Contain)
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| icon_asset(service.icon, 16., text_primary()));
             div()
-                .rounded_md()
-                .bg(panel_alt_surface())
-                .px_2()
-                .py_2()
-                .overflow_hidden()
-                .text_sm()
-                .text_color(rgb(color))
-                .child(format!(
-                    "{} \u{00B7} {}",
-                    proof.service_name, proof.service_username
-                ))
+                .id(("profile-proof", index))
+                .h(px(32.))
+                .px(px(8.))
+                .mx(px(-8.))
+                .rounded(px(6.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .when_some(target, |row, target| {
+                    row.cursor(CursorStyle::PointingHand)
+                        .hover(|s| s.bg(tint(text_primary(), 0.05)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_url_or_deep_link(&target, window, cx);
+                        }))
+                })
+                .child(icon)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .items_baseline()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .min_w(px(0.))
+                                .truncate()
+                                .text_size(px(13.))
+                                .text_color(rgb(text_primary()))
+                                .child(proof.service_username.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(px(12.))
+                                .text_color(rgb(text_secondary()))
+                                .child(service.label),
+                        ),
+                )
+                .children(status)
                 .into_any_element()
         }))
         .into_any_element()
 }
 
+/// How a proof's service is shown: a monochrome glyph and a readable name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProofService {
+    icon: &'static str,
+    label: String,
+}
+
+/// Keybase service ids ("github", "dns", "mastodon.social") to a glyph and a
+/// display name. Unknown services keep their id and a generic link glyph.
+fn proof_service(service_name: &str) -> ProofService {
+    let id = service_name.trim().to_ascii_lowercase();
+    let (icon, label) = match id.as_str() {
+        "github" => ("assets/icons/service-github.svg", "GitHub"),
+        "twitter" => ("assets/icons/service-twitter.svg", "Twitter"),
+        "reddit" => ("assets/icons/service-reddit.svg", "Reddit"),
+        "hackernews" => ("assets/icons/service-hackernews.svg", "Hacker News"),
+        "facebook" => ("assets/icons/service-facebook.svg", "Facebook"),
+        "dns" | "web" | "http" | "https" => ("assets/icons/service-globe.svg", "Website"),
+        "pgp" => ("assets/icons/service-key.svg", "PGP key"),
+        _ => {
+            return ProofService {
+                icon: "assets/icons/link.svg",
+                label: service_name.trim().to_string(),
+            };
+        }
+    };
+    ProofService {
+        icon,
+        label: label.to_string(),
+    }
+}
+
+fn status_icon(
+    id: impl Into<gpui::ElementId>,
+    icon: &'static str,
+    color: u32,
+    label: &'static str,
+) -> AnyElement {
+    div()
+        .id(id)
+        .flex_shrink_0()
+        .child(icon_asset(icon, 14., color))
+        .tooltip(TextTooltip::single_line(label.to_string()))
+        .into_any_element()
+}
+
 fn render_teams_section(teams: &[crate::domain::profile::TeamShowcaseEntry]) -> AnyElement {
     div()
-        .rounded_lg()
-        .bg(panel_surface())
-        .border_1()
-        .border_color(rgb(border()))
-        .p_3()
         .flex()
         .flex_col()
-        .gap_2()
-        .child(section_header("Teams"))
+        .gap(px(10.))
         .children(teams.iter().map(|team| {
             div()
-                .rounded_md()
-                .bg(panel_alt_surface())
-                .px_2()
-                .py_2()
                 .flex()
-                .flex_col()
-                .gap_0p5()
+                .items_start()
+                .gap(px(10.))
+                .child(Avatar::render_team(&team.name, None, 24.))
                 .child(
                     div()
-                        .text_sm()
-                        .text_color(rgb(text_primary()))
-                        .child(team.name.clone()),
-                )
-                .when(!team.description.trim().is_empty(), |card| {
-                    card.child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(text_secondary()))
-                            .child(team.description.clone()),
-                    )
-                })
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(text_secondary()))
-                        .child(format!("{} members", team.members_count)),
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .flex()
+                                .items_baseline()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .min_w(px(0.))
+                                        .truncate()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(rgb(text_primary()))
+                                        .child(team.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .text_size(px(12.))
+                                        .text_color(rgb(text_secondary()))
+                                        .child(format!(
+                                            "{} {}",
+                                            team.members_count,
+                                            if team.members_count == 1 {
+                                                "member"
+                                            } else {
+                                                "members"
+                                            }
+                                        )),
+                                ),
+                        )
+                        .when(!team.description.trim().is_empty(), |card| {
+                            card.child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(rgb(text_secondary()))
+                                    .child(team.description.clone()),
+                            )
+                        }),
                 )
                 .into_any_element()
         }))
@@ -826,33 +895,27 @@ fn render_teams_section(teams: &[crate::domain::profile::TeamShowcaseEntry]) -> 
 
 fn render_custom_fields_section(fields: &[crate::domain::profile::CustomField]) -> AnyElement {
     div()
-        .rounded_lg()
-        .bg(panel_surface())
-        .border_1()
-        .border_color(rgb(border()))
-        .p_3()
         .flex()
         .flex_col()
-        .gap_2()
-        .child(section_header("Details"))
+        .gap(px(6.))
         .children(fields.iter().map(|field| {
             div()
-                .rounded_md()
-                .bg(panel_alt_surface())
-                .px_2()
-                .py_2()
                 .flex()
-                .justify_between()
-                .items_center()
+                .items_baseline()
+                .gap(px(12.))
                 .child(
                     div()
-                        .text_xs()
+                        .w(px(96.))
+                        .flex_shrink_0()
+                        .text_size(px(12.))
                         .text_color(rgb(text_secondary()))
                         .child(field.label.clone()),
                 )
                 .child(
                     div()
-                        .text_sm()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(px(13.))
                         .text_color(rgb(text_primary()))
                         .child(field.value.clone()),
                 )
@@ -879,7 +942,7 @@ fn social_graph_entries<'a>(
     }
 }
 
-const SOCIAL_ENTRY_ESTIMATED_HEIGHT_PX: f32 = 44.0;
+const SOCIAL_ENTRY_ESTIMATED_HEIGHT_PX: f32 = 36.0;
 const SOCIAL_ENTRY_INITIAL_RENDER_ROWS: usize = 180;
 const SOCIAL_ENTRY_PROGRESSIVE_CHUNK_ROWS: usize = 72;
 const SOCIAL_ENTRY_MAX_RENDER_ROWS: usize = 260;
@@ -979,17 +1042,47 @@ fn presence_label(presence: &Presence) -> String {
     }
 }
 
-fn profile_name_color(affinity: Affinity) -> u32 {
-    match affinity {
-        Affinity::None => text_primary(),
-        Affinity::Positive => success(),
-        Affinity::Broken => danger(),
-    }
-}
-
 fn default_presence() -> Presence {
     Presence {
         availability: Availability::Unknown,
         status_text: None,
+    }
+}
+
+#[cfg(test)]
+mod bottom_fade_tests {
+    use super::profile_has_more_below;
+
+    #[test]
+    fn fades_only_while_content_remains_below() {
+        assert!(!profile_has_more_below(0., 0.), "fits: no fade");
+        assert!(profile_has_more_below(200., 0.));
+        assert!(profile_has_more_below(200., 150.));
+        assert!(!profile_has_more_below(200., 200.), "at the end: no fade");
+    }
+}
+
+#[cfg(test)]
+mod proof_service_tests {
+    use super::proof_service;
+
+    #[test]
+    fn known_services_get_their_own_glyph_and_name() {
+        let github = proof_service("github");
+        assert_eq!(github.label, "GitHub");
+        assert!(github.icon.ends_with("service-github.svg"));
+        for site in ["dns", "web", "https", "HTTP"] {
+            let service = proof_service(site);
+            assert_eq!(service.label, "Website", "{site}");
+            assert!(service.icon.ends_with("service-globe.svg"));
+        }
+        assert_eq!(proof_service("hackernews").label, "Hacker News");
+    }
+
+    #[test]
+    fn unknown_services_keep_their_id_and_a_link_glyph() {
+        let service = proof_service("mastodon.social");
+        assert_eq!(service.label, "mastodon.social");
+        assert!(service.icon.ends_with("link.svg"));
     }
 }

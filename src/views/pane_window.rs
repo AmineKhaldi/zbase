@@ -211,8 +211,8 @@ mod tests {
         assert_eq!(sizing.sync(1400., Some(360.), 1124., 1600., true), None);
         assert_eq!(sizing.sync(1400., None, 764., 1600., true), None);
         assert_eq!(
-            sizing.sync(780., Some(360.), 1124., 1600., true),
-            Some(1140.)
+            sizing.sync(800., Some(360.), 1124., 1600., true),
+            Some(1160.)
         );
         assert_eq!(sizing.sync(1300., Some(360.), 1124., 1600., true), None);
         assert_eq!(sizing.base_width(1300.), 940.);

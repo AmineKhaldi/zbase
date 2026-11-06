@@ -10,24 +10,34 @@ use crate::{
         quick_switcher_model::{QuickSwitcherModel, QuickSwitcherResult, QuickSwitcherResultKind},
     },
     state::state::EmojiRenderState,
+    domain::route::Route,
+    util::search_snippet::clean_search_snippet,
     views::{
-        accent, accent_soft, app_window::AppWindow, attachment_display_label, badge, card_shadow,
-        dm_icon, hash_icon, image_source_from_attachment_source, input::TextField, modal_surface,
-        panel_alt_bg, panel_surface, search_icon, shell_border, shell_border_strong,
-        subtle_surface, text_primary, text_secondary, tint,
+        accent, accent_strong, app_window::AppWindow, attachment_display_label, badge,
+        card_shadow, dm_icon, panel_alt_bg,
+        empty_state, hash_icon, icon_asset, image_source_from_attachment_source,
+        input::TextField, is_dark_theme, keycap, modal_surface, panel_surface,
+        search::{MessageHit, SWITCHER_HIT, SearchResultContext, snippet_text},
+        section_label, shell_border, shell_border_strong,
+        sidebar_selected_bg, sidebar_selected_fg, sidebar_selected_secondary, subtle_surface,
+        text_primary, text_secondary, tint,
+        truncated_line::{Segment, TruncatedLine},
     },
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, App, AvailableSpace, Bounds, Context, Element, ElementId, Entity, FontWeight,
-    GlobalElementId, InteractiveElement, IntoElement, LayoutId, ObjectFit, ParentElement, Pixels,
-    SharedString, StatefulInteractiveElement, Style, Styled, StyledImage, TextRun, Window, div,
-    img, px, relative, rgb, size,
+    AnyElement, Context, Entity, FontWeight, InteractiveElement, IntoElement, ObjectFit,
+    ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, StyledImage, div,
+    img, px, rgb,
 };
 use std::collections::HashMap;
 
 mod emoji_picker;
 mod new_chat;
+
+/// Distance from the window top to every centered dialog (quick switcher, new
+/// chat, command palette, upload preview), so moving between them never jumps.
+pub(crate) const OVERLAY_TOP_PX: f32 = 96.;
 
 const QUICK_SWITCHER_RENDER_LIMIT_UNREAD: usize = 14;
 const QUICK_SWITCHER_RENDER_LIMIT_RECENT: usize = 14;
@@ -48,12 +58,15 @@ impl OverlayHost {
         new_chat: &NewChatModel,
         quick_switcher_input: &Entity<TextField>,
         new_chat_input: &Entity<TextField>,
+        new_chat_input_focused: bool,
         file_upload_caption_input: &Entity<TextField>,
         emoji_picker_state: &EmojiPickerModel,
         emoji_picker_input: &Entity<TextField>,
         custom_emoji_index: Option<&HashMap<String, EmojiRenderState>>,
         supports_custom_emoji: bool,
         quick_switcher_indexing_status: Option<&str>,
+        quick_switcher_hits: &HashMap<usize, SearchResultContext>,
+        conversation_avatars: &HashMap<String, crate::models::sidebar_model::SidebarAvatar>,
         viewport: gpui::Size<Pixels>,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
@@ -86,7 +99,7 @@ impl OverlayHost {
             .on_scroll_wheel(cx.listener(AppWindow::consume_scroll_wheel))
             .on_mouse_move(cx.listener(AppWindow::consume_mouse_move))
             .when(has_backdrop, |d| {
-                d.bg(tint(0x000000, 0.35))
+                d.bg(tint(0x000000, if is_dark_theme() { 0.50 } else { 0.25 }))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.dismiss_overlays(cx);
                     }))
@@ -95,6 +108,7 @@ impl OverlayHost {
                 container.child(new_chat::render_new_chat_modal(
                     new_chat,
                     new_chat_input,
+                    new_chat_input_focused,
                     cx,
                 ))
             })
@@ -103,6 +117,8 @@ impl OverlayHost {
                     quick_switcher,
                     quick_switcher_input,
                     quick_switcher_indexing_status,
+                    quick_switcher_hits,
+                    conversation_avatars,
                     cx,
                 ))
             })
@@ -306,7 +322,7 @@ impl OverlayHost {
         let index = lightbox.current_index.min(total.saturating_sub(1));
         let Some(candidate) = lightbox.candidates.get(index) else {
             return div()
-                .mt(px(120.))
+                .mt(px(OVERLAY_TOP_PX))
                 .w(px(420.))
                 .rounded_xl()
                 .border_1()
@@ -406,7 +422,7 @@ impl OverlayHost {
         };
 
         div()
-            .mt(px(96.))
+            .mt(px(OVERLAY_TOP_PX))
             .w(px(520.))
             .max_h(px(620.))
             .rounded_xl()
@@ -537,6 +553,8 @@ impl OverlayHost {
         quick_switcher: &QuickSwitcherModel,
         quick_switcher_input: &Entity<TextField>,
         quick_switcher_indexing_status: Option<&str>,
+        hits: &HashMap<usize, SearchResultContext>,
+        conversation_avatars: &HashMap<String, crate::models::sidebar_model::SidebarAvatar>,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         let query_empty = quick_switcher.query.trim().is_empty();
@@ -578,7 +596,7 @@ impl OverlayHost {
             }
         }
 
-        let mut results = div().px_4().py_3().flex().flex_col().gap_2();
+        let mut results = div().px_2().py_2().flex().flex_col().gap(px(10.));
         if query_empty {
             if !unread_indices.is_empty() {
                 results = results.child(Self::quick_switcher_section(
@@ -586,6 +604,8 @@ impl OverlayHost {
                     &unread_indices,
                     quick_switcher,
                     false,
+                    hits,
+                    conversation_avatars,
                     cx,
                 ));
             }
@@ -595,16 +615,20 @@ impl OverlayHost {
                     &recent_indices,
                     quick_switcher,
                     true,
+                    hits,
+                    conversation_avatars,
                     cx,
                 ));
             }
         } else {
             if !conversation_indices.is_empty() {
                 results = results.child(Self::quick_switcher_section(
-                    "Channels and DMs",
+                    "Channels and people",
                     &conversation_indices,
                     quick_switcher,
                     false,
+                    hits,
+                    conversation_avatars,
                     cx,
                 ));
             }
@@ -614,48 +638,55 @@ impl OverlayHost {
                     &message_indices,
                     quick_switcher,
                     false,
+                    hits,
+                    conversation_avatars,
                     cx,
                 ));
             }
         }
 
-        if quick_switcher.results.is_empty() {
-            results = results.child(
-                div()
-                    .rounded_md()
-                    .bg(subtle_surface())
-                    .px_3()
-                    .py_2()
-                    .text_sm()
-                    .text_color(rgb(text_secondary()))
-                    .child(if query_empty {
-                        "No conversations yet."
-                    } else {
-                        "No matches found."
-                    }),
-            );
+        if quick_switcher.results.is_empty() && !quick_switcher.loading_messages {
+            results = results.child(if query_empty {
+                empty_state(
+                    "assets/icons/dm.svg",
+                    "No conversations yet",
+                    Some("Channels and people you talk to will show up here.".to_string()),
+                )
+            } else {
+                empty_state(
+                    "assets/icons/search.svg",
+                    format!("No matches for “{}”", quick_switcher.query.trim()),
+                    Some("Try a channel, a person, or words from a message.".to_string()),
+                )
+            });
         }
+        let status_line = |text: String| {
+            div()
+                .px_2()
+                .text_size(px(12.))
+                .text_color(rgb(text_secondary()))
+                .child(text)
+        };
         if quick_switcher.loading_messages && !query_empty {
-            results = results.child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(text_secondary()))
-                    .child("Searching messages…"),
-            );
+            results = results.child(status_line("Searching messages…".to_string()));
         }
         if let Some(indexing_status) = quick_switcher_indexing_status
             && !query_empty
         {
-            results = results.child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(text_secondary()))
-                    .child(indexing_status.to_string()),
-            );
+            results = results.child(status_line(indexing_status.to_string()));
         }
 
+        let hint = |keys: Vec<&'static str>, label: &'static str| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .children(keys.into_iter().map(keycap))
+                .child(div().pl(px(2.)).child(label))
+        };
+
         div()
-            .mt(px(120.))
+            .mt(px(OVERLAY_TOP_PX))
             .w(px(480.))
             .max_h(px(560.))
             .rounded_xl()
@@ -668,18 +699,19 @@ impl OverlayHost {
             .overflow_hidden()
             .child(
                 div()
+                    .h(px(48.))
+                    .flex_shrink_0()
                     .px_4()
-                    .py_3()
                     .flex()
                     .items_center()
                     .gap_3()
                     .border_b_1()
                     .border_color(shell_border())
-                    .child(search_icon(text_secondary()))
+                    .child(icon_asset("assets/icons/search.svg", 16., text_secondary()))
                     .child(
                         div()
                             .flex_1()
-                            .text_sm()
+                            .text_size(px(15.))
                             .text_color(rgb(text_primary()))
                             .id("quick-switcher-overlay-input")
                             .on_click(cx.listener(AppWindow::focus_quick_switcher_input))
@@ -694,30 +726,25 @@ impl OverlayHost {
                     .overflow_y_scroll()
                     .on_scroll_wheel(cx.listener(AppWindow::consume_scroll_wheel))
                     .scrollbar_width(px(8.))
-                    .pr_1()
                     .child(results),
             )
             .child(
                 div()
+                    .h(px(36.))
+                    .flex_shrink_0()
                     .px_4()
-                    .py_2()
                     .border_t_1()
                     .border_color(shell_border())
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(text_secondary()))
-                            .child("up/down to navigate · enter to go · esc to close"),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(text_secondary()))
-                            .child("⌘K toggles"),
-                    ),
+                    .gap(px(16.))
+                    .text_size(px(12.))
+                    .text_color(rgb(text_secondary()))
+                    .child(hint(vec!["↑", "↓"], "Navigate"))
+                    .child(hint(vec!["↵"], "Open"))
+                    .child(hint(vec!["esc"], "Close"))
+                    .child(div().flex_1())
+                    .child(hint(vec!["⌘K"], "Toggle")),
             )
             .into_any_element()
     }
@@ -727,19 +754,15 @@ impl OverlayHost {
         indices: &[usize],
         quick_switcher: &QuickSwitcherModel,
         show_recent_shortcuts: bool,
+        hits: &HashMap<usize, SearchResultContext>,
+        conversation_avatars: &HashMap<String, crate::models::sidebar_model::SidebarAvatar>,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         div()
             .flex()
             .flex_col()
-            .gap_1()
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(text_secondary()))
-                    .child(title.to_string()),
-            )
+            .gap(px(1.))
+            .child(section_label(title.to_string()).px_2().pb(px(4.)))
             .children(
                 indices
                     .iter()
@@ -748,220 +771,281 @@ impl OverlayHost {
                         quick_switcher.results.get(*index).map(|result| {
                             let shortcut_hint = (show_recent_shortcuts
                                 && display_index < QUICK_SWITCHER_RECENT_SHORTCUT_LIMIT)
-                                .then(|| format!("⌘+{}", display_index + 1));
-                            Self::quick_switcher_row(
-                                *index,
-                                result,
-                                quick_switcher.selected_index == *index,
-                                shortcut_hint,
-                                cx,
-                            )
+                                .then(|| format!("⌘{}", display_index + 1));
+                            let selected = quick_switcher.selected_index == *index;
+                            match hits.get(index) {
+                                Some(context) => Self::quick_switcher_message_row(
+                                    *index, result, context, selected, cx,
+                                ),
+                                None => Self::quick_switcher_row(
+                                    *index,
+                                    result,
+                                    selected,
+                                    shortcut_hint,
+                                    conversation_avatars,
+                                    cx,
+                                ),
+                            }
                         })
                     }),
             )
             .into_any_element()
     }
 
+    /// Conversation rows are one 36px line: icon, name, team. Message rows add
+    /// the snippet underneath. The selected row takes the accent fill, like a
+    /// macOS list selection, so keyboard focus is obvious in both themes.
     fn quick_switcher_row(
         index: usize,
         result: &QuickSwitcherResult,
         selected: bool,
         shortcut_hint: Option<String>,
+        conversation_avatars: &HashMap<String, crate::models::sidebar_model::SidebarAvatar>,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
-        let label_ranges = if matches!(result.kind, QuickSwitcherResultKind::Message) {
-            &[]
+        let row_surface: gpui::Hsla = if selected {
+            rgb(sidebar_selected_bg()).into()
         } else {
-            result.match_ranges.as_slice()
+            modal_surface()
         };
-        let sublabel_ranges = if matches!(result.kind, QuickSwitcherResultKind::Message) {
-            result.match_ranges.as_slice()
+        let primary_color: gpui::Hsla = if selected {
+            rgb(sidebar_selected_fg()).into()
         } else {
-            &[]
+            rgb(text_primary()).into()
         };
+        let secondary_color: gpui::Hsla = if selected {
+            sidebar_selected_secondary()
+        } else {
+            rgb(text_secondary()).into()
+        };
+        let match_color: gpui::Hsla = if selected {
+            primary_color
+        } else {
+            rgb(accent_strong()).into()
+        };
+        let is_message = result.kind == QuickSwitcherResultKind::Message;
+        let is_dm = matches!(result.route, Route::DirectMessage { .. });
+        let unread = result.kind == QuickSwitcherResultKind::UnreadChannel;
+        let base_weight = if unread {
+            FontWeight::SEMIBOLD
+        } else {
+            FontWeight::NORMAL
+        };
+
+        // A single-channel team is labeled by its team alone ("bookclub").
+        let simple_team = !is_message && !is_dm && is_simple_team_label(&result.label);
+        let (primary, team) = if is_message || is_dm || simple_team {
+            let ranges = if is_message {
+                Vec::new()
+            } else {
+                result.match_ranges.clone()
+            };
+            ((result.label.clone(), ranges), None)
+        } else {
+            split_channel_label(&result.label, &result.match_ranges)
+        };
+        let mut segments = highlight_segments(
+            &primary.0,
+            &primary.1,
+            primary_color,
+            match_color,
+            if is_message { FontWeight::MEDIUM } else { base_weight },
+        );
+        if simple_team {
+            // Its one channel, as a quiet descriptor.
+            segments.push(Segment {
+                text: "  #general".to_string(),
+                color: secondary_color,
+                weight: FontWeight::NORMAL,
+            });
+        }
+        if let Some((team_name, team_ranges)) = team.as_ref() {
+            segments.push(Segment {
+                text: "  ".to_string(),
+                color: secondary_color,
+                weight: FontWeight::NORMAL,
+            });
+            segments.extend(highlight_segments(
+                team_name,
+                team_ranges,
+                secondary_color,
+                match_color,
+                FontWeight::NORMAL,
+            ));
+        }
+
+        let icon = Self::quick_switcher_icon(
+            result,
+            is_dm,
+            team.as_ref()
+                .map(|(name, _)| name.as_str())
+                .or(simple_team.then_some(result.label.as_str())),
+            conversation_avatars,
+            row_surface,
+            if selected {
+                sidebar_selected_fg()
+            } else {
+                text_secondary()
+            },
+        );
+        let snippet = is_message.then(|| {
+            clean_search_snippet(
+                result.sublabel.as_deref().unwrap_or_default(),
+                &result.match_ranges,
+            )
+        });
 
         div()
             .id(SharedString::from(format!("quick-switcher-result-{index}")))
             .w_full()
+            .min_h(px(36.))
             .px_2()
-            .py_1p5()
-            .rounded_md()
+            .when(is_message, |row| row.py(px(6.)))
+            .rounded(px(6.))
             .flex()
-            .items_start()
-            .gap_2()
-            .text_sm()
-            .text_color(rgb(text_primary()))
-            .bg(if selected {
-                tint(accent_soft(), 0.85)
-            } else {
-                panel_surface()
+            .when(is_message, |row| row.items_start())
+            .when(!is_message, |row| row.items_center())
+            .gap(px(10.))
+            .text_size(px(14.))
+            .bg(row_surface)
+            .when(!selected, |row| {
+                row.hover(|style| style.bg(tint(text_primary(), 0.06)))
             })
-            .hover(|s| s.bg(tint(accent_soft(), 0.60)))
+            .cursor(gpui::CursorStyle::PointingHand)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.open_quick_switcher_result_at(index, window, cx);
             }))
-            .child(Self::quick_switcher_icon(&result.kind))
+            .child(
+                div()
+                    .size(px(20.))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(is_message, |icon| icon.mt(px(1.)))
+                    .child(icon),
+            )
             .child(
                 div()
                     .flex_1()
                     .min_w(px(0.))
-                    .overflow_hidden()
                     .flex()
                     .flex_col()
-                    .gap_0p5()
+                    .gap(px(2.))
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(rgb(text_primary()))
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .children(Self::highlighted_label(&result.label, label_ranges)),
+                            .w_full()
+                            .when(is_message, |line| line.text_size(px(12.)))
+                            .line_height(px(if is_message { 16. } else { 20. }))
+                            .child(TruncatedLine::new(segments)),
                     )
-                    .when_some(result.sublabel.as_ref(), |container, sublabel| {
-                        container.child(
-                            div()
-                                .w_full()
-                                .min_w(px(0.))
-                                .text_xs()
-                                .text_color(rgb(text_secondary()))
-                                .child(Self::highlighted_text_element(sublabel, sublabel_ranges)),
-                        )
+                    .when_some(snippet, |column, snippet| {
+                        column.child(snippet_text(&snippet, SWITCHER_HIT, selected))
                     }),
             )
-            .when_some(shortcut_hint, |container, hint| {
-                container.child(
+            .when_some(shortcut_hint, |row, hint| {
+                row.child(if selected {
                     div()
-                        .text_xs()
-                        .text_color(rgb(text_secondary()))
-                        .child(badge(hint, panel_alt_bg(), text_secondary())),
-                )
+                        .flex_shrink_0()
+                        .text_size(px(12.))
+                        .text_color(sidebar_selected_secondary())
+                        .child(hint)
+                        .into_any_element()
+                } else {
+                    keycap(hint)
+                })
             })
             .into_any_element()
     }
 
-    fn quick_switcher_icon(kind: &QuickSwitcherResultKind) -> AnyElement {
-        match kind {
-            QuickSwitcherResultKind::UnreadChannel | QuickSwitcherResultKind::Channel => {
-                hash_icon(text_secondary())
-            }
-            QuickSwitcherResultKind::DirectMessage => dm_icon(text_secondary()),
-            QuickSwitcherResultKind::Message => search_icon(text_secondary()),
-        }
+    /// A message hit, drawn with the Search result anatomy: author avatar,
+    /// author · location · time, then a two-line snippet.
+    fn quick_switcher_message_row(
+        index: usize,
+        result: &QuickSwitcherResult,
+        context: &SearchResultContext,
+        selected: bool,
+        cx: &mut Context<AppWindow>,
+    ) -> AnyElement {
+        let snippet = clean_search_snippet(
+            result.sublabel.as_deref().unwrap_or_default(),
+            &result.match_ranges,
+        );
+        let hit = MessageHit {
+            id: SharedString::from(format!("quick-switcher-result-{index}")),
+            author: &context.author_name,
+            author_avatar: context.author_avatar.as_deref(),
+            location: context.location.as_deref(),
+            timestamp_ms: result.timestamp_ms,
+            snippet: &snippet,
+        };
+        div()
+            .id(hit.id.clone())
+            .w_full()
+            .px_2()
+            .py(px(6.))
+            .rounded(px(6.))
+            .flex()
+            .items_start()
+            .gap(px(10.))
+            .when(selected, |row| row.bg(rgb(sidebar_selected_bg())))
+            .when(!selected, |row| {
+                row.hover(|style| style.bg(tint(text_primary(), 0.06)))
+            })
+            .cursor(gpui::CursorStyle::PointingHand)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.open_quick_switcher_result_at(index, window, cx);
+            }))
+            .child(hit.avatar(SWITCHER_HIT))
+            .child(hit.column(SWITCHER_HIT, selected))
+            .into_any_element()
     }
 
-    fn highlighted_label(text: &str, ranges: &[(usize, usize)]) -> Vec<AnyElement> {
-        if text.is_empty() {
-            return vec![div().child(String::new()).into_any_element()];
-        }
-        if ranges.is_empty() {
-            return vec![div().child(text.to_string()).into_any_element()];
-        }
-        if ranges.len() == 1 {
-            let (start, end) = ranges[0];
-            if start < end
-                && end <= text.len()
-                && text.is_char_boundary(start)
-                && text.is_char_boundary(end)
+    /// DMs lead with the person's face and presence, channels with their team
+    /// mark, and channel messages (or channels without a team) with `#`.
+    fn quick_switcher_icon(
+        result: &QuickSwitcherResult,
+        is_dm: bool,
+        team_name: Option<&str>,
+        conversation_avatars: &HashMap<String, crate::models::sidebar_model::SidebarAvatar>,
+        surface: gpui::Hsla,
+        glyph_color: u32,
+    ) -> AnyElement {
+        use crate::models::sidebar_model::{SidebarAvatar, team_avatar_key};
+        if is_dm {
+            return match conversation_avatars
+                .get(&result.route.label())
+                .map(SidebarAvatar::participants)
+                .filter(|participants| !participants.is_empty())
             {
-                let mut elements = Vec::new();
-                if start > 0 {
-                    elements.push(div().child(text[..start].to_string()).into_any_element());
-                }
-                elements.push(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(accent()))
-                        .child(text[start..end].to_string())
-                        .into_any_element(),
-                );
-                if end < text.len() {
-                    elements.push(div().child(text[end..].to_string()).into_any_element());
-                }
-                return elements;
+                Some(participants) => crate::views::avatar::Avatar::render_participants_on(
+                    participants,
+                    &result.label,
+                    20.,
+                    surface,
+                ),
+                None => dm_icon(glyph_color),
+            };
+        }
+        match team_name {
+            Some(team) => {
+                let asset = result
+                    .sublabel
+                    .as_deref()
+                    .and_then(|team_id| conversation_avatars.get(&team_avatar_key(team_id)))
+                    .and_then(|avatar| match avatar {
+                        SidebarAvatar::Team(asset) => Some(asset.as_str()),
+                        SidebarAvatar::Participants(_) => None,
+                    });
+                crate::views::avatar::Avatar::render_team(team, asset, 20.)
             }
-        }
-
-        let mut normalized: Vec<(usize, usize)> = ranges
-            .iter()
-            .copied()
-            .filter(|(start, end)| {
-                start < end
-                    && *end <= text.len()
-                    && text.is_char_boundary(*start)
-                    && text.is_char_boundary(*end)
-            })
-            .collect::<Vec<_>>();
-        normalized.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-
-        let mut merged: Vec<(usize, usize)> = Vec::new();
-        for (start, end) in normalized {
-            if let Some(last) = merged.last_mut()
-                && start <= last.1
-            {
-                last.1 = last.1.max(end);
-                continue;
-            }
-            merged.push((start, end));
-        }
-
-        if merged.is_empty() {
-            return vec![div().child(text.to_string()).into_any_element()];
-        }
-
-        let mut elements = Vec::new();
-        let mut cursor = 0usize;
-        for (start, end) in merged {
-            if start > cursor {
-                elements.push(
-                    div()
-                        .child(text[cursor..start].to_string())
-                        .into_any_element(),
-                );
-            }
-            elements.push(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(accent()))
-                    .child(text[start..end].to_string())
-                    .into_any_element(),
-            );
-            cursor = end;
-        }
-        if cursor < text.len() {
-            elements.push(div().child(text[cursor..].to_string()).into_any_element());
-        }
-        elements
-    }
-
-    fn highlighted_text_element(text: &str, ranges: &[(usize, usize)]) -> HighlightedTextElement {
-        let mut normalized: Vec<(usize, usize)> = ranges
-            .iter()
-            .copied()
-            .filter(|(s, e)| {
-                s < e && *e <= text.len() && text.is_char_boundary(*s) && text.is_char_boundary(*e)
-            })
-            .collect();
-        normalized.sort_by_key(|&(s, e)| (s, e));
-        let mut merged: Vec<(usize, usize)> = Vec::new();
-        for (s, e) in normalized {
-            if let Some(last) = merged.last_mut() {
-                if s <= last.1 {
-                    last.1 = last.1.max(e);
-                    continue;
-                }
-            }
-            merged.push((s, e));
-        }
-        HighlightedTextElement {
-            content: text.to_string(),
-            highlight_ranges: merged,
+            None => hash_icon(glyph_color),
         }
     }
 
     fn render_command_palette(cx: &mut Context<AppWindow>) -> AnyElement {
         div()
-            .mt(px(120.))
+            .mt(px(OVERLAY_TOP_PX))
             .w(px(400.))
             .rounded_xl()
             .border_1()
@@ -1012,7 +1096,7 @@ impl OverlayHost {
                     ))
                     .child(Self::command_palette_row(
                         "overlay-command-prefs",
-                        "Open preferences",
+                        "Open settings",
                         "⌘,",
                         "preferences",
                         cx,
@@ -1097,186 +1181,133 @@ fn file_upload_preview_frame_size(
     (width.max(60.0), height.max(60.0))
 }
 
-struct HighlightedTextElement {
-    content: String,
-    highlight_ranges: Vec<(usize, usize)>,
+/// A channel label without "#": a single-channel team named by its team
+/// ("bookclub"), whose channel is `#general`.
+fn is_simple_team_label(label: &str) -> bool {
+    !label.starts_with('#') && !label.contains(" #")
 }
 
-impl HighlightedTextElement {
-    fn build_runs(&self, base_color: gpui::Hsla, font: gpui::Font) -> Vec<TextRun> {
-        let text_len = self.content.len();
-        if text_len == 0 || self.highlight_ranges.is_empty() {
-            return vec![TextRun {
-                len: text_len.max(1),
-                font,
-                color: base_color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            }];
-        }
+/// Splits a switcher channel label "lighthouse #general" into the channel
+/// ("#general") and its team ("lighthouse"), moving match ranges with each part.
+#[allow(clippy::type_complexity)]
+fn split_channel_label(
+    label: &str,
+    ranges: &[(usize, usize)],
+) -> ((String, Vec<(usize, usize)>), Option<(String, Vec<(usize, usize)>)>) {
+    let Some(split) = label.find(" #") else {
+        return ((label.to_string(), ranges.to_vec()), None);
+    };
+    let channel_start = split + 1;
+    let channel = label[channel_start..].to_string();
+    let channel_ranges = ranges
+        .iter()
+        .filter_map(|&(start, end)| {
+            let start = start.max(channel_start);
+            (start < end).then(|| (start - channel_start, end - channel_start))
+        })
+        .collect();
+    let team_ranges = ranges
+        .iter()
+        .filter_map(|&(start, end)| {
+            let end = end.min(split);
+            (start < end).then_some((start, end))
+        })
+        .collect();
+    (
+        (channel, channel_ranges),
+        Some((label[..split].to_string(), team_ranges)),
+    )
+}
 
-        let highlight_color = gpui::Hsla::from(rgb(accent()));
-        let mut runs = Vec::new();
-        let mut cursor = 0usize;
-        for &(start, end) in &self.highlight_ranges {
-            if start > cursor {
-                runs.push(TextRun {
-                    len: start - cursor,
-                    font: font.clone(),
-                    color: base_color,
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                });
-            }
-            runs.push(TextRun {
-                len: end - start,
-                font: gpui::Font {
-                    weight: FontWeight::SEMIBOLD,
-                    ..font.clone()
-                },
-                color: highlight_color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
+/// Text split into plain and matched segments; matches are semibold in
+/// `match_color`. Ranges off char boundaries are ignored.
+fn highlight_segments(
+    text: &str,
+    ranges: &[(usize, usize)],
+    color: gpui::Hsla,
+    match_color: gpui::Hsla,
+    weight: FontWeight,
+) -> Vec<Segment> {
+    let mut ranges: Vec<(usize, usize)> = ranges
+        .iter()
+        .copied()
+        .filter(|&(start, end)| {
+            start < end
+                && end <= text.len()
+                && text.is_char_boundary(start)
+                && text.is_char_boundary(end)
+        })
+        .collect();
+    ranges.sort_unstable();
+    let mut segments = Vec::new();
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        let start = start.max(cursor);
+        if start >= end {
+            continue;
+        }
+        if start > cursor {
+            segments.push(Segment {
+                text: text[cursor..start].to_string(),
+                color,
+                weight,
             });
-            cursor = end;
         }
-        if cursor < text_len {
-            runs.push(TextRun {
-                len: text_len - cursor,
-                font,
-                color: base_color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            });
-        }
-        runs
+        segments.push(Segment {
+            text: text[start..end].to_string(),
+            color: match_color,
+            weight: FontWeight::SEMIBOLD,
+        });
+        cursor = end;
     }
+    if cursor < text.len() {
+        segments.push(Segment {
+            text: text[cursor..].to_string(),
+            color,
+            weight,
+        });
+    }
+    segments
 }
 
-struct HighlightedTextPrepaint {
-    lines: Vec<gpui::WrappedLine>,
-    line_height: Pixels,
-}
+#[cfg(test)]
+mod quick_switcher_label_tests {
+    use super::split_channel_label;
 
-impl IntoElement for HighlightedTextElement {
-    type Element = Self;
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
-impl Element for HighlightedTextElement {
-    type RequestLayoutState = ();
-    type PrepaintState = HighlightedTextPrepaint;
-
-    fn id(&self) -> Option<ElementId> {
-        None
+    #[test]
+    fn channel_labels_split_into_channel_and_team_with_ranges_rebased() {
+        // "lighthouse #general" with "gen" and "light" matched.
+        let ((channel, channel_ranges), team) =
+            split_channel_label("lighthouse #general", &[(12, 15), (0, 5)]);
+        assert_eq!(channel, "#general");
+        assert_eq!(channel_ranges, [(1, 4)]);
+        let (team, team_ranges) = team.expect("team");
+        assert_eq!(team, "lighthouse");
+        assert_eq!(team_ranges, [(0, 5)]);
     }
 
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
-        None
+    #[test]
+    fn a_match_across_the_separator_is_split_between_the_parts() {
+        let ((channel, channel_ranges), team) =
+            split_channel_label("lighthouse #general", &[(8, 13)]);
+        assert_eq!(&channel[channel_ranges[0].0..channel_ranges[0].1], "#g");
+        let (team, team_ranges) = team.expect("team");
+        assert_eq!(&team[team_ranges[0].0..team_ranges[0].1], "se");
     }
 
-    fn request_layout(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        window: &mut Window,
-        _cx: &mut App,
-    ) -> (LayoutId, Self::RequestLayoutState) {
-        let text_style = window.text_style();
-        let font_size = text_style.font_size.to_pixels(window.rem_size());
-        let line_height = window.line_height();
-        let content = self.content.clone();
-        let runs = self.build_runs(text_style.color, text_style.font());
-
-        let mut style = Style::default();
-        style.size.width = relative(1.).into();
-
-        (
-            window.request_measured_layout(style, move |known, available, window, _cx| {
-                let wrap_width = known.width.or(match available.width {
-                    AvailableSpace::Definite(width) => Some(width),
-                    _ => None,
-                });
-                let Some(lines) = window
-                    .text_system()
-                    .shape_text(content.clone().into(), font_size, &runs, wrap_width, None)
-                    .ok()
-                else {
-                    return size(px(0.), px(0.));
-                };
-                let mut measured = size(px(0.), px(0.));
-                for line in &lines {
-                    let line_size = line.size(line_height);
-                    measured.height += line_size.height;
-                    measured.width = measured.width.max(line_size.width).ceil();
-                }
-                if let Some(w) = wrap_width {
-                    measured.width = measured.width.min(w);
-                }
-                measured
-            }),
-            (),
-        )
+    #[test]
+    fn single_channel_teams_are_named_by_their_team() {
+        assert!(super::is_simple_team_label("bookclub"));
+        assert!(!super::is_simple_team_label("#general"));
+        assert!(!super::is_simple_team_label("lighthouse #general"));
     }
 
-    fn prepaint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        _cx: &mut App,
-    ) -> Self::PrepaintState {
-        let style = window.text_style();
-        let font_size = style.font_size.to_pixels(window.rem_size());
-        let runs = self.build_runs(style.color, style.font());
-        let lines = window
-            .text_system()
-            .shape_text(
-                self.content.clone().into(),
-                font_size,
-                &runs,
-                Some(bounds.size.width.max(px(1.0))),
-                None,
-            )
-            .map(|lines| lines.into_vec())
-            .unwrap_or_default();
-        HighlightedTextPrepaint {
-            lines,
-            line_height: window.line_height(),
-        }
-    }
-
-    fn paint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        prepaint: &mut Self::PrepaintState,
-        window: &mut Window,
-        _cx: &mut App,
-    ) {
-        let align = window.text_style().text_align;
-        let mut line_origin = bounds.origin;
-        for line in &prepaint.lines {
-            let _ = line.paint(
-                line_origin,
-                prepaint.line_height,
-                align,
-                Some(bounds),
-                window,
-                _cx,
-            );
-            line_origin.y += line.size(prepaint.line_height).height;
-        }
+    #[test]
+    fn labels_without_a_team_are_kept_whole() {
+        let ((label, ranges), team) = split_channel_label("#general", &[(1, 3)]);
+        assert_eq!(label, "#general");
+        assert_eq!(ranges, [(1, 3)]);
+        assert!(team.is_none());
     }
 }
 

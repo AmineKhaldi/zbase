@@ -5,10 +5,17 @@ use crate::{
     views::attachment_display_label,
 };
 
+/// What a reply quotes: the parent's author and a one-line excerpt (may be empty).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ReplyContext {
+    pub author: String,
+    pub excerpt: String,
+}
+
 pub(super) fn cached_reply_context(
     message: &MessageRecord,
     timeline: &TimelineModel,
-) -> Option<String> {
+) -> Option<ReplyContext> {
     use unicode_segmentation::UnicodeSegmentation;
     let reply_to = message.reply_to.as_ref()?;
     let parent_id = message
@@ -55,10 +62,9 @@ pub(super) fn cached_reply_context(
     if graphemes.next().is_some() {
         preview.push('…');
     }
-    Some(if preview.is_empty() {
-        format!("Reply to {}", parent.author.display_name)
-    } else {
-        format!("Reply to {}: {}", parent.author.display_name, preview)
+    Some(ReplyContext {
+        author: parent.author.display_name.clone(),
+        excerpt: preview,
     })
 }
 
@@ -123,8 +129,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            cached_reply_context(&reply, &timeline).as_deref(),
-            Some("Reply to Alice: What are the limits? Any details?")
+            cached_reply_context(&reply, &timeline),
+            Some(ReplyContext {
+                author: "Alice".into(),
+                excerpt: "What are the limits? Any details?".into(),
+            })
         );
         assert_eq!(cached_reply_context(&parent.message, &timeline), None);
         reply.thread_root_id = Some(MessageId::new("uncached-root"));
@@ -149,7 +158,7 @@ mod tests {
             ..Default::default()
         };
         let preview = cached_reply_context(&reply, &timeline).unwrap();
-        let text = preview.strip_prefix("Reply to Alice: ").unwrap();
+        let text = preview.excerpt.as_str();
         assert_eq!(text.graphemes(true).count(), 101);
         assert!(text.ends_with('…'));
     }

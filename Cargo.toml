@@ -46,3 +46,7 @@ tree-sitter-bash = "0.25.1"
 tree-sitter-go = "0.25.0"
 tree-sitter-toml-ng = "0.7.0"
 tree-sitter-sequel = "0.3.11"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Already in the tree through gpui; used to put check marks on menu items.
+objc = "0.2.7"

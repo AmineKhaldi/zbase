@@ -1,27 +1,334 @@
 use crate::{
-    models::composer_model::{
-        AutocompleteCandidate, AutocompleteState, ComposerMode, ComposerModel,
+    models::{
+        app_model::SendNotice,
+        composer_model::{
+            AutocompleteCandidate, AutocompleteState, ComposerMode, ComposerModel, MarkdownFormat,
+        },
     },
     views::{
-        accent, accent_soft, app_window::AppWindow, card_shadow, emoji_icon, input::TextField,
-        is_dark_theme, modal_surface, panel_bg, paperclip_icon, shell_border, shell_border_strong,
-        text_primary, text_secondary, tint,
+        accent, accent_soft, accent_strong,
+        app_window::AppWindow,
+        card_shadow, field_bg, field_border, focus_ring, icon_asset,
+        input::TextField,
+        is_dark_theme, modal_surface,
+        popup_menu::{PopupMenuEntry, popup_menu},
+        send_icon, shell_border_strong, text_primary, text_secondary, tint,
+        tooltip::{TextTooltip, shortcut_label},
     },
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, Context, CursorStyle, Entity, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, StatefulInteractiveElement, Styled, div, px, rgb,
+    AnyElement, ClickEvent, Context, Corner, CursorStyle, Entity, FontWeight, Hsla,
+    InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled, anchored,
+    deferred, div, point, px, rgb,
 };
 
 #[derive(Default)]
 pub struct ComposerPanel;
+
+/// Which input a composer field drives; picks the handlers and element ids.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ComposerTarget {
+    Conversation,
+    Thread,
+}
+
+/// Visible state of a composer field.
+#[derive(Clone, Copy)]
+pub(crate) struct ComposerFieldState {
+    pub focused: bool,
+    pub can_send: bool,
+    /// While Keybase can't be reached: what the hint and send tooltip say.
+    pub send_notice: Option<SendNotice>,
+    pub format_menu_open: bool,
+}
+
+/// Bordered message field shared by the conversation and thread composers: an
+/// 8px-radius box (40px tall at one line) whose border turns accent with a soft
+/// ring on focus, and attach, emoji and send controls inside its right edge.
+pub(crate) fn composer_field(
+    target: ComposerTarget,
+    editor: &Entity<TextField>,
+    state: ComposerFieldState,
+    fill: Hsla,
+    cx: &mut Context<AppWindow>,
+) -> AnyElement {
+    let thread = target == ComposerTarget::Thread;
+    let (surface_id, attach_id, emoji_id, send_id, mention_id, format_id, menu_id) = if thread {
+        (
+            "thread-pane-input-surface",
+            "thread-attach-inline",
+            "thread-emoji-inline",
+            "thread-send",
+            "thread-mention-inline",
+            "thread-format-inline",
+            "thread-format-menu",
+        )
+    } else {
+        (
+            "composer-input-surface",
+            "composer-attach-inline",
+            "composer-emoji-inline",
+            "composer-send",
+            "composer-mention-inline",
+            "composer-format-inline",
+            "composer-format-menu",
+        )
+    };
+    let tool = composer_tool;
+    let send = div()
+        .id(send_id)
+        .w(px(28.))
+        .h(px(28.))
+        .flex_shrink_0()
+        .rounded(px(6.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(state.can_send, |button| {
+            button
+                .bg(rgb(accent_strong()))
+                .cursor(CursorStyle::PointingHand)
+                .hover(|style| style.bg(rgb(accent())))
+                .when_some(
+                    state.send_notice.and_then(|notice| notice.send_tooltip),
+                    |button, offline| button.tooltip(TextTooltip::single_line(offline.to_string())),
+                )
+                .when(
+                    state
+                        .send_notice
+                        .and_then(|notice| notice.send_tooltip)
+                        .is_none(),
+                    |button| {
+                        button.tooltip(TextTooltip::with_shortcut(
+                            if thread { "Send reply" } else { "Send" }.to_string(),
+                            "↩".to_string(),
+                        ))
+                    },
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if thread {
+                        this.send_thread_reply(window, cx);
+                    } else {
+                        this.send_composer_message(window, cx);
+                    }
+                }))
+                .child(send_icon(0xffffff))
+        })
+        .when(!state.can_send, |button| {
+            button.child(div().opacity(0.45).child(send_icon(text_secondary())))
+        });
+
+    div()
+        .id(surface_id)
+        .w_full()
+        .min_h(px(40.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(if state.focused {
+            rgb(accent())
+        } else {
+            rgb(field_border())
+        })
+        .when(state.focused, |field| field.shadow(vec![focus_ring()]))
+        .bg(fill)
+        .text_sm()
+        .line_height(px(22.))
+        .text_color(rgb(text_primary()))
+        .flex()
+        .items_end()
+        .cursor(CursorStyle::IBeam)
+        .on_click(cx.listener(move |this, event, window, cx| {
+            if thread {
+                this.focus_thread_input(event, window, cx);
+            } else {
+                this.focus_composer_input(event, window, cx);
+            }
+        }))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .pl_3()
+                .pr_1()
+                // 22px line + 2 * 8px + 2px border = 40px for one line.
+                .py(px(8.))
+                .child(editor.clone()),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .pr(px(5.))
+                .pb(px(5.))
+                .child(format_tool(
+                    format_id,
+                    menu_id,
+                    target,
+                    state.format_menu_open,
+                    cx,
+                ))
+                .child(
+                    tool(mention_id, at_icon_sized(text_secondary()))
+                        .tooltip(TextTooltip::single_line("Mention someone".to_string()))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.composer_insert_mention(target, window, cx);
+                        })),
+                )
+                .child(
+                    tool(attach_id, paperclip_icon_sized(text_secondary()))
+                        .tooltip(TextTooltip::single_line("Attach files".to_string()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if thread {
+                                this.open_thread_file_upload_picker(cx);
+                            } else {
+                                this.open_composer_file_upload_picker(cx);
+                            }
+                        })),
+                )
+                .child(
+                    tool(emoji_id, emoji_icon_sized(text_secondary()))
+                        .tooltip(TextTooltip::single_line("Emoji".to_string()))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.toggle_emoji_picker(cx);
+                        })),
+                )
+                .child(send),
+        )
+        .into_any_element()
+}
+
+/// A 28px icon button inside the composer field's right edge.
+fn composer_tool(id: &'static str, icon: AnyElement) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .w(px(28.))
+        .h(px(28.))
+        .flex_shrink_0()
+        .rounded(px(6.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor(CursorStyle::PointingHand)
+        .hover(|style| style.bg(tint(text_primary(), 0.08)))
+        .child(icon)
+}
+
+/// "Aa": opens a small menu that wraps the selection in Keybase Markdown.
+fn format_tool(
+    id: &'static str,
+    menu_id: &'static str,
+    target: ComposerTarget,
+    menu_open: bool,
+    cx: &mut Context<AppWindow>,
+) -> AnyElement {
+    let entries = MarkdownFormat::ALL
+        .into_iter()
+        .map(|format| {
+            let entry = PopupMenuEntry::item(
+                format.label(),
+                cx.listener(move |this: &mut AppWindow, _: &ClickEvent, window, cx| {
+                    this.apply_composer_format(target, format, window, cx);
+                }),
+            );
+            match format {
+                MarkdownFormat::Bold => entry.shortcut(shortcut_label("⌘B")),
+                MarkdownFormat::Italic => entry.shortcut(shortcut_label("⌘I")),
+                MarkdownFormat::Code => entry.shortcut(shortcut_label("⌘E")),
+                _ => entry,
+            }
+        })
+        .collect::<Vec<_>>();
+    div()
+        .relative()
+        .flex_shrink_0()
+        // Before the button, so the menu's anchor is the button's top edge.
+        .when(menu_open, |wrapper| {
+            wrapper.child(deferred(
+                anchored()
+                    .anchor(Corner::BottomLeft)
+                    .offset(point(px(0.), px(-6.)))
+                    .child(popup_menu(
+                        menu_id,
+                        180.,
+                        entries,
+                        cx.listener(|this, _, _, cx| this.close_composer_format_menu(cx)),
+                    )),
+            ))
+        })
+        .child(
+            composer_tool(
+                id,
+                div()
+                    .text_size(px(13.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(text_secondary()))
+                    .child("Aa")
+                    .into_any_element(),
+            )
+            .when(menu_open, |button| button.bg(tint(text_primary(), 0.08)))
+            .when(!menu_open, |button| {
+                button.tooltip(TextTooltip::single_line("Formatting".to_string()))
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_composer_format_menu(target, cx);
+            })),
+        )
+        .into_any_element()
+}
+
+/// Height of the strip under a composer field that holds the keyboard hint: 4px
+/// above an 14px line. It is always reserved, so focusing a field never moves
+/// the timeline; the composer adds 12px below it to the window edge.
+pub(crate) const COMPOSER_HINT_HEIGHT_PX: f32 = 18.;
+
+/// Space between the hint strip and the bottom of the window or pane.
+pub(crate) const COMPOSER_BOTTOM_INSET_PX: f32 = 12.;
+
+/// "↵ to send · ⇧↵ for new line" under the focused, empty field, or what
+/// sending does while offline. Only the field with focus shows it, so at most
+/// one hint is ever visible.
+pub(crate) fn composer_hint(state: &ComposerFieldState) -> AnyElement {
+    let offline = state.send_notice.and_then(|notice| notice.composer_hint);
+    let text = match offline {
+        Some(offline) if state.focused => Some(offline),
+        _ if state.focused && !state.can_send => Some("↵ to send · ⇧↵ for new line"),
+        _ => None,
+    };
+    div()
+        .h(px(COMPOSER_HINT_HEIGHT_PX))
+        .flex_shrink_0()
+        .pt(px(4.))
+        // Line up with the text inside the field (1px border + 12px inset).
+        .pl(px(13.))
+        .text_size(px(11.))
+        .line_height(px(14.))
+        .text_color(rgb(text_secondary()))
+        .when_some(text, |hint, text| hint.child(text))
+        .into_any_element()
+}
+
+fn at_icon_sized(color: u32) -> AnyElement {
+    icon_asset("assets/icons/at-sign.svg", 16., color)
+}
+
+fn paperclip_icon_sized(color: u32) -> AnyElement {
+    icon_asset("assets/icons/paperclip.svg", 16., color)
+}
+
+fn emoji_icon_sized(color: u32) -> AnyElement {
+    icon_asset("assets/icons/emoji.svg", 16., color)
+}
 
 impl ComposerPanel {
     pub fn render(
         &self,
         composer: &ComposerModel,
         editor: &Entity<TextField>,
+        state: ComposerFieldState,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         let mode_banner = match &composer.mode {
@@ -50,85 +357,23 @@ impl ComposerPanel {
             ),
         };
 
+        let hint = composer_hint(&state);
         div()
             .px_4()
-            .py_2()
-            .border_t_1()
-            .border_color(shell_border())
+            .pt_1()
+            .pb(px(COMPOSER_BOTTOM_INSET_PX))
             .flex_shrink_0()
             .flex()
             .flex_col()
-            .gap_2()
-            .when_some(mode_banner, |div, banner| div.child(banner))
-            .child(
-                div()
-                    .rounded_md()
-                    .bg(if is_dark_theme() {
-                        rgb(panel_bg()).into()
-                    } else {
-                        tint(0xffffff, 0.86)
-                    })
-                    .w_full()
-                    .text_sm()
-                    .line_height(px(22.))
-                    .text_color(rgb(text_primary()))
-                    .relative()
-                    .id("composer-input-surface")
-                    .on_click(cx.listener(AppWindow::focus_composer_input))
-                    .child(div().px_3().py_2().pr(px(64.)).child(editor.clone()))
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .right_1()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .id("composer-attach-inline")
-                                    .w(px(24.))
-                                    .h(px(24.))
-                                    .rounded_md()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .cursor(CursorStyle::PointingHand)
-                                    .hover(|s| {
-                                        s.bg(tint(
-                                            accent_soft(),
-                                            if is_dark_theme() { 0.34 } else { 0.70 },
-                                        ))
-                                    })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.open_composer_file_upload_picker(cx);
-                                    }))
-                                    .child(paperclip_icon(text_secondary())),
-                            )
-                            .child(
-                                div()
-                                    .id("composer-emoji-inline")
-                                    .w(px(24.))
-                                    .h(px(24.))
-                                    .rounded_md()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .cursor(CursorStyle::PointingHand)
-                                    .hover(|s| {
-                                        s.bg(tint(
-                                            accent_soft(),
-                                            if is_dark_theme() { 0.34 } else { 0.70 },
-                                        ))
-                                    })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.toggle_emoji_picker(cx);
-                                    }))
-                                    .child(emoji_icon(text_secondary())),
-                            ),
-                    ),
-            )
+            .when_some(mode_banner, |div, banner| div.mb_2().child(banner))
+            .child(composer_field(
+                ComposerTarget::Conversation,
+                editor,
+                state,
+                rgb(field_bg()).into(),
+                cx,
+            ))
+            .child(hint)
             .into_any_element()
     }
 }

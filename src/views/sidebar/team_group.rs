@@ -1,120 +1,101 @@
-//! Shared team header and nested channels for Unread and the full team list.
-use super::{DragPreview, DraggedSection, Sidebar, SidebarHost, SidebarTooltip};
+//! A team's header and its channels in the grouped list.
+use super::{
+    DragPreview, DraggedSection, RowContext, RowLook, Sidebar, SidebarHost, SidebarTooltip,
+    disclosure, team_asset,
+};
 use crate::{
-    domain::{conversation::ConversationGroup, ids::SidebarSectionId, route::Route},
-    models::sidebar_model::{SidebarAvatar, SidebarRow, team_avatar_key},
-    views::{
-        accent, avatar::Avatar, chevron_down_icon, chevron_right_icon, shell_border_strong,
-        subtle_surface, text_secondary,
-    },
+    domain::{conversation::ConversationGroup, ids::SidebarSectionId},
+    models::sidebar_model::SidebarRow,
+    views::{accent, avatar::Avatar, shell_border_strong, subtle_surface, text_secondary},
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, AppContext, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, div, px, rgb,
 };
-use std::collections::HashMap;
-
-pub(super) enum TeamGroupMode {
-    Unread,
-    Collapsible { collapsed: bool },
-}
 
 pub(super) struct TeamGroup<'a> {
     pub team: &'a ConversationGroup,
     pub section_id: &'a SidebarSectionId,
     pub rows: &'a [SidebarRow],
-    pub mode: TeamGroupMode,
-    pub avatars: &'a HashMap<String, SidebarAvatar>,
-    pub current_route: &'a Route,
-    pub hovered_row: Option<&'a str>,
+    pub collapsed: bool,
+    pub context: &'a RowContext<'a>,
 }
 
 impl TeamGroup<'_> {
     pub fn render<H: SidebarHost>(&self, cx: &mut Context<H>) -> AnyElement {
-        let collapsed = matches!(self.mode, TeamGroupMode::Collapsible { collapsed: true });
+        let collapsed = self.collapsed;
+        let rows = self
+            .rows
+            .iter()
+            .map(|row| Sidebar::render_row(self.section_id, row, self.context, cx))
+            .collect::<Vec<_>>();
         div()
             .flex()
             .flex_col()
-            .gap_1()
-            .child(self.header(cx))
+            .gap(px(2.))
+            .child(self.header(collapsed, cx))
             .when(!collapsed, |group| {
-                group.child(
-                    div()
+                group.child(match self.context.look {
+                    // Compact rows nest under a guide, like a Finder outline.
+                    RowLook::Compact => div()
                         .ml(px(16.))
                         .pl(px(4.))
                         .border_l_1()
                         .border_color(shell_border_strong())
                         .flex()
                         .flex_col()
-                        .gap_1()
-                        .children(self.rows.iter().map(|row| {
-                            Sidebar::render_row(
-                                self.section_id,
-                                row,
-                                self.avatars,
-                                self.current_route,
-                                self.hovered_row,
-                                cx,
-                            )
-                        })),
-                )
+                        .gap(px(2.))
+                        .children(rows),
+                    // Previews already carry a channel tile; the header groups them,
+                    // so they keep the list's single inset and rhythm.
+                    RowLook::Previews { .. } => div().flex().flex_col().gap(px(2.)).children(rows),
+                })
             })
             .into_any_element()
     }
 
-    fn header<H: SidebarHost>(&self, cx: &mut Context<H>) -> AnyElement {
-        let asset = match self.avatars.get(&team_avatar_key(&self.team.id)) {
-            Some(SidebarAvatar::Team(asset)) => Some(asset.as_str()),
-            _ => None,
-        };
+    fn header<H: SidebarHost>(&self, collapsed: bool, cx: &mut Context<H>) -> AnyElement {
+        let group = SharedString::from(format!(
+            "sidebar-team-header-{}-{}",
+            self.section_id.0, self.team.id
+        ));
         let toggle_id = self.section_id.clone();
         let drop_id = self.section_id.clone();
         let drag_id = self.section_id.clone();
         let drag_title = self.team.display_name.clone();
         div()
-            .id(SharedString::from(format!(
-                "sidebar-team-header-{}-{}",
-                self.section_id.0, self.team.id
-            )))
+            .id(group.clone())
+            .group(group.clone())
+            .h(px(24.))
             .flex()
             .items_center()
-            .gap_1p5()
+            .gap(px(6.))
             .px_2()
-            .pt_1()
-            .pb_0p5()
             .rounded_md()
             .text_xs()
             .text_color(rgb(text_secondary()))
             .tooltip(SidebarTooltip::builder(self.team.display_name.clone()))
-            .when(
-                matches!(self.mode, TeamGroupMode::Collapsible { .. }),
-                |header| {
-                    header
-                        .cursor_pointer()
-                        .hover(|style| style.bg(subtle_surface()))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.sidebar_toggle_section(toggle_id.clone(), cx)
-                        }))
-                        .on_drag(DraggedSection(drag_id), move |_, _, _, cx| {
-                            cx.new(|_| DragPreview {
-                                title: drag_title.clone(),
-                            })
-                        })
-                        .drag_over::<DraggedSection>(|style, _, _, _| {
-                            style.border_t_2().border_color(rgb(accent()))
-                        })
-                        .on_drop(cx.listener(move |this, dragged: &DraggedSection, _, cx| {
-                            this.sidebar_reorder_section(dragged.0.clone(), drop_id.clone(), cx)
-                        }))
-                },
-            )
-            .child(Avatar::render_square(
+            .cursor_pointer()
+            .hover(|style| style.bg(subtle_surface()))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.sidebar_toggle_section(toggle_id.clone(), cx)
+            }))
+            .on_drag(DraggedSection(drag_id), move |_, _, _, cx| {
+                cx.new(|_| DragPreview {
+                    title: drag_title.clone(),
+                })
+            })
+            .drag_over::<DraggedSection>(|style, _, _, _| {
+                style.border_t_2().border_color(rgb(accent()))
+            })
+            .on_drop(cx.listener(move |this, dragged: &DraggedSection, _, cx| {
+                this.sidebar_reorder_section(dragged.0.clone(), drop_id.clone(), cx)
+            }))
+            .child(Avatar::render_team(
                 &self.team.display_name,
-                asset,
+                team_asset(self.context.avatars, &self.team.id),
                 16.,
-                crate::views::accent_soft(),
-                accent(),
             ))
             .child(
                 div()
@@ -125,18 +106,7 @@ impl TeamGroup<'_> {
                     .text_ellipsis()
                     .child(self.team.display_name.clone()),
             )
-            .when(
-                matches!(self.mode, TeamGroupMode::Collapsible { .. }),
-                |header| {
-                    header.child(
-                        if matches!(self.mode, TeamGroupMode::Collapsible { collapsed: true }) {
-                            chevron_right_icon(text_secondary())
-                        } else {
-                            chevron_down_icon(text_secondary())
-                        },
-                    )
-                },
-            )
+            .child(disclosure(collapsed, group))
             .into_any_element()
     }
 }

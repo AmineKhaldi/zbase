@@ -12,14 +12,18 @@ pub mod inline_markdown;
 pub mod input;
 pub mod main_panel;
 pub mod overlays;
+pub mod popup_menu;
 pub mod preferences;
 pub mod profile;
 pub mod right_pane;
 pub mod search;
 pub mod selectable_text;
+pub mod settings_window;
 pub mod sidebar;
 pub mod splash;
 pub mod timeline;
+pub mod tooltip;
+pub mod truncated_line;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -36,6 +40,9 @@ use crate::{
 
 thread_local! {
     static ACTIVE_THEME: Cell<ThemeVariant> = const { Cell::new(ThemeVariant::Light) };
+    /// Whether the window being rendered is key. Inactive windows drop accent
+    /// selection and focus rings, like native macOS controls.
+    static WINDOW_ACTIVE: Cell<bool> = const { Cell::new(true) };
 }
 
 #[derive(Clone, Copy)]
@@ -58,6 +65,12 @@ struct Palette {
     link: u32,
     unread_indicator: u32,
     accent_soft: u32,
+    accent_strong: u32,
+    sidebar_selected_bg: u32,
+    sidebar_hover_bg: u32,
+    field_bg: u32,
+    field_border: u32,
+    new_messages: u32,
     success: u32,
     success_soft: u32,
     warning: u32,
@@ -91,22 +104,28 @@ const LIGHT_PALETTE: Palette = Palette {
     panel_alt_bg: 0xf0f0f0,
     border: 0xe6e6e6,
     text_primary: 0x262626,
-    text_secondary: 0x7f7f7f,
+    text_secondary: 0x666666,
     text_inverted: 0xffffff,
     text_muted_inverted: 0xcccccc,
     accent: 0x4c8eff,
-    link: 0x3663ea,
+    link: 0x3060de,
     unread_indicator: 0xff6f21,
     accent_soft: 0xebf2fc,
+    accent_strong: 0x3663ea,
+    sidebar_selected_bg: 0x3663ea,
+    sidebar_hover_bg: 0xe4e7ec,
+    field_bg: 0xf5f6f8,
+    field_border: 0xd6d9de,
+    new_messages: 0xd92d3f,
     success: 0x37bd99,
     success_soft: 0xe8faf6,
     warning: 0x75574e,
     warning_soft: 0xfffdcc,
     danger: 0xeb253b,
     danger_soft: 0xfaf2ed,
-    affinity_positive: 0x189e7a,
+    affinity_positive: 0x087f63,
     affinity_positive_soft: 0xe8faf6,
-    affinity_broken: 0xeb253b,
+    affinity_broken: 0xc81e33,
     affinity_broken_soft: 0xfaf2ed,
     mention: 0x3663ea,
     mention_soft: 0xebf2fc,
@@ -132,27 +151,33 @@ const DARK_PALETTE: Palette = Palette {
     panel_alt_bg: 0x2d2d2d,
     border: 0x3b3b3b,
     text_primary: 0xd9d9d9,
-    text_secondary: 0x8c8c8c,
+    text_secondary: 0xa3a3a3,
     text_inverted: 0xffffff,
     text_muted_inverted: 0xcccccc,
     accent: 0x4c8eff,
-    link: 0x3663ea,
+    link: 0x6a9dff,
     unread_indicator: 0xff6f21,
     accent_soft: 0x192344,
+    accent_strong: 0x3b6fd6,
+    sidebar_selected_bg: 0x2b4a85,
+    sidebar_hover_bg: 0x2c2c2c,
+    field_bg: 0x202020,
+    field_border: 0x3b3b3b,
+    new_messages: 0xff5c6e,
     success: 0x37bd99,
     success_soft: 0x1f3a33,
     warning: 0xffb800,
     warning_soft: 0x3b3115,
     danger: 0xff4d61,
     danger_soft: 0x3b2124,
-    affinity_positive: 0x189e7a,
+    affinity_positive: 0x58d5b2,
     affinity_positive_soft: 0x193b32,
-    affinity_broken: 0xeb253b,
+    affinity_broken: 0xff6b7d,
     affinity_broken_soft: 0x3b1b20,
     mention: 0x73a6ff,
     mention_soft: 0x192344,
-    mention_you: 0x191919,
-    mention_you_soft: 0xc3c390,
+    mention_you: 0xffd75e,
+    mention_you_soft: 0x4a3f12,
     inline_code_foreground: 0x73a6ff,
     inline_code_background: 0x2d2d2d,
     selection: 0x4c8eff4d,
@@ -172,6 +197,20 @@ pub fn with_theme<T>(theme: ThemeVariant, f: impl FnOnce() -> T) -> T {
         active.set(previous);
         result
     })
+}
+
+/// Renders `f` as for a key (`true`) or background (`false`) window.
+pub fn with_window_active<T>(active: bool, f: impl FnOnce() -> T) -> T {
+    WINDOW_ACTIVE.with(|current| {
+        let previous = current.replace(active);
+        let result = f();
+        current.set(previous);
+        result
+    })
+}
+
+pub fn window_is_active() -> bool {
+    WINDOW_ACTIVE.with(Cell::get)
 }
 
 pub fn current_theme() -> ThemeVariant {
@@ -276,6 +315,72 @@ pub fn accent_soft() -> u32 {
     palette().accent_soft
 }
 
+/// Accent dark enough to carry white text (>= 4.5:1): selected rows, badges, send.
+pub fn accent_strong() -> u32 {
+    palette().accent_strong
+}
+
+/// Selected sidebar row: accent while the window is key, neutral grey behind
+/// other windows (as Finder and Mail do).
+pub fn sidebar_selected_bg() -> u32 {
+    match (window_is_active(), is_dark_theme()) {
+        (true, _) => palette().sidebar_selected_bg,
+        (false, false) => 0xdcdfe4,
+        (false, true) => 0x3a3a3a,
+    }
+}
+
+pub fn sidebar_selected_fg() -> u32 {
+    if window_is_active() {
+        0xffffff
+    } else {
+        text_primary()
+    }
+}
+
+/// Secondary text on the selected sidebar row (team suffix, glyphs).
+pub fn sidebar_selected_secondary() -> Hsla {
+    match (window_is_active(), is_dark_theme()) {
+        (true, _) => tint(sidebar_selected_fg(), 0.78),
+        // One step darker than `text_secondary` to keep 4.5:1 on the grey fill.
+        (false, false) => rgb(0x595959).into(),
+        (false, true) => rgb(text_secondary()).into(),
+    }
+}
+
+pub fn sidebar_hover_bg() -> u32 {
+    palette().sidebar_hover_bg
+}
+
+/// Resting fill and border of text fields such as the composer.
+pub fn field_bg() -> u32 {
+    palette().field_bg
+}
+
+pub fn field_border() -> u32 {
+    palette().field_border
+}
+
+/// Rule and label marking where unread messages begin in a timeline.
+pub fn new_messages() -> u32 {
+    palette().new_messages
+}
+
+/// Soft ring drawn around a focused field, outside its accent border.
+pub fn focus_ring() -> BoxShadow {
+    BoxShadow {
+        color: tint(accent(), if is_dark_theme() { 0.30 } else { 0.22 }),
+        offset: point(px(0.), px(0.)),
+        blur_radius: px(0.),
+        spread_radius: px(3.),
+    }
+}
+
+/// Team role marker color; the same in both themes so the crown reads as one symbol.
+pub fn role_crown() -> u32 {
+    0xb7891d
+}
+
 pub fn success() -> u32 {
     palette().success
 }
@@ -290,6 +395,16 @@ pub fn warning() -> u32 {
 
 pub fn warning_soft() -> u32 {
     palette().warning_soft
+}
+
+/// Opaque fill of a warning strip (offline, connecting): amber, not error red.
+pub fn warning_banner_bg() -> u32 {
+    if is_dark_theme() { 0x3a2f1a } else { 0xfff7e6 }
+}
+
+/// Text and glyphs on [`warning_banner_bg`].
+pub fn warning_banner_fg() -> u32 {
+    if is_dark_theme() { 0xf5c46b } else { 0x8a5a00 }
 }
 
 pub fn danger() -> u32 {
@@ -330,6 +445,44 @@ pub fn mention_you() -> u32 {
 
 pub fn mention_you_soft() -> u32 {
     palette().mention_you_soft
+}
+
+/// Code-block syntax colors, tuned per theme to read at 4.5:1 or better on the
+/// code block fill (`panel_alt_bg`). Light mode can't reuse the UI accents: the
+/// bright blue and green are too pale on #f0f0f0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SyntaxColors {
+    pub keyword: u32,
+    pub function: u32,
+    pub string: u32,
+    pub number: u32,
+    pub type_name: u32,
+    pub comment: u32,
+    pub punctuation: u32,
+}
+
+pub fn syntax_colors() -> SyntaxColors {
+    if is_dark_theme() {
+        SyntaxColors {
+            keyword: text_primary(),
+            function: 0x6a9dff,
+            string: 0x37bd99,
+            number: 0xffb800,
+            type_name: 0x73a6ff,
+            comment: text_secondary(),
+            punctuation: text_secondary(),
+        }
+    } else {
+        SyntaxColors {
+            keyword: 0x2456bf,
+            function: 0x2456bf,
+            string: 0x17753f,
+            number: 0x9c5700,
+            type_name: 0x7c3aed,
+            comment: text_secondary(),
+            punctuation: text_secondary(),
+        }
+    }
 }
 
 pub fn inline_code_font_size() -> gpui::Pixels {
@@ -389,17 +542,28 @@ pub fn mention_colors_for_user(
     }
 }
 
-pub const WINDOW_MIN_WIDTH_PX: f32 = 780.0;
+pub const WINDOW_MIN_WIDTH_PX: f32 = 800.0;
 pub const WINDOW_MIN_HEIGHT_PX: f32 = 680.0;
 pub const SHELL_HORIZONTAL_PADDING_PX: f32 = 0.0;
 pub const SHELL_GAP_PX: f32 = 0.0;
-pub const SIDEBAR_WIDTH_PX: f32 = 200.0;
+pub const SIDEBAR_WIDTH_PX: f32 = 236.0;
+/// Previews put a 32px avatar, a time and a message beside each name; they get
+/// more room so common names still fit before anything truncates.
+pub const PREVIEWS_SIDEBAR_WIDTH_PX: f32 = 280.0;
 pub const MAIN_PANEL_MIN_WIDTH_PX: f32 = 560.0;
 pub const RIGHT_PANE_WIDTH_PX: f32 = 320.0;
 pub const RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX: f32 = 4.0;
 pub const CUSTOM_EMOJI_REACTION_SIZE_PX: f32 = 16.0;
 pub const CUSTOM_EMOJI_INLINE_SIZE_PX: f32 = 20.0;
 pub const CUSTOM_EMOJI_EMOJI_ONLY_SIZE_PX: f32 = 48.0;
+
+/// Default sidebar width for a row style.
+pub fn sidebar_width_for_style(style: crate::models::settings_model::SidebarStyle) -> f32 {
+    match style {
+        crate::models::settings_model::SidebarStyle::Compact => SIDEBAR_WIDTH_PX,
+        crate::models::settings_model::SidebarStyle::Previews => PREVIEWS_SIDEBAR_WIDTH_PX,
+    }
+}
 
 pub fn tint(color: u32, opacity: f32) -> Hsla {
     Hsla::from(rgb(color)).opacity(opacity)
@@ -414,43 +578,39 @@ pub fn app_backdrop() -> Background {
 }
 
 pub fn glass_surface() -> Hsla {
-    if is_dark_theme() {
-        tint(panel_bg(), 0.98)
-    } else {
-        tint(panel_bg(), 1.0)
-    }
+    rgb(panel_bg()).into()
 }
 
 pub fn glass_surface_strong() -> Hsla {
+    rgb(panel_alt_bg()).into()
+}
+
+/// Base of the right pane (thread, members, profile). In dark it sits one step
+/// above the conversation so the timeline stays dominant; raised controls inside
+/// it keep `panel_alt_bg`.
+pub fn right_pane_surface() -> Hsla {
     if is_dark_theme() {
-        tint(panel_alt_bg(), 0.98)
+        rgb(0x242424).into()
     } else {
-        tint(panel_alt_bg(), 1.0)
+        glass_surface_strong()
     }
+}
+
+/// Sidebar fill. Opaque: the desktop never shows through any app surface.
+pub fn sidebar_surface() -> Hsla {
+    rgb(sidebar_bg()).into()
 }
 
 pub fn glass_surface_dark() -> Hsla {
-    if is_dark_theme() {
-        tint(sidebar_bg(), 0.98)
-    } else {
-        tint(sidebar_bg(), 1.0)
-    }
+    rgb(sidebar_bg()).into()
 }
 
 pub fn modal_surface() -> Hsla {
-    if is_dark_theme() {
-        tint(panel_bg(), 0.99)
-    } else {
-        tint(panel_bg(), 1.0)
-    }
+    rgb(panel_bg()).into()
 }
 
 pub fn content_surface() -> Hsla {
-    if is_dark_theme() {
-        tint(main_bg(), 0.98)
-    } else {
-        tint(main_bg(), 1.0)
-    }
+    rgb(main_bg()).into()
 }
 
 pub fn subtle_surface() -> Hsla {
@@ -583,6 +743,31 @@ pub fn attachment_size_text(size_bytes: u64) -> Option<String> {
     } else {
         Some(format!("{value:.1} {unit}"))
     }
+}
+
+/// "Uploading · 1.7 / 4.0 MB · 42%": the direction, both sizes in the total's
+/// unit, and the share sent. Without a known total, just "Uploading…".
+pub fn upload_status_label(sent_bytes: u64, total_bytes: u64) -> String {
+    if total_bytes == 0 {
+        return "Uploading…".to_string();
+    }
+    let sent_bytes = sent_bytes.min(total_bytes);
+    let percent = (sent_bytes as f64 / total_bytes as f64 * 100.).floor() as u64;
+    let Some(total) = attachment_size_text(total_bytes) else {
+        return "Uploading…".to_string();
+    };
+    // Express the sent amount in the total's unit: "1.7 / 4.0 MB".
+    let (number, unit) = total.split_once(' ').unwrap_or((total.as_str(), ""));
+    let divisor = match unit {
+        "KB" => 1024f64,
+        "MB" => 1024f64.powi(2),
+        "GB" => 1024f64.powi(3),
+        "TB" => 1024f64.powi(4),
+        _ => 1.,
+    };
+    let sent_value = sent_bytes as f64 / divisor;
+    let decimals = if unit == "B" || !number.contains('.') { 0 } else { 1 };
+    format!("Uploading · {sent_value:.decimals$} / {total} · {percent}%")
 }
 
 pub fn attachment_display_label(attachment: &AttachmentSummary) -> String {
@@ -753,7 +938,7 @@ fn hex(ch: u8) -> Option<u8> {
     }
 }
 
-fn icon_asset(path: &'static str, size: f32, color: u32) -> AnyElement {
+pub(crate) fn icon_asset(path: &'static str, size: f32, color: u32) -> AnyElement {
     svg()
         .path(path)
         .w(px(size))
@@ -885,6 +1070,69 @@ pub fn crown_icon(color: u32) -> AnyElement {
     icon_asset("assets/icons/crown.svg", 14., color)
 }
 
+/// Small marker for a Keybase identity relationship, for use beside a person's
+/// name: a person-check for someone you follow (distinct from the circled check
+/// that marks a verified proof), a warning for a broken identity. Names
+/// themselves stay neutral; the marker carries the meaning and explains it.
+pub fn identity_marker(
+    id: impl Into<gpui::ElementId>,
+    affinity: crate::domain::affinity::Affinity,
+    display_name: &str,
+    include_following: bool,
+) -> Option<AnyElement> {
+    identity_marker_tinted(id, affinity, display_name, include_following, None)
+}
+
+/// [`identity_marker`] drawn in `color` instead of its semantic color, for use
+/// on an accent-filled selected row.
+pub fn identity_marker_tinted(
+    id: impl Into<gpui::ElementId>,
+    affinity: crate::domain::affinity::Affinity,
+    display_name: &str,
+    include_following: bool,
+    override_color: Option<u32>,
+) -> Option<AnyElement> {
+    use crate::domain::affinity::Affinity;
+    use gpui::{InteractiveElement, StatefulInteractiveElement};
+    let (icon, color, tooltip) = match affinity {
+        Affinity::None => return None,
+        Affinity::Positive if !include_following => return None,
+        Affinity::Positive => (
+            "assets/icons/user-check.svg",
+            affinity_positive(),
+            format!("You follow {display_name}"),
+        ),
+        Affinity::Broken => (
+            "assets/icons/alert-triangle.svg",
+            affinity_broken(),
+            format!("Identity broken: {display_name}'s proofs changed since you followed them"),
+        ),
+    };
+    Some(
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .flex_shrink_0()
+            .child(icon_asset(icon, 13., override_color.unwrap_or(color)))
+            .tooltip(tooltip::TextTooltip::single_line(tooltip))
+            .into_any_element(),
+    )
+}
+
+/// Team role crown with an explanatory tooltip ("Team owner", "Team admin").
+pub fn role_crown_badge(id: impl Into<gpui::ElementId>, label: &'static str) -> AnyElement {
+    use gpui::{InteractiveElement, StatefulInteractiveElement};
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .child(icon_asset("assets/icons/crown.svg", 13., role_crown()))
+        .tooltip(tooltip::TextTooltip::single_line(label.to_string()))
+        .into_any_element()
+}
+
 pub fn send_icon(color: u32) -> AnyElement {
     icon_asset("assets/icons/send.svg", 16., color)
 }
@@ -990,6 +1238,161 @@ pub fn attachment_header_row(attachment: &AttachmentSummary) -> AnyElement {
         .into_any_element()
 }
 
+/// Soft fade under the header so messages scroll out of view instead of being
+/// cut off at the hairline.
+pub fn scroll_edge_fade(surface: Hsla) -> AnyElement {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .h(px(16.))
+        .bg(gpui::linear_gradient(
+            180.,
+            gpui::linear_color_stop(surface, 0.),
+            gpui::linear_color_stop(gpui::Hsla { a: 0., ..surface }, 1.),
+        ))
+        .into_any_element()
+}
+
+/// The bottom counterpart of [`scroll_edge_fade`]: content fades into the
+/// surface where more of it continues below.
+pub fn scroll_edge_fade_bottom(surface: Hsla) -> AnyElement {
+    div()
+        .absolute()
+        .bottom_0()
+        .left_0()
+        .right_0()
+        .h(px(16.))
+        .bg(gpui::linear_gradient(
+            0.,
+            gpui::linear_color_stop(surface, 0.),
+            gpui::linear_color_stop(gpui::Hsla { a: 0., ..surface }, 1.),
+        ))
+        .into_any_element()
+}
+
+/// Thin shadow under a header while the content below it is scrolled, so the
+/// first visible row reads as passing under the header, not as loose furniture.
+pub fn scroll_edge_shadow() -> AnyElement {
+    let shade = tint(0x000000, if is_dark_theme() { 0.32 } else { 0.07 });
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .h(px(6.))
+        .bg(gpui::linear_gradient(
+            180.,
+            gpui::linear_color_stop(shade, 0.),
+            gpui::linear_color_stop(gpui::Hsla { a: 0., ..shade }, 1.),
+        ))
+        .into_any_element()
+}
+
+/// A file attachment that has no inline preview: a compact 32px row with a
+/// document icon, the file name and its size.
+pub fn attachment_file_row(attachment: &AttachmentSummary) -> AnyElement {
+    let size = attachment_size_text(attachment.size_bytes);
+    div()
+        .h(px(32.))
+        .max_w(px(360.))
+        .pl(px(8.))
+        .pr(px(10.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(rgb(field_border()))
+        .bg(rgb(field_bg()))
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(icon_asset("assets/icons/files.svg", 16., text_secondary()))
+        .child(
+            div()
+                .min_w(px(0.))
+                .text_size(px(13.))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(rgb(text_primary()))
+                .truncate()
+                .child(attachment.name.clone()),
+        )
+        .when_some(size, |row, size_label| {
+            row.child(
+                div()
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(rgb(text_secondary()))
+                    .child(size_label),
+            )
+        })
+        .into_any_element()
+}
+
+/// A file attachment still uploading: the file row with "Uploading · 1.7 / 4.0
+/// MB · 42%" and a 3px progress track along its bottom edge. There is no
+/// cancel: Keybase's attachment upload has no cancel call to stop it.
+pub fn attachment_upload_row(
+    attachment: &AttachmentSummary,
+    progress: crate::state::state::UploadProgress,
+) -> AnyElement {
+    let total = if progress.total_bytes > 0 {
+        progress.total_bytes
+    } else {
+        attachment.size_bytes
+    };
+    let status = upload_status_label(progress.sent_bytes, total);
+    let fraction = progress.fraction();
+    div()
+        .relative()
+        .h(px(36.))
+        .w(px(360.))
+        .max_w_full()
+        .pl(px(8.))
+        .pr(px(10.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(rgb(field_border()))
+        .bg(rgb(field_bg()))
+        .overflow_hidden()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(icon_asset("assets/icons/files.svg", 16., text_secondary()))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .text_size(px(13.))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(rgb(text_primary()))
+                .truncate()
+                .child(attachment.name.clone()),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(12.))
+                .text_color(rgb(text_secondary()))
+                .child(status),
+        )
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(px(3.))
+                .bg(tint(text_primary(), 0.08))
+                .child(
+                    div()
+                        .h_full()
+                        .w(gpui::relative(fraction))
+                        .bg(rgb(accent_strong())),
+                ),
+        )
+        .into_any_element()
+}
+
 pub fn format_duration_ms(ms: u64) -> String {
     let total_seconds = ms / 1000;
     let minutes = total_seconds / 60;
@@ -1001,6 +1404,236 @@ pub fn format_duration_ms(ms: u64) -> String {
     } else {
         format!("{minutes}:{seconds:02}")
     }
+}
+
+/// Fill behind query matches in search and switcher snippets. Deliberately
+/// stronger than the self-mention yellow, and snippets draw mentions without a
+/// fill, so a mention never reads as a match.
+pub fn search_match_bg() -> u32 {
+    if is_dark_theme() { 0x5c4a12 } else { 0xffe58f }
+}
+
+/// Text on [`search_match_bg`].
+pub fn search_match_fg() -> u32 {
+    if is_dark_theme() { 0xffd666 } else { text_primary() }
+}
+
+/// Title row of a main-pane page such as Search: 56px with a hairline, matching
+/// the conversation header, title aligned with the 24px content inset. `leading`
+/// (a back button) sits in front of the title and pulls the row 8px left so the
+/// button's icon, not its hover box, lines up with the content.
+pub fn page_header(
+    title: &str,
+    leading: Option<AnyElement>,
+    trailing: Option<AnyElement>,
+) -> AnyElement {
+    let has_leading = leading.is_some();
+    div()
+        .h(px(56.))
+        .flex_shrink_0()
+        .pl(px(if has_leading { 16. } else { 24. }))
+        .pr(px(24.))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_3()
+        .border_b_1()
+        .border_color(shell_border())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .when_some(leading, |row, leading| row.child(leading))
+                .child(
+                    div()
+                        .text_size(px(17.))
+                        .line_height(px(22.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(text_primary()))
+                        .child(title.to_string()),
+                ),
+        )
+        .when_some(trailing, |row, trailing| row.child(trailing))
+        .into_any_element()
+}
+
+/// 28px "Back" button for utility pages, with its ⌘[ shortcut in the tooltip.
+pub fn back_button(id: impl Into<gpui::ElementId>) -> gpui::Stateful<gpui::Div> {
+    use gpui::{InteractiveElement, StatefulInteractiveElement};
+    div()
+        .id(id)
+        .size(px(28.))
+        .flex_shrink_0()
+        .rounded(px(6.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor(gpui::CursorStyle::PointingHand)
+        .hover(|style| style.bg(tint(text_primary(), 0.07)))
+        .tooltip(tooltip::TextTooltip::with_shortcut(
+            "Back".to_string(),
+            tooltip::shortcut_label("⌘["),
+        ))
+        .child(icon_asset("assets/icons/chevron-left.svg", 16., text_secondary()))
+}
+
+/// Group label above a list section ("Owners & admins", "Unread"), the same
+/// 12px semibold secondary style as the sidebar's "Recent".
+pub fn section_label(text: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .text_size(px(12.))
+        .line_height(px(16.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(rgb(text_secondary()))
+        .child(text.into())
+}
+
+/// A key drawn as a keycap, for keyboard hints: `↵`, `esc`, `⌘K`.
+pub fn keycap(label: impl Into<SharedString>) -> AnyElement {
+    div()
+        .h(px(18.))
+        .min_w(px(18.))
+        .px(px(4.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .rounded(px(4.))
+        .border_1()
+        .border_color(rgb(field_border()))
+        .bg(rgb(field_bg()))
+        .text_size(px(11.))
+        .line_height(px(14.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(rgb(text_secondary()))
+        .child(label.into())
+        .into_any_element()
+}
+
+/// Centered placeholder for a surface with nothing to show: an icon in a soft
+/// circle, a one-line title and an optional explanation.
+pub fn empty_state(icon: &'static str, title: impl Into<SharedString>, body: Option<String>) -> gpui::Div {
+    div()
+        .w_full()
+        .py(px(32.))
+        .px(px(24.))
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(4.))
+        .child(
+            // A neutral wash rather than a surface token, so the circle shows on
+            // whichever pane hosts it.
+            div()
+                .size(px(40.))
+                .mb(px(8.))
+                .rounded_full()
+                .bg(tint(text_primary(), if is_dark_theme() { 0.08 } else { 0.06 }))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon_asset(icon, 18., text_secondary())),
+        )
+        .child(
+            div()
+                .text_size(px(14.))
+                .line_height(px(20.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(text_primary()))
+                .text_center()
+                .child(title.into()),
+        )
+        .when_some(body, |state, body| {
+            state.child(
+                div()
+                    .max_w(px(300.))
+                    .text_size(px(13.))
+                    .line_height(px(18.))
+                    .text_color(rgb(text_secondary()))
+                    .text_center()
+                    .child(body),
+            )
+        })
+}
+
+/// Bordered single-line field with a leading magnifier, for search and filter
+/// inputs. Same fill, border and focus treatment as the composer.
+pub fn search_field_shell(
+    id: &'static str,
+    input: AnyElement,
+    focused: bool,
+    height: f32,
+) -> gpui::Stateful<gpui::Div> {
+    use gpui::InteractiveElement;
+    div()
+        .id(id)
+        .h(px(height))
+        .w_full()
+        .pl(px(10.))
+        .pr(px(8.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(rgb(if focused { accent() } else { field_border() }))
+        .when(focused, |field| field.shadow(vec![focus_ring()]))
+        .bg(rgb(field_bg()))
+        .cursor(gpui::CursorStyle::IBeam)
+        .text_size(px(13.))
+        .line_height(px(18.))
+        .text_color(rgb(text_primary()))
+        .child(icon_asset("assets/icons/search.svg", 14., text_secondary()))
+        .child(div().flex_1().min_w(px(0.)).child(input))
+}
+
+/// Accent-filled button for the one primary action of a surface ("Message").
+pub fn primary_button(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
+    use gpui::InteractiveElement;
+    div()
+        .id(id)
+        .h(px(28.))
+        .px(px(12.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.))
+        .bg(rgb(accent_strong()))
+        .hover(|style| style.bg(rgb(accent())))
+        .cursor(gpui::CursorStyle::PointingHand)
+        .text_size(px(13.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(rgb(0xffffff))
+        .child(label.into())
+}
+
+/// Bordered neutral button for secondary actions ("Unfollow", "Close").
+pub fn secondary_button(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
+    use gpui::InteractiveElement;
+    div()
+        .id(id)
+        .h(px(28.))
+        .px(px(12.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.))
+        .border_1()
+        .border_color(rgb(field_border()))
+        .bg(rgb(field_bg()))
+        .hover(|style| style.bg(tint(text_primary(), 0.07)))
+        .cursor(gpui::CursorStyle::PointingHand)
+        .text_size(px(13.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(rgb(text_primary()))
+        .child(label.into())
 }
 
 pub fn composer_tool(icon: AnyElement, color: u32) -> AnyElement {
@@ -1016,6 +1649,29 @@ pub fn composer_tool(icon: AnyElement, color: u32) -> AnyElement {
         .justify_center()
         .child(div().text_color(rgb(color)).child(icon))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod upload_label_tests {
+    use super::upload_status_label;
+
+    #[test]
+    fn names_the_direction_both_sizes_and_the_share_sent() {
+        let mb = 1024 * 1024;
+        assert_eq!(
+            upload_status_label(17 * mb / 10, 4 * mb),
+            "Uploading · 1.7 / 4.0 MB · 42%"
+        );
+        assert_eq!(upload_status_label(0, 4 * mb), "Uploading · 0.0 / 4.0 MB · 0%");
+        assert_eq!(upload_status_label(5 * mb, 4 * mb), "Uploading · 4.0 / 4.0 MB · 100%");
+        assert_eq!(upload_status_label(256 * 1024, 20 * mb), "Uploading · 0 / 20 MB · 1%");
+        assert_eq!(upload_status_label(300, 900), "Uploading · 300 / 900 B · 33%");
+    }
+
+    #[test]
+    fn unknown_total_still_says_uploading() {
+        assert_eq!(upload_status_label(10, 0), "Uploading…");
+    }
 }
 
 #[cfg(test)]
@@ -1066,5 +1722,95 @@ mod highlight_color_tests {
                 assert_ne!(inline_code_background(), mention_soft());
             });
         }
+    }
+
+    #[test]
+    fn small_text_on_every_surface_meets_aa_in_both_themes() {
+        for theme in [ThemeVariant::Light, ThemeVariant::Dark] {
+            with_theme(theme, || {
+                let surfaces = [
+                    main_bg(),
+                    panel_bg(),
+                    panel_alt_bg(),
+                    sidebar_bg(),
+                    field_bg(),
+                ];
+                for background in surfaces {
+                    for foreground in [text_primary(), text_secondary(), link()] {
+                        assert!(
+                            contrast(foreground, background) >= 4.5,
+                            "{theme:?}: {foreground:06x} on {background:06x}"
+                        );
+                    }
+                }
+                for (foreground, background) in [
+                    // Selected sidebar row, mention badges and the send button.
+                    (sidebar_selected_fg(), sidebar_selected_bg()),
+                    (0xffffff, accent_strong()),
+                    (affinity_positive(), affinity_positive_soft()),
+                    (affinity_broken(), affinity_broken_soft()),
+                    (affinity_positive(), main_bg()),
+                    (affinity_broken(), main_bg()),
+                    (mention(), mention_soft()),
+                    (new_messages(), main_bg()),
+                    (search_match_fg(), search_match_bg()),
+                    (text_secondary(), field_bg()),
+                ] {
+                    assert!(
+                        contrast(foreground, background) >= 4.5,
+                        "{theme:?}: {foreground:06x} on {background:06x}"
+                    );
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn window_surfaces_are_opaque_in_both_themes() {
+        for theme in [ThemeVariant::Light, ThemeVariant::Dark] {
+            with_theme(theme, || {
+                for surface in [
+                    sidebar_surface(),
+                    content_surface(),
+                    glass_surface(),
+                    glass_surface_strong(),
+                    glass_surface_dark(),
+                    modal_surface(),
+                    right_pane_surface(),
+                ] {
+                    assert_eq!(surface.a, 1.0, "{theme:?}: {surface:?}");
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn inactive_window_selection_stays_readable() {
+        for theme in [ThemeVariant::Light, ThemeVariant::Dark] {
+            with_theme(theme, || {
+                with_window_active(false, || {
+                    assert_eq!(sidebar_selected_fg(), text_primary());
+                    assert!(contrast(sidebar_selected_fg(), sidebar_selected_bg()) >= 4.5);
+                    let secondary = sidebar_selected_secondary().to_rgb();
+                    let secondary = ((secondary.r * 255.).round() as u32) << 16
+                        | ((secondary.g * 255.).round() as u32) << 8
+                        | (secondary.b * 255.).round() as u32;
+                    assert!(contrast(secondary, sidebar_selected_bg()) >= 4.5);
+                });
+                assert_ne!(sidebar_selected_bg(), with_window_active(false, sidebar_selected_bg));
+            });
+        }
+    }
+
+    #[test]
+    fn team_marks_carry_white_initials_and_stand_out_from_the_sidebar() {
+        for name in ["lighthouse", "bookclub", "keybase", "a", "zbase.design"] {
+            let (fill, initial) = avatar::team_colors(name);
+            assert!(contrast(initial, fill) >= 4.5, "{name}: {fill:06x}");
+            for sidebar in [LIGHT_PALETTE.sidebar_bg, DARK_PALETTE.sidebar_bg] {
+                assert!(contrast(fill, sidebar) >= 2.0, "{name}: {fill:06x}");
+            }
+        }
+        assert_eq!(avatar::team_colors("Lighthouse"), avatar::team_colors("lighthouse"));
     }
 }

@@ -6,6 +6,8 @@ use crate::domain::pins::PinnedItem;
 pub struct AvatarParticipant {
     pub display_name: String,
     pub asset: Option<String>,
+    /// Last known presence; `None` until the backend reports it.
+    pub presence: Option<crate::domain::presence::Presence>,
 }
 
 #[derive(Clone, Debug)]

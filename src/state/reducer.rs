@@ -10,6 +10,7 @@ use crate::domain::{
     conversation::{ConversationKind, ConversationSummary},
     ids::{ChannelId, ConversationId, DmId, MessageId, SidebarSectionId, UserId, WorkspaceId},
     message::{MessageFragment, MessageRecord, MessageSendState},
+    message_preview::{MessagePreview, PreviewBody},
     presence::Presence,
     profile::{
         ProfileSection, SocialGraph, SocialGraphEntry, SocialGraphListType, SocialListLoadState,
@@ -182,6 +183,7 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
         UiAction::SubmitSearch => {
             let query_id = next_query_id(state);
             state.search.active_query_id = Some(query_id.clone());
+            state.search.submitted_query = Some(state.search.query.trim().to_string());
             state.search.is_loading = true;
             state.search.results.clear();
             state.search.highlighted_index = None;
@@ -389,6 +391,10 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
                 }
             }
         }
+        UiAction::DiscardFailedMessage { message_id } => {
+            discard_failed_message(state, &message_id);
+            ReducerOutput::default()
+        }
         UiAction::EditMessage {
             conversation_id,
             message_id,
@@ -566,6 +572,18 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
                 message_id,
             })],
         },
+        UiAction::ReturnToLatestMessages => {
+            let Some(conversation_id) = state.timeline.conversation_id.clone() else {
+                return ReducerOutput::default();
+            };
+            state.timeline.highlighted_message_id = None;
+            state.timeline.loading_older = false;
+            ReducerOutput {
+                effects: vec![Effect::Backend(BackendCommand::LoadConversation {
+                    conversation_id,
+                })],
+            }
+        }
         UiAction::JumpToMessage {
             conversation_id,
             message_id,
@@ -989,6 +1007,7 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 recompute_thread_reply_counts(&mut merged);
                 trim_timeline_for_append(&mut merged);
                 state.timeline.messages = merged;
+                note_newest_timeline_message(state, &conversation_id);
                 // Prefer computed cursors from merged state to avoid regressing past newer arrivals.
                 state.timeline.older_cursor = state
                     .timeline
@@ -1049,6 +1068,7 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 merge_pending_message_attachment_sources(&mut server_message, pending_message);
             }
             replace_pending_message_id(state, &pending_id, &server_message.id);
+            rename_previewed_message(state, &pending_id, &server_message.id);
             upsert_message_in_state(state, server_message);
         }
         BackendEvent::MessageSendFailed {
@@ -1059,6 +1079,30 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             let pending_id = pending_message_id_for_client(&client_message_id);
             mark_message_failed(state, &pending_id);
             state.notifications.toasts.push(error);
+        }
+        BackendEvent::AttachmentUploadProgress {
+            client_message_id,
+            sent_bytes,
+            total_bytes,
+        } => {
+            let pending_id = pending_message_id_for_client(&client_message_id);
+            let still_pending = state
+                .timeline
+                .messages
+                .iter()
+                .chain(&state.thread.replies)
+                .any(|message| {
+                    message.id == pending_id && message.send_state == MessageSendState::Pending
+                });
+            if still_pending {
+                state.timeline.upload_progress.insert(
+                    pending_id,
+                    crate::state::state::UploadProgress {
+                        sent_bytes,
+                        total_bytes,
+                    },
+                );
+            }
         }
         BackendEvent::MessageDeleted {
             conversation_id,
@@ -1076,6 +1120,7 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                     .timeline
                     .messages
                     .retain(|message| message.id != message_id);
+                forget_deleted_preview(state, &conversation_id, &message_id);
                 state
                     .thread
                     .replies
@@ -1092,6 +1137,8 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                         .first()
                         .map(|message| message.id.0.clone());
                 }
+            } else {
+                forget_deleted_preview(state, &conversation_id, &message_id);
             }
         }
         BackendEvent::TypingUpdated {
@@ -1099,13 +1146,8 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             users,
         } => {
             if state.timeline.conversation_id.as_ref() == Some(&conversation_id) {
-                state.timeline.typing_text = if users.is_empty() {
-                    None
-                } else if users.len() == 1 {
-                    Some(format!("{} is typing…", users[0].0))
-                } else {
-                    Some(format!("{} people are typing…", users.len()))
-                };
+                state.timeline.typing_text =
+                    typing_label_for_users(&users, &state.backend.user_profiles);
             }
         }
         BackendEvent::UserProfileUpserted {
@@ -1566,6 +1608,10 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 return ReducerOutput::default();
             }
             state.search.results.extend(results);
+            state
+                .search
+                .results
+                .sort_by(crate::domain::search::SearchResult::cmp_for_display);
             state.search.highlighted_index = (!state.search.results.is_empty()).then_some(0);
             state.search.is_loading = !is_complete;
         }
@@ -1782,6 +1828,27 @@ fn reduce_command_failure(
     }
     state.notifications.toasts.push(error);
     ReducerOutput { effects }
+}
+
+/// Typing indicator copy with display names, falling back to the username when
+/// no profile is known yet.
+pub(crate) fn typing_label_for_users(
+    users: &[UserId],
+    profiles: &HashMap<UserId, super::state::UserProfileState>,
+) -> Option<String> {
+    let names = users
+        .iter()
+        .map(|user_id| {
+            profiles
+                .get(user_id)
+                .or_else(|| profiles.get(&UserId::new(user_id.0.to_ascii_lowercase())))
+                .map(|profile| profile.display_name.trim())
+                .filter(|name| !name.is_empty())
+                .unwrap_or(user_id.0.as_str())
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    crate::util::formatting::typing_indicator_label(&names)
 }
 
 fn current_user_id(state: &UiState) -> UserId {
@@ -2027,6 +2094,7 @@ fn add_pending_message_to_state(
         send_state: MessageSendState::Pending,
         edited: None,
     };
+    note_conversation_message(state, &pending_message);
     state.timeline.messages.push(pending_message.clone());
     if let Some(root_id) = thread_root_id {
         refresh_thread_reply_count(&mut state.timeline.messages, &root_id);
@@ -2074,6 +2142,106 @@ fn message_body_text_for_matching(msg: &MessageRecord) -> Option<String> {
         })
 }
 
+/// A message arrived in its conversation (live, sent or confirmed): it bumps the
+/// conversation's activity and becomes its preview when it is the newest.
+fn note_conversation_message(state: &mut UiState, message: &MessageRecord) {
+    let preview = MessagePreview::from_message(message);
+    let mut activity_changed = false;
+    for summary in conversation_summaries_mut(state, &message.conversation_id) {
+        if let Some(activity) = message.timestamp_ms
+            && activity > summary.last_activity_ms
+        {
+            summary.last_activity_ms = activity;
+            activity_changed = true;
+        }
+        summary.last_message =
+            MessagePreview::newest(summary.last_message.take(), preview.clone());
+    }
+    if activity_changed {
+        refresh_sidebar(state);
+    }
+}
+
+/// After a page of the open conversation loads: its newest message is a preview
+/// fallback for conversations the inbox gave none, or an older one.
+fn note_newest_timeline_message(state: &mut UiState, conversation_id: &ConversationId) {
+    let newest = state
+        .timeline
+        .messages
+        .iter()
+        .rev()
+        .filter(|message| &message.conversation_id == conversation_id)
+        .find_map(MessagePreview::from_message);
+    if newest.is_none() {
+        return;
+    }
+    for summary in conversation_summaries_mut(state, conversation_id) {
+        summary.last_message = MessagePreview::newest(summary.last_message.take(), newest.clone());
+    }
+}
+
+/// A send was confirmed: its preview now names the server's id for the message.
+fn rename_previewed_message(state: &mut UiState, pending_id: &MessageId, server_id: &MessageId) {
+    for summary in state
+        .workspace
+        .channels
+        .iter_mut()
+        .chain(&mut state.workspace.direct_messages)
+    {
+        if let Some(preview) = summary.last_message.as_mut()
+            && preview.message_id.as_ref() == Some(pending_id)
+        {
+            preview.message_id = Some(server_id.clone());
+        }
+    }
+}
+
+/// The previewed message was deleted: fall back to the newest message still in
+/// the open timeline, or say it was deleted when nothing older is loaded.
+fn forget_deleted_preview(
+    state: &mut UiState,
+    conversation_id: &ConversationId,
+    message_id: &MessageId,
+) {
+    let fallback = (state.timeline.conversation_id.as_ref() == Some(conversation_id))
+        .then(|| {
+            state
+                .timeline
+                .messages
+                .iter()
+                .rev()
+                .filter(|message| {
+                    &message.conversation_id == conversation_id && &message.id != message_id
+                })
+                .find_map(MessagePreview::from_message)
+        })
+        .flatten();
+    for summary in conversation_summaries_mut(state, conversation_id) {
+        let Some(current) = summary.last_message.as_ref() else {
+            continue;
+        };
+        if current.message_id.as_ref() != Some(message_id) {
+            continue;
+        }
+        summary.last_message = Some(fallback.clone().unwrap_or_else(|| MessagePreview {
+            body: PreviewBody::Deleted,
+            ..current.clone()
+        }));
+    }
+}
+
+fn conversation_summaries_mut<'a>(
+    state: &'a mut UiState,
+    conversation_id: &'a ConversationId,
+) -> impl Iterator<Item = &'a mut ConversationSummary> + 'a {
+    state
+        .workspace
+        .channels
+        .iter_mut()
+        .chain(&mut state.workspace.direct_messages)
+        .filter(move |summary| &summary.id == conversation_id)
+}
+
 fn upsert_message_in_state(state: &mut UiState, mut message: MessageRecord) {
     if state
         .backend
@@ -2082,23 +2250,7 @@ fn upsert_message_in_state(state: &mut UiState, mut message: MessageRecord) {
     {
         return;
     }
-    if let Some(activity) = message.timestamp_ms {
-        let mut changed = false;
-        for summary in state
-            .workspace
-            .channels
-            .iter_mut()
-            .chain(&mut state.workspace.direct_messages)
-        {
-            if summary.id == message.conversation_id && activity > summary.last_activity_ms {
-                summary.last_activity_ms = activity;
-                changed = true;
-            }
-        }
-        if changed {
-            refresh_sidebar(state);
-        }
-    }
+    note_conversation_message(state, &message);
     if let Some(existing) = state
         .timeline
         .messages
@@ -2182,6 +2334,7 @@ fn upsert_message_in_state(state: &mut UiState, mut message: MessageRecord) {
 }
 
 fn replace_pending_message_id(state: &mut UiState, pending_id: &MessageId, _server_id: &MessageId) {
+    state.timeline.upload_progress.remove(pending_id);
     state
         .timeline
         .messages
@@ -2251,7 +2404,50 @@ fn merge_pending_message_attachment_sources(
     }
 }
 
+fn discard_failed_message(state: &mut UiState, message_id: &MessageId) {
+    let is_failed = |message: &MessageRecord| {
+        message.id == *message_id && message.send_state == MessageSendState::Failed
+    };
+    let Some(failed) = state
+        .timeline
+        .messages
+        .iter()
+        .chain(&state.thread.replies)
+        .find(|message| is_failed(message))
+        .cloned()
+    else {
+        return;
+    };
+    state.timeline.messages.retain(|message| !is_failed(message));
+    state.thread.replies.retain(|message| !is_failed(message));
+    state.timeline.upload_progress.remove(message_id);
+    // If the failed message was the conversation's newest, preview the one
+    // before it instead.
+    let replacement = state
+        .timeline
+        .messages
+        .iter()
+        .rev()
+        .filter(|message| message.conversation_id == failed.conversation_id)
+        .find_map(MessagePreview::from_message);
+    let mut previews_changed = false;
+    for summary in conversation_summaries_mut(state, &failed.conversation_id) {
+        let previews_failed = summary
+            .last_message
+            .as_ref()
+            .is_some_and(|preview| preview.message_id.as_ref() == Some(message_id));
+        if previews_failed {
+            summary.last_message = replacement.clone();
+            previews_changed = true;
+        }
+    }
+    if previews_changed {
+        refresh_sidebar(state);
+    }
+}
+
 fn mark_message_failed(state: &mut UiState, pending_id: &MessageId) {
+    state.timeline.upload_progress.remove(pending_id);
     if let Some(message) = state
         .timeline
         .messages
@@ -2911,6 +3107,112 @@ mod tests {
     }
 
     #[test]
+    fn discarding_a_failed_send_removes_it_and_restores_the_preview() {
+        let id = ConversationId::new("conv");
+        let mut state = UiState::default();
+        state.timeline.conversation_id = Some(id.clone());
+        let mut summary = channel_summary(&id.0, "general");
+        let earlier = message(&id, "5", 1_000);
+        summary.last_message = MessagePreview::from_message(&earlier);
+        state.workspace.channels.push(summary);
+        state.timeline.messages.push(earlier.clone());
+        let client = ClientMessageId::new("failed");
+        add_pending_message_to_state(&mut state, &id, "lost words", vec![], None, &client);
+        let failed_id = pending_message_id_for_client(&client);
+        assert_eq!(
+            state.workspace.channels[0]
+                .last_message
+                .as_ref()
+                .and_then(|preview| preview.message_id.clone()),
+            Some(failed_id.clone())
+        );
+
+        // Still pending: discarding is refused.
+        reduce_ui_action(
+            &mut state,
+            UiAction::DiscardFailedMessage { message_id: failed_id.clone() },
+        );
+        assert_eq!(state.timeline.messages.len(), 2);
+
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessageSendFailed {
+                op_id: OpId::new("op"),
+                client_message_id: client,
+                error: "offline".into(),
+            },
+        );
+        let output = reduce_ui_action(
+            &mut state,
+            UiAction::DiscardFailedMessage { message_id: failed_id.clone() },
+        );
+        assert!(output.effects.is_empty(), "local only: nothing goes to Keybase");
+        assert!(state.timeline.messages.iter().all(|message| message.id != failed_id));
+        assert_eq!(
+            state.workspace.channels[0]
+                .last_message
+                .as_ref()
+                .and_then(|preview| preview.message_id.clone()),
+            Some(earlier.id.clone())
+        );
+
+        // Sent messages can't be discarded this way.
+        reduce_ui_action(
+            &mut state,
+            UiAction::DiscardFailedMessage { message_id: earlier.id.clone() },
+        );
+        assert_eq!(state.timeline.messages.len(), 1);
+    }
+
+    #[test]
+    fn upload_progress_tracks_pending_attachments_until_they_settle() {
+        let id = ConversationId::new("conv");
+        let mut state = UiState::default();
+        state.timeline.conversation_id = Some(id.clone());
+        let client = ClientMessageId::new("upload");
+        add_pending_message_to_state(&mut state, &id, "notes", vec![], None, &client);
+        let pending_id = pending_message_id_for_client(&client);
+        let progress = |sent| BackendEvent::AttachmentUploadProgress {
+            client_message_id: client.clone(),
+            sent_bytes: sent,
+            total_bytes: 400,
+        };
+        reduce_backend_event(&mut state, progress(100));
+        let tracked = state.timeline.upload_progress[&pending_id];
+        assert_eq!(tracked.fraction(), 0.25);
+        reduce_backend_event(&mut state, progress(300));
+        assert_eq!(state.timeline.upload_progress[&pending_id].sent_bytes, 300);
+
+        // Progress for a send this window doesn't know about is dropped.
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::AttachmentUploadProgress {
+                client_message_id: ClientMessageId::new("elsewhere"),
+                sent_bytes: 1,
+                total_bytes: 2,
+            },
+        );
+        assert_eq!(state.timeline.upload_progress.len(), 1);
+
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessageSendFailed {
+                op_id: OpId::new("op"),
+                client_message_id: client.clone(),
+                error: "offline".into(),
+            },
+        );
+        assert!(state.timeline.upload_progress.is_empty());
+        // A late progress event can't revive a failed send's bar.
+        reduce_backend_event(&mut state, progress(400));
+        assert!(state.timeline.upload_progress.is_empty());
+        assert_eq!(
+            crate::state::state::UploadProgress { sent_bytes: 0, total_bytes: 0 }.fraction(),
+            0.
+        );
+    }
+
+    #[test]
     fn badge_snapshot_survives_bootstrap_and_inferred_unread_updates() {
         use crate::domain::backend::{BackendId, ProviderConversationRef};
         use crate::domain::conversation::ConversationBadgeCounts;
@@ -3413,7 +3715,161 @@ mod tests {
             mention_count: 0,
             muted: false,
             last_activity_ms: 0,
+            last_message: None,
         }
+    }
+
+    fn preview_text(state: &UiState, id: &str) -> Option<String> {
+        state
+            .workspace
+            .channels
+            .iter()
+            .chain(&state.workspace.direct_messages)
+            .find(|summary| summary.id.0 == id)
+            .and_then(|summary| summary.last_message.as_ref())
+            .map(|preview| match &preview.body {
+                PreviewBody::Text(text) => {
+                    let author = preview.author_id.as_ref().map_or("?", |id| id.0.as_str());
+                    format!("{author}: {text}")
+                }
+                other => format!("{other:?}"),
+            })
+    }
+
+    #[test]
+    fn live_messages_keep_every_conversation_preview_current() {
+        let open = ConversationId::new("open");
+        let other = ConversationId::new("other");
+        let mut state = UiState::default();
+        state.workspace.channels = vec![channel_summary("open", "general")];
+        state.workspace.direct_messages = vec![dm_summary("other", "bob")];
+        state.timeline.conversation_id = Some(open.clone());
+
+        // Another conversation previews a message that arrives while it is closed.
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessageUpserted(message(&other, "10", 1_000)),
+        );
+        assert_eq!(preview_text(&state, "other").as_deref(), Some("alice: m10"));
+        assert_eq!(state.workspace.direct_messages[0].last_activity_ms, 1_000);
+
+        // A late copy of an older message never replaces the newer preview.
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessageUpserted(message(&other, "9", 2_000)),
+        );
+        assert_eq!(preview_text(&state, "other").as_deref(), Some("alice: m10"));
+
+        // An edit of the previewed message updates its text.
+        let mut edit = message(&other, "10", 3_000);
+        edit.fragments = vec![MessageFragment::Text("fixed".into())];
+        edit.edited = Some(crate::domain::message::EditMeta {
+            edit_id: MessageId::new("11"),
+            edited_at_ms: Some(3_000),
+        });
+        reduce_backend_event(&mut state, BackendEvent::MessageUpserted(edit));
+        assert_eq!(preview_text(&state, "other").as_deref(), Some("alice: fixed"));
+
+        // Deleting it in a closed conversation leaves a "deleted" line.
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessageDeleted {
+                conversation_id: other.clone(),
+                message_id: MessageId::new("10"),
+            },
+        );
+        assert_eq!(preview_text(&state, "other").as_deref(), Some("Deleted"));
+
+        // In the open conversation the preview falls back to the message before.
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessageUpserted(message(&open, "20", 4_000)),
+        );
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessageUpserted(message(&open, "21", 5_000)),
+        );
+        assert_eq!(preview_text(&state, "open").as_deref(), Some("alice: m21"));
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessageDeleted {
+                conversation_id: open.clone(),
+                message_id: MessageId::new("21"),
+            },
+        );
+        assert_eq!(preview_text(&state, "open").as_deref(), Some("alice: m20"));
+    }
+
+    #[test]
+    fn your_send_previews_at_once_and_keeps_its_preview_when_confirmed() {
+        let id = ConversationId::new("conv");
+        let mut state = UiState::default();
+        state.workspace.channels = vec![channel_summary("conv", "general")];
+        state.timeline.conversation_id = Some(id.clone());
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessageUpserted(message(&id, "30", now_unix_ms() - 60_000)),
+        );
+        let client = ClientMessageId::new("send-1");
+        add_pending_message_to_state(&mut state, &id, "on my way", vec![], None, &client);
+        assert_eq!(
+            preview_text(&state, "conv").as_deref(),
+            Some("user_me: on my way")
+        );
+        // The server's clock may stamp the message a little earlier than ours.
+        let mut confirmed = message(&id, "31", now_unix_ms() - 30_000);
+        confirmed.author_id = UserId::new("user_me");
+        confirmed.source_text = Some("on my way".into());
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessageSendConfirmed {
+                op_id: OpId::new("op"),
+                client_message_id: client,
+                server_message: confirmed,
+            },
+        );
+        let preview = state.workspace.channels[0].last_message.clone().unwrap();
+        assert_eq!(preview.message_id, Some(MessageId::new("31")));
+        assert_eq!(preview_text(&state, "conv").as_deref(), Some("user_me: on my way"));
+    }
+
+    #[test]
+    fn inbox_updates_merge_previews_instead_of_dropping_or_regressing_them() {
+        let id = ConversationId::new("conv");
+        let mut state = UiState::default();
+        state.workspace.channels = vec![channel_summary("conv", "general")];
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessageUpserted(message(&id, "40", 1_000)),
+        );
+        let extend = |summary: ConversationSummary| BackendEvent::WorkspaceConversationsExtended {
+            workspace_id: WorkspaceId::new("ws"),
+            channels: vec![summary],
+            direct_messages: vec![],
+            conversation_bindings: vec![],
+        };
+        // Metadata without a preview, and Keybase's snippet of the same message.
+        reduce_backend_event(&mut state, extend(channel_summary("conv", "general")));
+        let mut snippet = channel_summary("conv", "general");
+        snippet.last_message = Some(MessagePreview {
+            message_id: Some(MessageId::new("40")),
+            author_id: None,
+            timestamp_ms: 1_000,
+            body: PreviewBody::Snippet("alice: m40".into()),
+        });
+        reduce_backend_event(&mut state, extend(snippet.clone()));
+        assert_eq!(preview_text(&state, "conv").as_deref(), Some("alice: m40"));
+        assert!(matches!(
+            state.workspace.channels[0].last_message.as_ref().unwrap().body,
+            PreviewBody::Text(_)
+        ));
+        // A snippet of a newer message does replace it.
+        snippet.last_message.as_mut().unwrap().message_id = Some(MessageId::new("41"));
+        reduce_backend_event(&mut state, extend(snippet));
+        assert!(matches!(
+            state.workspace.channels[0].last_message.as_ref().unwrap().body,
+            PreviewBody::Snippet(_)
+        ));
     }
 
     fn channel_summary(id: &str, title: &str) -> ConversationSummary {
@@ -3427,6 +3883,7 @@ mod tests {
             mention_count: 0,
             muted: false,
             last_activity_ms: 0,
+            last_message: None,
         }
     }
 
@@ -3632,6 +4089,56 @@ mod tests {
             }),
         );
         assert!(state.sidebar.sections.iter().all(|s| s.title != "Unread"));
+    }
+
+    #[test]
+    fn reopening_conversation_after_find_loads_latest_and_clears_match() {
+        let mut state = UiState::default();
+        let conversation = ConversationId::new("chat");
+        let route = Route::DirectMessage {
+            workspace_id: WorkspaceId::new("ws"),
+            dm_id: DmId::new("chat"),
+        };
+        reduce_ui_action(&mut state, UiAction::Navigate(route.clone()));
+        reduce_ui_action(
+            &mut state,
+            UiAction::JumpToMessage {
+                conversation_id: conversation.clone(),
+                message_id: MessageId::new("10"),
+            },
+        );
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::TimelineReplaced {
+                conversation_id: conversation.clone(),
+                messages: vec![message(&conversation, "10", 100)],
+                older_cursor: Some("10".into()),
+                newer_cursor: Some("10".into()),
+            },
+        );
+
+        let output = reduce_ui_action(&mut state, UiAction::ReturnToLatestMessages);
+        assert_eq!(state.navigation.current_route, Some(route));
+        assert!(state.timeline.highlighted_message_id.is_none());
+        assert!(output.effects.iter().any(|effect| matches!(
+            effect,
+            Effect::Backend(BackendCommand::LoadConversation { conversation_id })
+                if conversation_id == &conversation
+        )));
+
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::TimelineReplaced {
+                conversation_id: conversation.clone(),
+                messages: vec![message(&conversation, "100", 1_000)],
+                older_cursor: Some("100".into()),
+                newer_cursor: Some("100".into()),
+            },
+        );
+        assert_eq!(
+            state.timeline.messages.last().unwrap().id,
+            MessageId::new("100")
+        );
     }
 
     #[test]

@@ -28,6 +28,8 @@ impl FindInChatModel {
     }
 
     pub fn close(&mut self) {
+        // Ignore results still in flight if search is immediately reopened.
+        self.query_seq = self.query_seq.wrapping_add(1);
         self.open = false;
         self.query.clear();
         self.loading = false;
@@ -99,5 +101,34 @@ impl FindInChatModel {
             return;
         };
         results.rotate_left(rotation_start);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closing_and_reopening_find_invalidates_in_flight_results() {
+        let mut find = FindInChatModel::default();
+        let conversation = ConversationId::new("chat");
+        find.open_for_conversation(conversation.clone(), Some(100));
+        find.set_query("older message".into());
+        let request_sequence = find.query_seq;
+        find.selected_index = Some(0);
+
+        find.close();
+        assert!(!find.open);
+        assert!(!find.loading);
+        assert!(find.query.is_empty());
+        assert!(find.conversation_id.is_none());
+        assert!(find.anchor_timestamp_ms.is_none());
+        assert!(find.selected_index.is_none());
+
+        find.open_for_conversation(conversation, Some(200));
+        assert_ne!(find.query_seq, request_sequence);
+        assert!(find.results.is_empty());
+        assert!(find.query.is_empty());
+        assert!(!find.loading);
     }
 }

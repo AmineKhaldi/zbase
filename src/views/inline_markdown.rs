@@ -412,6 +412,7 @@ fn remap_styled_ranges(
                 italic: range.italic,
                 monospace: range.monospace,
                 strikethrough: range.strikethrough,
+                meta: range.meta,
             })
         })
         .collect()
@@ -446,6 +447,7 @@ fn markdown_ranges_to_styled_ranges(
                 italic: false,
                 monospace: false,
                 strikethrough: false,
+                meta: false,
             },
             MarkdownStyleKind::Italic => StyledRange {
                 byte_range: range.byte_range.clone(),
@@ -455,6 +457,7 @@ fn markdown_ranges_to_styled_ranges(
                 italic: true,
                 monospace: false,
                 strikethrough: false,
+                meta: false,
             },
             MarkdownStyleKind::Strike => StyledRange {
                 byte_range: range.byte_range.clone(),
@@ -464,6 +467,7 @@ fn markdown_ranges_to_styled_ranges(
                 italic: false,
                 monospace: false,
                 strikethrough: true,
+                meta: false,
             },
             MarkdownStyleKind::Spoiler => StyledRange {
                 byte_range: range.byte_range.clone(),
@@ -473,6 +477,7 @@ fn markdown_ranges_to_styled_ranges(
                 italic: false,
                 monospace: false,
                 strikethrough: false,
+                meta: false,
             },
         })
         .collect()
@@ -568,6 +573,7 @@ mod tests {
                 italic: false,
                 monospace: false,
                 strikethrough: false,
+                meta: false,
             }],
             InlineMarkdownConfig::default(),
         );

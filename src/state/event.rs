@@ -167,6 +167,12 @@ pub enum BackendEvent {
         client_message_id: ClientMessageId,
         error: String,
     },
+    /// Bytes of a pending attachment message uploaded so far.
+    AttachmentUploadProgress {
+        client_message_id: ClientMessageId,
+        sent_bytes: u64,
+        total_bytes: u64,
+    },
     MessageDeleted {
         conversation_id: ConversationId,
         message_id: MessageId,

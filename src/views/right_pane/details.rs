@@ -1,4 +1,4 @@
-use super::{member_name_color, pane_header, truncate_with_ellipsis};
+use super::{member_avatar, member_markers, pane_header, pane_with_header, truncate_with_ellipsis};
 use crate::{
     domain::{
         attachment::AttachmentSource, backend::BackendCapabilities,
@@ -12,9 +12,9 @@ use crate::{
         accent,
         app_window::AppWindow,
         attachment_open_target,
-        avatar::{Avatar, default_avatar_background},
-        badge, border, crown_icon, danger, panel_alt_bg, panel_alt_surface, panel_surface,
-        subtle_surface, text_primary, text_secondary, warning,
+        avatar::Avatar,
+        badge, border, danger, panel_alt_bg, panel_alt_surface, panel_surface,
+        subtle_surface, text_primary, text_secondary,
     },
 };
 use gpui::prelude::FluentBuilder;
@@ -71,13 +71,7 @@ fn member_section(
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_user_profile_panel(user_id.clone(), window, cx);
                 }))
-                .child(Avatar::render(
-                    &member.display_name,
-                    member.avatar_asset.as_deref(),
-                    32.,
-                    default_avatar_background(&member.display_name),
-                    text_primary(),
-                ))
+                .child(member_avatar("details", &member, 32., panel_surface()))
                 .child(
                     div()
                         .flex_1()
@@ -85,12 +79,10 @@ fn member_section(
                         .whitespace_nowrap()
                         .text_sm()
                         .text_ellipsis()
-                        .text_color(rgb(member_name_color(member.affinity)))
-                        .child(member.display_name),
+                        .text_color(rgb(text_primary()))
+                        .child(member.display_name.clone()),
                 )
-                .when(member.is_team_admin_or_owner, |row| {
-                    row.child(crown_icon(warning()))
-                })
+                .children(member_markers(&member, row_id))
                 .into_any_element()
         }))
         .into_any_element()
@@ -156,8 +148,9 @@ pub(super) fn render_details_panel(
         ConversationKind::GroupDirectMessage => "Group conversation",
     };
 
-    div()
-        .size_full()
+    let body = div()
+        .flex_1()
+        .min_h(px(0.))
         .id("right-pane-details-scroll")
         .overflow_y_scroll()
         .scrollbar_width(px(8.))
@@ -165,21 +158,23 @@ pub(super) fn render_details_panel(
         .flex()
         .flex_col()
         .gap_3()
-        .child(pane_header("Details", "details-pane-close", cx))
         .child(
             details_card()
                 .items_center()
                 .gap_3()
                 .child(if conversation.summary.kind == ConversationKind::Channel {
-                    Avatar::render_square(
+                    Avatar::render_team(
                         group_name.as_deref().unwrap_or(&title),
                         conversation.avatar_asset.as_deref(),
                         64.,
-                        default_avatar_background(&title),
-                        text_primary(),
                     )
                 } else {
-                    Avatar::render_participants(&conversation.participant_avatars, &title, 64.)
+                    Avatar::render_participants_on(
+                        &conversation.participant_avatars,
+                        &title,
+                        64.,
+                        panel_surface(),
+                    )
                 })
                 .child(
                     div()
@@ -386,5 +381,6 @@ pub(super) fn render_details_panel(
                     }),
             )
         })
-        .into_any_element()
+        .into_any_element();
+    pane_with_header(pane_header("Details", None, "details-pane-close", cx), body)
 }

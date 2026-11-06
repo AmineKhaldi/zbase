@@ -1,5 +1,5 @@
 #[cfg(any(test, feature = "demo-fixtures"))]
-mod demo;
+pub(crate) mod demo;
 
 pub mod app_model;
 pub mod call_model;
@@ -18,6 +18,7 @@ pub mod recent_sidebar;
 pub mod search_model;
 pub mod settings_model;
 pub mod sidebar_model;
+pub mod sidebar_preview;
 pub mod thread_pane_model;
 pub mod timeline_model;
 pub mod workspace_model;
@@ -67,7 +68,7 @@ use self::{
     profile_panel_model::ProfilePanelModel,
     quick_switcher_model::{QuickSwitcherModel, QuickSwitcherResult, QuickSwitcherResultKind},
     search_model::SearchModel,
-    settings_model::{SettingsModel, ThemeMode},
+    settings_model::{Density, SettingsModel, ThemeMode},
     sidebar_model::SidebarModel,
     thread_pane_model::ThreadPaneModel,
     timeline_model::{TimelineModel, TimelineRow},
@@ -168,7 +169,8 @@ pub struct AppModels {
     pub call: CallModel,
     pub notifications: NotificationsModel,
     pub settings: SettingsModel,
-    quick_switcher_profile_names: HashMap<String, String>,
+    /// Display names by lowercase username, from loaded profiles.
+    pub(crate) quick_switcher_profile_names: HashMap<String, String>,
     quick_switcher_search_corpus: Arc<QuickSwitcherSearchCorpus>,
     quick_switcher_search_corpus_revision: u64,
     quick_switcher_search_corpus_dirty: bool,
@@ -180,6 +182,7 @@ pub struct AppModels {
 
 impl AppModels {
     pub fn empty_with_settings(settings: SettingsModel) -> Self {
+        let sidebar_style = settings.sidebar_style;
         let workspace_id = WorkspaceId::new("ws_primary");
         let conversation_id = ConversationId::new("conv_placeholder");
         let route = Route::WorkspaceHome {
@@ -211,11 +214,13 @@ impl AppModels {
             },
             sidebar: SidebarModel {
                 mode: Default::default(),
+                style: sidebar_style,
                 recent_rows: Vec::new(),
                 sections: vec![],
                 filter: String::new(),
                 highlighted_route: Some(route),
-                width_px: crate::views::SIDEBAR_WIDTH_PX,
+                width_px: crate::views::sidebar_width_for_style(sidebar_style),
+                live_previews: Default::default(),
             },
             conversation: ConversationModel {
                 participant_avatars: Vec::new(),
@@ -229,6 +234,7 @@ impl AppModels {
                     mention_count: 0,
                     muted: false,
                     last_activity_ms: 0,
+                    last_message: None,
                 },
                 pinned_message: None,
                 details: None,
@@ -335,6 +341,7 @@ impl AppModels {
                     mention_count: 0,
                     muted: false,
                     last_activity_ms: 0,
+                    last_message: None,
                 });
             if self.timeline.conversation_id != id {
                 self.timeline = TimelineModel {
@@ -472,6 +479,20 @@ impl AppModels {
             .unwrap_or_default();
     }
 
+    pub fn set_sidebar_style(&mut self, style: settings_model::SidebarStyle) -> bool {
+        let changed = self.settings.sidebar_style != style;
+        // A width the user dragged stays; the previous style's default follows the style.
+        if changed
+            && (self.sidebar.width_px - crate::views::sidebar_width_for_style(self.sidebar.style)).abs()
+                < 0.5
+        {
+            self.sidebar.width_px = crate::views::sidebar_width_for_style(style);
+        }
+        self.settings.sidebar_style = style;
+        self.sidebar.style = style;
+        changed
+    }
+
     pub fn set_sidebar_width(&mut self, width_px: f32) {
         self.sidebar.width_px = width_px.clamp(160.0, 360.0);
     }
@@ -581,6 +602,8 @@ impl AppModels {
                     conversation_id: summary.id,
                     message_id: None,
                     match_ranges: Vec::new(),
+                    author_id: None,
+                    timestamp_ms: None,
                 });
             }
 
@@ -606,12 +629,14 @@ impl AppModels {
                         summary,
                         &self.quick_switcher_profile_names,
                     ),
-                    sublabel: Some("Last visited".to_string()),
+                    sublabel: quick_switcher_sublabel_for_summary(summary),
                     kind: quick_switcher_result_kind_for_conversation_kind(summary.kind.clone()),
                     route: route.clone(),
                     conversation_id: summary.id.clone(),
                     message_id: None,
                     match_ranges: Vec::new(),
+                    author_id: None,
+                    timestamp_ms: None,
                 });
                 if recent_results.len() >= QUICK_SWITCHER_RECENT_LIMIT {
                     break;
@@ -633,7 +658,7 @@ impl AppModels {
                             summary,
                             &self.quick_switcher_profile_names,
                         ),
-                        sublabel: Some("Current channel".to_string()),
+                        sublabel: quick_switcher_sublabel_for_summary(summary),
                         kind: quick_switcher_result_kind_for_conversation_kind(
                             summary.kind.clone(),
                         ),
@@ -641,6 +666,8 @@ impl AppModels {
                         conversation_id: summary.id.clone(),
                         message_id: None,
                         match_ranges: Vec::new(),
+                        author_id: None,
+                        timestamp_ms: None,
                     });
                 }
             }
@@ -682,7 +709,7 @@ impl AppModels {
                             summary,
                             &self.quick_switcher_profile_names,
                         ),
-                        sublabel: Some("Recent".to_string()),
+                        sublabel: quick_switcher_sublabel_for_summary(summary),
                         kind: quick_switcher_result_kind_for_conversation_kind(
                             summary.kind.clone(),
                         ),
@@ -693,6 +720,8 @@ impl AppModels {
                         conversation_id: summary.id.clone(),
                         message_id: None,
                         match_ranges: Vec::new(),
+                        author_id: None,
+                        timestamp_ms: None,
                     });
                 }
             }
@@ -777,11 +806,17 @@ impl AppModels {
                 outside_active_conversation.push(result);
             }
         }
+        // Hits in the open conversation win the limited slots; the kept hits
+        // are then shown in Search's order.
+        let mut kept = in_active_conversation
+            .into_iter()
+            .chain(outside_active_conversation)
+            .take(QUICK_SWITCHER_MESSAGE_LIMIT)
+            .collect::<Vec<_>>();
+        kept.sort_by(|left, right| left.cmp_for_display(right));
         self.quick_switcher.results.extend(
-            in_active_conversation
+            kept
                 .into_iter()
-                .chain(outside_active_conversation)
-                .take(QUICK_SWITCHER_MESSAGE_LIMIT)
                 .map(|result| QuickSwitcherResult {
                     label: quick_switcher_message_label(
                         &result.conversation_id,
@@ -795,6 +830,8 @@ impl AppModels {
                     conversation_id: result.conversation_id.clone(),
                     message_id: Some(result.message.id.clone()),
                     match_ranges: result.snippet_highlight_ranges.clone(),
+                    author_id: Some(result.message.author_id.clone()),
+                    timestamp_ms: result.message.timestamp_ms,
                 }),
         );
         if self.quick_switcher.results.is_empty() {
@@ -867,6 +904,19 @@ impl AppModels {
         }
     }
 
+    /// Friendly location of a conversation for search results; `None` while the
+    /// conversation is not in the inbox yet, so raw ids never reach the screen.
+    pub fn conversation_location_label(&self, conversation_id: &ConversationId) -> Option<String> {
+        self.workspace
+            .channels
+            .iter()
+            .chain(self.workspace.direct_messages.iter())
+            .find(|summary| summary.id == *conversation_id)
+            .map(|summary| {
+                conversation_location_for_summary(summary, &self.quick_switcher_profile_names)
+            })
+    }
+
     pub fn refresh_search_results(&mut self) {
         #[cfg(any(test, feature = "demo-fixtures"))]
         if self.fixture_mode {
@@ -875,6 +925,9 @@ impl AppModels {
                 &self.search.filters,
                 &self.workspace.workspace_id,
             );
+            self.search
+                .results
+                .sort_by(crate::domain::search::SearchResult::cmp_for_display);
             self.search.highlighted_index = (!self.search.results.is_empty()).then_some(0);
             return;
         }
@@ -1053,6 +1106,27 @@ impl AppModels {
                 section.collapsed = false;
             }
         }
+    }
+
+    /// Unsent composer text, by conversation.
+    pub fn composer_draft_texts(&self) -> impl Iterator<Item = (&ConversationId, &str)> {
+        self.composer_drafts
+            .iter()
+            .map(|(id, draft)| (id, draft.text.as_str()))
+    }
+
+    /// Leaves `text` as the unsent draft of a conversation other than the open one.
+    #[cfg(any(test, feature = "demo-fixtures"))]
+    pub fn seed_composer_draft(&mut self, conversation_id: ConversationId, text: &str) {
+        self.composer_drafts.insert(
+            conversation_id,
+            ComposerDraftSnapshot {
+                text: text.to_string(),
+                attachments: Vec::new(),
+                autocomplete: None,
+                mode: ComposerMode::Compose,
+            },
+        );
     }
 
     pub fn update_composer_draft_text(&mut self, text: String) {
@@ -1843,12 +1917,28 @@ impl AppModels {
         }
     }
 
-    pub fn cycle_theme(&mut self) {
-        self.settings.theme_mode = match self.settings.theme_mode {
-            ThemeMode::Light => ThemeMode::Dark,
-            ThemeMode::Dark => ThemeMode::System,
-            ThemeMode::System => ThemeMode::Light,
-        };
+    pub fn set_theme_mode(&mut self, mode: ThemeMode) -> bool {
+        let changed = self.settings.theme_mode != mode;
+        self.settings.theme_mode = mode;
+        changed
+    }
+
+    pub fn set_density(&mut self, density: Density) -> bool {
+        let changed = self.settings.density != density;
+        self.settings.density = density;
+        changed
+    }
+
+    pub fn set_reduced_motion(&mut self, reduced: bool) -> bool {
+        let changed = self.settings.reduced_motion != reduced;
+        self.settings.reduced_motion = reduced;
+        changed
+    }
+
+    pub fn set_show_right_pane(&mut self, show: bool) -> bool {
+        let changed = self.settings.show_right_pane != show;
+        self.settings.show_right_pane = show;
+        changed
     }
 
     pub fn dismiss_current_pinned_banner(&mut self) -> bool {
@@ -2155,18 +2245,39 @@ fn flatten_fragments(fragments: &[MessageFragment]) -> String {
         .join("\n")
 }
 
-fn quick_switcher_label_for_summary(
+/// Where a conversation lives, in the words the sidebar uses: "#general · lighthouse"
+/// for a channel, "bookclub" for a simple team, display names for a DM.
+fn conversation_location_for_summary(
     summary: &ConversationSummary,
     profile_names: &HashMap<String, String>,
 ) -> String {
     match summary.kind {
         ConversationKind::Channel => {
-            if let Some(group) = summary.group.as_ref() {
-                format!("{} #{}", group.display_name, summary.title)
-            } else {
-                format!("#{}", summary.title)
+            if let Some(label) = summary.simple_team_label() {
+                return label;
+            }
+            match summary.group.as_ref() {
+                Some(group) => format!("#{} · {}", summary.title, group.display_name),
+                None => format!("#{}", summary.title),
             }
         }
+        ConversationKind::DirectMessage | ConversationKind::GroupDirectMessage => {
+            quick_switcher_label_for_summary(summary, profile_names)
+        }
+    }
+}
+
+fn quick_switcher_label_for_summary(
+    summary: &ConversationSummary,
+    profile_names: &HashMap<String, String>,
+) -> String {
+    match summary.kind {
+        // A single-channel team goes by the team's name, as in the sidebar.
+        ConversationKind::Channel => match (summary.simple_team_label(), summary.group.as_ref()) {
+            (Some(label), _) => label,
+            (None, Some(group)) => format!("{} #{}", group.display_name, summary.title),
+            (None, None) => format!("#{}", summary.title),
+        },
         ConversationKind::DirectMessage | ConversationKind::GroupDirectMessage => {
             let usernames = quick_switcher_dm_usernames(&summary.title);
             if usernames.is_empty() {
@@ -2480,8 +2591,9 @@ fn quick_switcher_message_label(
         .iter()
         .chain(direct_messages.iter())
         .find(|summary| summary.id == *conversation_id)
-        .map(|summary| quick_switcher_label_for_summary(summary, profile_names))
-        .unwrap_or_else(|| conversation_id.0.clone())
+        .map(|summary| conversation_location_for_summary(summary, profile_names))
+        // Never show a raw conversation id; the inbox may not have loaded it yet.
+        .unwrap_or_else(|| "Conversation".to_string())
 }
 
 fn mention_affinity_rank(affinity: Affinity) -> i32 {
@@ -2724,6 +2836,8 @@ pub(crate) fn compute_quick_switcher_local_results(
                 conversation_id: entry.conversation_id.clone(),
                 message_id: None,
                 match_ranges: matched.ranges,
+                author_id: None,
+                timestamp_ms: None,
             },
         );
         push_quick_switcher_topk(&mut scored_topk, scored, QUICK_SWITCHER_CONVERSATION_LIMIT);
@@ -2775,7 +2889,33 @@ mod tests {
             mention_count: 0,
             muted: false,
             last_activity_ms: 0,
+            last_message: None,
         }
+    }
+
+    #[test]
+    fn single_channel_teams_are_named_by_their_team_in_the_switcher() {
+        use crate::domain::conversation::{ConversationGroup, ConversationTeamType};
+        let group = |name: &str, team_type| ConversationGroup {
+            id: name.into(),
+            display_name: name.into(),
+            team_type,
+        };
+        let names = HashMap::new();
+        let mut bookclub = channel_summary("bookclub.general", "general");
+        bookclub.group = Some(group("bookclub", ConversationTeamType::Simple));
+        assert_eq!(quick_switcher_label_for_summary(&bookclub, &names), "bookclub");
+        assert_eq!(conversation_location_for_summary(&bookclub, &names), "bookclub");
+        let mut general = channel_summary("lighthouse.general", "general");
+        general.group = Some(group("lighthouse", ConversationTeamType::Complex));
+        assert_eq!(
+            quick_switcher_label_for_summary(&general, &names),
+            "lighthouse #general"
+        );
+        assert_eq!(
+            quick_switcher_label_for_summary(&channel_summary("x", "loose"), &names),
+            "#loose"
+        );
     }
 
     fn dm_summary(id: &str, title: &str, kind: ConversationKind) -> ConversationSummary {
@@ -2789,7 +2929,48 @@ mod tests {
             mention_count: 0,
             muted: false,
             last_activity_ms: 0,
+            last_message: None,
         }
+    }
+
+    #[test]
+    fn conversation_locations_use_sidebar_names_never_raw_ids() {
+        use crate::domain::conversation::{ConversationGroup, ConversationTeamType};
+        let profiles = HashMap::from([("alicej".to_string(), "Alice Johnson".to_string())]);
+        let mut general = channel_summary("0000c0ffee", "general");
+        general.group = Some(ConversationGroup {
+            id: "lighthouse".to_string(),
+            display_name: "lighthouse".to_string(),
+            team_type: ConversationTeamType::Complex,
+        });
+        assert_eq!(
+            conversation_location_for_summary(&general, &profiles),
+            "#general · lighthouse"
+        );
+        let mut simple = channel_summary("0000beef", "general");
+        simple.group = Some(ConversationGroup {
+            id: "bookclub".to_string(),
+            display_name: "bookclub".to_string(),
+            team_type: ConversationTeamType::Simple,
+        });
+        assert_eq!(conversation_location_for_summary(&simple, &profiles), "bookclub");
+        let dm = dm_summary("0000dm", "alicej", ConversationKind::DirectMessage);
+        assert_eq!(conversation_location_for_summary(&dm, &profiles), "Alice Johnson");
+
+        let mut models = AppModels::empty_with_settings(SettingsModel::default());
+        models.workspace.channels = vec![general];
+        assert_eq!(
+            models.conversation_location_label(&ConversationId::new("0000c0ffee")),
+            Some("#general · lighthouse".to_string())
+        );
+        assert_eq!(
+            models.conversation_location_label(&ConversationId::new("not-loaded")),
+            None
+        );
+        assert_eq!(
+            quick_switcher_message_label(&ConversationId::new("not-loaded"), &[], &[], &profiles),
+            "Conversation"
+        );
     }
 
     fn assert_empty_conversation_content(models: &AppModels) {
@@ -2934,7 +3115,7 @@ mod tests {
         assert!(!demo.timeline.rows.is_empty());
         demo.navigate_to(Route::Channel {
             workspace_id: demo.workspace.workspace_id.clone(),
-            channel_id: ChannelId::new("design"),
+            channel_id: ChannelId::new(demo::DEMO_DESIGN_ID),
         });
         assert!(!demo.timeline.rows.is_empty());
         assert_eq!(demo.conversation.summary.title, "design");
@@ -3197,6 +3378,8 @@ mod tests {
             avatar_asset: None,
             affinity: Affinity::Positive,
             is_team_admin_or_owner: false,
+            is_team_owner: false,
+            availability: None,
         };
         models.conversation.details = Some(ChannelDetails {
             conversation_id,
@@ -3281,6 +3464,8 @@ mod tests {
             avatar_asset: None,
             affinity: Affinity::Positive,
             is_team_admin_or_owner: false,
+            is_team_owner: false,
+            availability: None,
         };
         models.conversation.details = Some(ChannelDetails {
             conversation_id,

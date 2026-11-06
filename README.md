@@ -56,8 +56,9 @@ ln -s "$(brew --prefix)/opt/zbase/zBase.app" /Applications/zBase.app
 - Leave eligible team channels from the channel Details panel
 
 ### Navigation
-- **Recent / Grouped sidebar** — use the history icon beside Search to toggle between one activity-sorted list and team/channel groups; the choice is saved per account. Recent is the default for new accounts, keeps read conversations in place, and shows shortened team names inline.
-- **Grouped Unread** — team icons and nested channels, with the active conversation kept visible until you navigate away
+- **Recent / Grouped sidebar** — choose **View › Sort by Recent** or **Group by Team** (`Cmd+Option+1` / `Cmd+Option+2`), the pop-up on the sidebar's "Recent" or "Teams" label, or **Settings › Sidebar order**; the choice is saved per account. Recent is the default for new accounts, keeps read conversations in place, and shows shortened team names inline.
+- **Grouped Unread** — one-line shortcuts to conversations with unread activity; the open conversation stays listed (marked, not selected twice) until you navigate away
+- **Sidebar rows** — names only, or with previews of the newest message, someone typing, your draft or a failed send (Settings › Sidebar rows)
 - **Quick Switcher** (`Cmd+K`) — fuzzy search across all conversations, ranked by usage affinity
 - **Find in Chat** (`Cmd+F`) — search within the current conversation with match-by-match navigation
 - **Global Search** (`Cmd+J`) — full-text search across workspaces with filters (by user, channel, has file, has link, mentions me) and highlighted snippets
@@ -98,7 +99,7 @@ Launch **zBase** from Applications or Spotlight. To open the installed app from 
 open /Applications/zBase.app
 ```
 
-The history icon beside Search toggles Recent and Grouped sidebar views. Opening a profile or thread adds space to a compact window when needed; closing the panel restores its base width.
+View › Sort by Recent / Group by Team switches the sidebar order. Opening a profile or thread adds space to a compact window when needed; closing the panel restores its base width.
 
 ### Environment variables
 
@@ -118,17 +119,21 @@ The history icon beside Search toggles Recent and Grouped sidebar views. Opening
 | `Cmd+K` | Quick Switcher |
 | `Cmd+J` | Global Search |
 | `Cmd+F` | Find in Chat |
+| `Enter` / `Shift+Enter` | Next / previous match while finding in a conversation |
 | `Cmd+N` | New Chat |
+| `Cmd+Return` | New Chat: start the conversation |
+| `Cmd+B` / `Cmd+I` / `Cmd+E` | Composer: bold / italic / code (also in the **Aa** menu) |
 | `Cmd+Shift+P` | Command Palette |
 | `Cmd+1` | Home |
 | `Cmd+2–5` | Recent conversations |
 | `Cmd+[` / `Cmd+]` | Navigate back / forward |
+| `Cmd+Option+1` / `Cmd+Option+2` | Sidebar: sort by recent / group by team |
 | `Cmd+Shift+\` | Toggle thread pane |
 | `Cmd+Shift+M` | Toggle members pane |
 | `Cmd+Shift+D` | Toggle details pane |
 | `Cmd+Shift+F` | Files pane |
 | `Cmd+Shift+A` | Activity |
-| `Cmd+,` | Preferences |
+| `Cmd+,` | Settings |
 | `Alt+Up/Down` | Open the previous/next visible sidebar conversation |
 | `Escape` | Dismiss overlays |
 

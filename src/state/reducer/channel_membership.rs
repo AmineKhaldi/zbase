@@ -93,6 +93,7 @@ mod tests {
             mention_count: 0,
             muted: false,
             last_activity_ms: 1,
+            last_message: None,
         }
     }
 

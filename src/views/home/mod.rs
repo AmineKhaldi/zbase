@@ -120,7 +120,7 @@ impl WorkspaceHomeView {
                                 div()
                                     .id("home-preferences")
                                     .on_click(cx.listener(AppWindow::preferences_click))
-                                    .child(badge("Preferences", panel_alt_bg(), text_primary())),
+                                    .child(badge("Settings", panel_alt_bg(), text_primary())),
                             ),
                     )
                     .child(

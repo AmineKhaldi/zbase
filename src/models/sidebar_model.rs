@@ -8,6 +8,10 @@ pub struct SidebarRow {
     pub unread_count: u32,
     pub mention_count: u32,
     pub route: Route,
+    /// Newest message, for the Previews style.
+    pub preview: Option<super::sidebar_preview::SidebarPreview>,
+    /// Notifications are off: the row is drawn dimmed and plain unread stays quiet.
+    pub muted: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,9 +27,13 @@ pub struct SidebarModel {
     pub sections: Vec<SidebarSection>,
     pub recent_rows: Vec<super::recent_sidebar::RecentSidebarRow>,
     pub mode: super::settings_model::SidebarMode,
+    pub style: super::settings_model::SidebarStyle,
     pub filter: String,
     pub highlighted_route: Option<Route>,
     pub width_px: f32,
+    /// What is happening in a conversation right now (typing, an unsent draft, a
+    /// failed send), by conversation id. Previews show it instead of the newest message.
+    pub live_previews: HashMap<String, super::sidebar_preview::PreviewLive>,
 }
 
 /// Conversation rows may represent people or a simple team's general channel.
@@ -41,6 +49,13 @@ impl SidebarAvatar {
             Self::Participants(people) => people,
             Self::Team(_) => &[],
         }
+    }
+}
+
+impl SidebarSection {
+    /// Shortcuts to conversations with unread activity, listed above the full list.
+    pub fn is_unread(&self) -> bool {
+        self.id.0 == "unread"
     }
 }
 
@@ -69,6 +84,21 @@ impl SidebarModel {
                 || recent.secondary.to_lowercase().contains(&filter)
                 || recent.row.route.label().to_lowercase().contains(&filter)
         })
+    }
+
+    /// The section whose row for `route` carries the full selection. A
+    /// conversation can be listed twice in Grouped mode: in Unread and in its
+    /// team or Conversations. The canonical (non-Unread) row is the one selected,
+    /// as long as its section is expanded; the Unread copy is selected only when
+    /// it is the sole visible row. `None` when `route` isn't listed.
+    pub fn selection_section(&self, route: &Route) -> Option<&SidebarSectionId> {
+        let listed = |section: &&SidebarSection| section.rows.iter().any(|row| &row.route == route);
+        self.sections
+            .iter()
+            .filter(|section| !section.is_unread() && !section.collapsed)
+            .find(listed)
+            .or_else(|| self.sections.iter().filter(|section| section.is_unread()).find(listed))
+            .map(|section| &section.id)
     }
 
     /// Keep the flat navigation order identical to the grouped visual order. Stable
@@ -125,6 +155,8 @@ mod tests {
                 workspace_id: WorkspaceId::new("ws"),
                 channel_id: ChannelId::new(id),
             },
+            preview: None,
+            muted: false,
         }
     }
 
@@ -143,6 +175,7 @@ mod tests {
         retained.unread_count = 0;
         let mut sidebar = SidebarModel {
             mode: Default::default(),
+            style: Default::default(),
             recent_rows: Vec::new(),
             sections: vec![
                 SidebarSection {
@@ -163,6 +196,7 @@ mod tests {
             filter: String::new(),
             highlighted_route: None,
             width_px: 200.,
+            live_previews: HashMap::new(),
         };
         sidebar.order_unread_groups();
         assert_eq!(
@@ -214,5 +248,45 @@ mod tests {
             "chia_network.ent_wallet #alerts-prod-mainnet"
         );
         assert_eq!(row("alice", None).full_label(), "alice");
+    }
+
+    #[test]
+    fn grouped_mode_selects_one_row_preferring_the_canonical_section() {
+        let section = |id: &str, rows: Vec<SidebarRow>, collapsed: bool| SidebarSection {
+            id: SidebarSectionId::new(id),
+            title: id.into(),
+            rows,
+            collapsed,
+        };
+        let general = row("general", Some("lighthouse"));
+        let mut sidebar = SidebarModel {
+            mode: Default::default(),
+            style: Default::default(),
+            recent_rows: Vec::new(),
+            sections: vec![
+                section("unread", vec![general.clone()], false),
+                section("group_lighthouse", vec![general.clone(), row("random", Some("lighthouse"))], false),
+            ],
+            filter: String::new(),
+            highlighted_route: None,
+            width_px: 236.,
+            live_previews: HashMap::new(),
+        };
+        let selected = |sidebar: &SidebarModel| {
+            sidebar
+                .selection_section(&general.route)
+                .map(|id| id.0.clone())
+        };
+        // Listed twice: the team's row is the selection, the Unread copy is not.
+        assert_eq!(selected(&sidebar).as_deref(), Some("group_lighthouse"));
+        // With the team collapsed, the Unread copy is the only visible row.
+        sidebar.sections[1].collapsed = true;
+        assert_eq!(selected(&sidebar).as_deref(), Some("unread"));
+        // Once read and left, it leaves Unread; nothing visible lists it.
+        sidebar.sections[0].rows.clear();
+        assert_eq!(selected(&sidebar), None);
+        sidebar.sections[1].collapsed = false;
+        assert_eq!(selected(&sidebar).as_deref(), Some("group_lighthouse"));
+        assert_eq!(sidebar.selection_section(&row("other", None).route), None);
     }
 }

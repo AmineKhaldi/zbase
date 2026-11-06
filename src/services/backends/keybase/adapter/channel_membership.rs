@@ -221,6 +221,7 @@ mod tests {
             mention_count: 0,
             muted: false,
             last_activity_ms: 1,
+            last_message: None,
         };
         store.persist_conversation(&summary, 1).unwrap();
         store

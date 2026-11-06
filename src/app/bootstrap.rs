@@ -8,7 +8,7 @@ use crate::views::input::{
     SelectEnd, SelectHome, SelectLeft, SelectRight, SelectToBeginningOfLine, SelectToEndOfLine,
     SelectToNextWordEnd, SelectToPreviousWordStart, SelectUp, ShowCharacterPalette, Undo, Up,
 };
-use gpui::{Application, KeyBinding};
+use gpui::{Application, KeyBinding, Menu, MenuItem, SystemMenuType};
 
 pub fn run() {
     let application = Application::new().with_assets(KbuiAssets {});
@@ -34,11 +34,15 @@ pub fn run() {
 
         cx.bind_keys([
             KeyBinding::new("cmd-q", commands::QuitApp, Some("Workspace")),
+            KeyBinding::new("cmd-w", commands::CloseWindow, Some("SettingsWindow")),
+            KeyBinding::new("cmd-q", commands::QuitApp, Some("SettingsWindow")),
             KeyBinding::new("cmd-w", commands::CloseWindow, Some("Workspace")),
             KeyBinding::new("cmd-[", commands::NavigateBack, Some("Workspace")),
             KeyBinding::new("cmd-]", commands::NavigateForward, Some("Workspace")),
             KeyBinding::new("cmd-shift-a", commands::ShowActivity, Some("Workspace")),
             KeyBinding::new("cmd-,", commands::OpenPreferences, Some("Workspace")),
+            KeyBinding::new("alt-cmd-1", commands::SortSidebarByRecent, Some("Workspace")),
+            KeyBinding::new("alt-cmd-2", commands::GroupSidebarByTeam, Some("Workspace")),
             KeyBinding::new(
                 "cmd-shift-\\",
                 commands::ToggleThreadPane,
@@ -195,6 +199,10 @@ pub fn run() {
                 Some("Workspace"),
             ),
             KeyBinding::new("cmd-n", commands::OpenNewChat, Some("Workspace")),
+            KeyBinding::new("cmd-enter", commands::StartNewChat, Some("Workspace")),
+            KeyBinding::new("cmd-b", commands::FormatBold, Some("MultilineTextField")),
+            KeyBinding::new("cmd-i", commands::FormatItalic, Some("MultilineTextField")),
+            KeyBinding::new("cmd-e", commands::FormatCode, Some("MultilineTextField")),
             KeyBinding::new("cmd-k", commands::ToggleQuickSwitcher, Some("Workspace")),
             KeyBinding::new(
                 "cmd-shift-p",
@@ -363,6 +371,36 @@ pub fn run() {
             KeyBinding::new("shift-home", SelectHome, Some("SelectableText")),
             KeyBinding::new("shift-end", SelectEnd, Some("SelectableText")),
         ]);
+        cx.set_menus(app_menus());
         open_main_window(cx);
     });
 }
+
+/// The macOS menu bar: the app menu carries Settings… (⌘,) and Quit, so both are
+/// discoverable outside the keyboard. Shortcuts shown come from the key bindings.
+fn app_menus() -> Vec<Menu> {
+    vec![
+        Menu {
+            name: "zBase".into(),
+            items: vec![
+                MenuItem::action("Settings…", commands::OpenPreferences),
+                MenuItem::separator(),
+                MenuItem::os_submenu("Services", SystemMenuType::Services),
+                MenuItem::separator(),
+                MenuItem::action("Quit zBase", commands::QuitApp),
+            ],
+        },
+        // The sidebar order; the main window keeps the check mark on the current one.
+        Menu {
+            name: VIEW_MENU.into(),
+            items: vec![
+                MenuItem::action(SORT_BY_RECENT_ITEM, commands::SortSidebarByRecent),
+                MenuItem::action(GROUP_BY_TEAM_ITEM, commands::GroupSidebarByTeam),
+            ],
+        },
+    ]
+}
+
+pub const VIEW_MENU: &str = "View";
+pub const SORT_BY_RECENT_ITEM: &str = "Sort by Recent";
+pub const GROUP_BY_TEAM_ITEM: &str = "Group by Team";
