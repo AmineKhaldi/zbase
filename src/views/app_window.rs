@@ -1649,6 +1649,9 @@ impl AppWindow {
             }
         }
         if changed {
+            // Preserve the old layout's bottom position before a fetched preview
+            // changes row heights, even when no backend event/model sync follows.
+            self.anchor_timeline_before_layout();
             self.apply_og_previews_to_timeline();
             self.timeline_row_render_cache.invalidate();
         }
@@ -3975,6 +3978,7 @@ impl AppWindow {
             || timeline_reactions_changed
             || timeline_author_roles_changed
             || timeline_rows_changed
+            || timeline_link_previews_changed
         {
             self.timeline_row_render_cache.invalidate();
         }
@@ -3983,13 +3987,13 @@ impl AppWindow {
         self.schedule_og_fetches_for_messages(&timeline_messages);
         self.schedule_og_fetches_for_messages(&self.models.thread_pane.replies.clone());
         self.apply_pending_timeline_scroll_target();
-        if (timeline_reactions_changed || timeline_rows_changed)
+        if (timeline_reactions_changed || timeline_rows_changed || timeline_link_previews_changed)
             && was_near_bottom_before_sync
             && self.models.timeline.pending_scroll_target.is_none()
         {
-            // Row-content changes (e.g. reactions or "(edited)" badges) can increase the
-            // last row height without changing list length. Keep the viewport pinned when
-            // the user was already at the latest message.
+            // Link previews, reactions and edited badges can increase row height
+            // without changing list length. Keep the viewport pinned when the
+            // user was already at the latest message.
             self.scroll_timeline_list_to_bottom();
         }
         if pinned_banner_visibility_changed
