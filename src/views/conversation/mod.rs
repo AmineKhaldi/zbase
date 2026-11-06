@@ -9,7 +9,7 @@ use crate::{
         conversation_model::ConversationModel,
         find_in_chat_model::FindInChatModel,
         navigation_model::RightPaneMode,
-        settings_model::{Density, SettingsModel},
+        settings_model::SettingsModel,
         timeline_model::TimelineModel,
     },
     views::{
@@ -60,14 +60,12 @@ impl ConversationView {
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         let reduced_motion = settings.reduced_motion;
-        // Room for the typing slot plus a gap above it, tighter when compact.
-        let timeline_inset = TYPING_SLOT_HEIGHT_PX
-            + TYPING_SLOT_BOTTOM_PX
-            + if settings.density == Density::Compact {
-                4.
-            } else {
-                8.
-            };
+        // Overlay typing activity without changing the timeline's viewport or scroll position.
+        // Who is typing is unknown while disconnected; don't show stale news.
+        let typing_label = timeline
+            .typing_text
+            .as_ref()
+            .filter(|label| *connectivity == Connectivity::Online && !label.trim().is_empty());
         let show_jump = show_jump_to_bottom || unseen_message_count > 0;
         let jump_label = if unseen_message_count > 0 {
             format!(
@@ -146,7 +144,7 @@ impl ConversationView {
                     .flex()
                     .flex_col()
                     .overflow_hidden()
-                    .child(TimelineList.render(timeline, timeline_list_state, timeline_inset, cx))
+                    .child(TimelineList.render(timeline, timeline_list_state, cx))
                     .when(
                         {
                             let top = timeline_list_state.logical_scroll_top();
@@ -154,23 +152,16 @@ impl ConversationView {
                         },
                         |container| container.child(crate::views::scroll_edge_shadow()),
                     )
-                    // Who is typing is unknown while disconnected; don't show stale news.
-                    .when_some(
-                        timeline
-                            .typing_text
-                            .clone()
-                            .filter(|_| *connectivity == Connectivity::Online),
-                        |container, typing_label| {
-                            container.child(typing_indicator(typing_label, reduced_motion))
-                        },
-                    )
+                    .when_some(typing_label, |container, label| {
+                        container.child(typing_indicator(label.clone(), reduced_motion))
+                    })
                     .when(show_jump, |container| {
                         container.child(
                             div()
                                 .absolute()
                                 .left_0()
                                 .right_0()
-                                .bottom(px(TYPING_SLOT_HEIGHT_PX + TYPING_SLOT_BOTTOM_PX + 8.))
+                                .bottom(px(if typing_label.is_some() { 44. } else { 8. }))
                                 .flex()
                                 .justify_center()
                                 .child(jump_pill),
@@ -755,13 +746,8 @@ impl ConversationHeader {
     }
 }
 
-/// The typing indicator sits in a fixed slot under the timeline so the
-/// conversation never shifts when someone starts or stops typing.
-const TYPING_SLOT_HEIGHT_PX: f32 = 20.;
-const TYPING_SLOT_BOTTOM_PX: f32 = 4.;
-
-/// "Lena Fischer is typing…" in the message text column, with three pulsing dots
-/// under the avatar column (static when reduced motion is on).
+/// A floating pill above the composer. Plain, noninteractive divs leave clicks
+/// and scrolling available to the messages underneath; no timeline space is reserved.
 fn typing_indicator(label: String, reduced_motion: bool) -> AnyElement {
     let dots = (0..3).map(|index| {
         let dot = div().size(px(4.)).rounded_full().bg(rgb(text_secondary()));
@@ -778,34 +764,31 @@ fn typing_indicator(label: String, reduced_motion: bool) -> AnyElement {
     });
     div()
         .absolute()
-        .left_0()
-        .right_0()
-        .bottom(px(TYPING_SLOT_BOTTOM_PX))
-        .h(px(TYPING_SLOT_HEIGHT_PX))
-        .px_4()
+        .left(px(16.))
+        .right(px(16.))
+        .bottom(px(8.))
         .flex()
-        .items_center()
-        .gap_3()
         .child(
             div()
-                .w(px(32.))
-                .flex_shrink_0()
+                .min_w(px(0.))
+                .h(px(28.))
+                .px_3()
+                .rounded_full()
+                .bg(glass_surface_dark().opacity(0.96))
+                .border_1()
+                .border_color(shell_border())
                 .flex()
                 .items_center()
-                .justify_center()
-                .gap(px(3.))
-                .children(dots),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.))
-                .text_xs()
-                .text_color(rgb(text_secondary()))
-                .whitespace_normal()
-                .line_clamp(1)
-                .text_ellipsis()
-                .child(label),
+                .gap_2()
+                .child(div().flex_shrink_0().flex().gap(px(3.)).children(dots))
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .text_xs()
+                        .text_color(rgb(text_secondary()))
+                        .truncate()
+                        .child(label),
+                ),
         )
         .into_any_element()
 }

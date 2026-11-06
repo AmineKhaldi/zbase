@@ -250,12 +250,10 @@ impl MessageRenderMemo {
 }
 
 impl TimelineList {
-    /// `bottom_inset` keeps the last message clear of the typing indicator slot.
     pub fn render(
         &self,
         _timeline: &TimelineModel,
         list_state: &ListState,
-        bottom_inset: f32,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         div()
@@ -267,7 +265,6 @@ impl TimelineList {
             .gap_1()
             .overflow_hidden()
             .on_scroll_wheel(cx.listener(AppWindow::timeline_scrolled))
-            .pb(px(bottom_inset))
             .child({
                 let owner = cx.weak_entity();
                 div()
