@@ -10377,7 +10377,6 @@ fn dm_participant_avatars(
     usernames.dedup();
     usernames
         .into_iter()
-        .take(2)
         .map(|username| {
             let user_id = UserId::new(username.clone());
             let profile = profiles.get(&user_id);
@@ -11528,7 +11527,7 @@ mod tests {
         use crate::state::state::UserProfileState;
         let summary = ConversationSummary {
             id: ConversationId::new("group"),
-            title: "bob, alice, bob".into(),
+            title: "bob, alice, carol, BOB".into(),
             kind: ConversationKind::GroupDirectMessage,
             topic: String::new(),
             group: None,
@@ -11557,9 +11556,10 @@ mod tests {
             ),
         ]);
         let avatars = super::dm_participant_avatars(&summary, &profiles, &HashMap::new());
-        assert_eq!(avatars.len(), 2);
+        assert_eq!(avatars.len(), 3);
         assert_eq!(avatars[0].display_name, "Alice");
         assert_eq!(avatars[1].asset.as_deref(), Some("/cache/bob.png"));
+        assert_eq!(avatars[2].display_name, "carol");
         let dms = std::slice::from_ref(&summary);
         let no_presence = HashMap::new();
         let before = super::sidebar_avatar_inputs_signature(&[], dms, &[], &profiles, &no_presence);
