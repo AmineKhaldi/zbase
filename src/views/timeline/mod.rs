@@ -1,7 +1,7 @@
 pub(crate) mod layout_anchor;
 use crate::util::emoji_aliases::{normalize_emoji_alias, standard_emoji_for_alias};
 mod reply_context;
-use reply_context::cached_reply_context;
+use reply_context::{ReplyContext, cached_reply_context};
 use super::quick_react_placement::{BUTTON_SIZE, HoverGeometry, toolbar_size};
 use crate::{
     domain::{
@@ -12,28 +12,32 @@ use crate::{
     },
     models::timeline_model::{
         EventSpan, InlineEmojiRender, MessageReactionRender, MessageRow, QuickReactRecent,
-        SystemEventIcon, TeamAuthorRole, TimelineModel, TimelineRow,
+        SystemEventIcon, ThreadSummary, TimelineModel, TimelineRow,
     },
-    util::formatting::message_timestamp_label,
+    state::state::UploadProgress,
+    util::formatting::{
+        compact_date_label, message_full_timestamp, message_time_label, message_timestamp_label,
+    },
     views::{
         CUSTOM_EMOJI_EMOJI_ONLY_SIZE_PX, CUSTOM_EMOJI_INLINE_SIZE_PX,
-        CUSTOM_EMOJI_REACTION_SIZE_PX, accent, accent_soft, activity_icon, affinity_broken,
-        affinity_positive,
+        CUSTOM_EMOJI_REACTION_SIZE_PX, accent, accent_soft, activity_icon,
         app_window::{AppWindow, video_preview_cache_key},
         arrow_left_icon, arrow_right_icon, attachment_display_label, attachment_header_row,
         attachment_image_source, attachment_lightbox_source, attachment_local_path,
         avatar::{Avatar, default_avatar_background},
-        badge, clipboard_icon, copy_icon, crown_icon, danger, format_duration_ms,
-        glass_surface_dark, hash_icon,
+        border, clipboard_icon, copy_icon, danger, format_duration_ms, glass_surface_dark,
+        hash_icon, link,
         inline_markdown::{InlineMarkdownConfig, apply_inline_markdown, remap_source_byte_range},
-        mono_font_family, mono_font_size, panel_alt_bg, panel_bg, pin_icon,
+        mono_font_family, mono_font_size, new_messages, panel_alt_bg, panel_bg, pin_icon,
         play_icon, plus_icon,
         selectable_text::{
             InlineAttachment, LinkRange, SelectableText, StyledRange, resolve_selectable_text,
             resolve_selectable_text_inline, resolve_selectable_text_with_attachments,
         },
         shell_border, sliders_icon, subtle_surface, text_primary, text_secondary, thread_icon,
-        tint, trash_icon, warning, warning_soft,
+        tint, trash_icon,
+        truncated_line::{Segment, TruncatedLine},
+        warning, warning_soft,
     },
 };
 use gpui::prelude::FluentBuilder;
@@ -156,7 +160,7 @@ struct TimelineRowRenderCacheEntry {
 struct MessageRenderMemo {
     text_segments: Vec<Option<Vec<InlineTextSegment>>>,
     sorted_reactions: Vec<MessageReactionRender>,
-    reply_context: Option<String>,
+    reply_context: Option<ReplyContext>,
 }
 
 impl TimelineRowRenderCache {
@@ -246,23 +250,24 @@ impl MessageRenderMemo {
 }
 
 impl TimelineList {
+    /// `bottom_inset` keeps the last message clear of the typing indicator slot.
     pub fn render(
         &self,
         _timeline: &TimelineModel,
         list_state: &ListState,
+        bottom_inset: f32,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         div()
             .flex_1()
             .min_h(px(0.))
             .id("timeline-scroll")
-            .py_2()
             .flex()
             .flex_col()
             .gap_1()
             .overflow_hidden()
             .on_scroll_wheel(cx.listener(AppWindow::timeline_scrolled))
-            .pb_4()
+            .pb(px(bottom_inset))
             .child({
                 let owner = cx.weak_entity();
                 div()
@@ -314,6 +319,7 @@ impl TimelineList {
             false,
             None,
             None,
+            false,
             video_render_cache,
             code_highlight_cache,
             selectable_texts,
@@ -338,6 +344,7 @@ impl TimelineList {
             true,
             Some(thread_media_max_width),
             None,
+            false,
             video_render_cache,
             code_highlight_cache,
             selectable_texts,
@@ -351,6 +358,7 @@ impl TimelineList {
         row: &TimelineRow,
         row_render_cache: &mut TimelineRowRenderCache,
         find_query: Option<&str>,
+        compact: bool,
         video_render_cache: &HashMap<String, Arc<RenderImage>>,
         code_highlight_cache: &mut crate::views::code_highlight::CodeHighlightCache,
         selectable_texts: &mut HashMap<String, Entity<SelectableText>>,
@@ -367,6 +375,7 @@ impl TimelineList {
                 false,
                 None,
                 find_query,
+                compact,
                 video_render_cache,
                 code_highlight_cache,
                 selectable_texts,
@@ -383,6 +392,7 @@ impl TimelineList {
             false,
             None,
             find_query,
+            compact,
             video_render_cache,
             code_highlight_cache,
             selectable_texts,
@@ -398,28 +408,15 @@ impl TimelineList {
         is_thread: bool,
         thread_media_max_width: Option<f32>,
         find_query: Option<&str>,
+        compact: bool,
         video_render_cache: &HashMap<String, Arc<RenderImage>>,
         code_highlight_cache: &mut crate::views::code_highlight::CodeHighlightCache,
         selectable_texts: &mut HashMap<String, Entity<SelectableText>>,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         let row_element = match row {
-            TimelineRow::DateDivider(label) => div()
-                .px_4()
-                .py_2()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(badge(label.clone(), panel_alt_bg(), text_secondary()))
-                .into_any_element(),
-            TimelineRow::UnreadDivider(label) => div()
-                .px_4()
-                .py_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(badge(label.clone(), warning_soft(), warning()))
-                .into_any_element(),
+            TimelineRow::DateDivider(label) => day_divider(label, compact),
+            TimelineRow::UnreadDivider(label) => new_messages_divider(label, compact),
             TimelineRow::SystemEvent(row) => {
                 let row_identity = format!("{:p}", row);
                 let icon = match row.icon {
@@ -590,7 +587,12 @@ impl TimelineList {
         selectable_texts: &mut HashMap<String, Entity<SelectableText>>,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
-        let timestamp = message_timestamp_label(row.message.timestamp_ms);
+        // Day dividers carry the date in the main timeline; the thread pane has none.
+        let timestamp = if is_thread {
+            message_timestamp_label(row.message.timestamp_ms)
+        } else {
+            message_time_label(row.message.timestamp_ms)
+        };
         let author_user_id = row.author.id.clone();
         let is_hovered = timeline
             .hovered_message_id
@@ -608,17 +610,8 @@ impl TimelineList {
             .flatten();
         let is_main_thread_reply = !is_thread && row.message.reply_to.is_some();
         let show_header = row.show_header || is_main_thread_reply || is_thread;
-        let normalized_author_id = UserId::new(row.author.id.0.to_ascii_lowercase());
-        let author_role = timeline
-            .author_role_index
-            .get(&row.author.id)
-            .copied()
-            .or_else(|| {
-                timeline
-                    .author_role_index
-                    .get(&normalized_author_id)
-                    .copied()
-            });
+        let sending = row.message.send_state == MessageSendState::Pending
+            && !timeline.upload_progress.contains_key(&row.message.id);
         let mut content = div().flex_1().min_w(px(0.)).flex().flex_col().gap_0p5();
 
         if show_header {
@@ -628,12 +621,20 @@ impl TimelineList {
                 .is_some_and(|current_user_id| {
                     current_user_id.0.eq_ignore_ascii_case(&row.author.id.0)
                 });
+            let author_tooltip = match row.author.affinity {
+                Affinity::Positive if !is_you => format!(
+                    "@{} · You follow {}",
+                    row.author.id.0, row.author.display_name
+                ),
+                _ => format!("@{}", row.author.id.0),
+            };
             let mut header_children = vec![
                 div()
                     .id(SharedString::from(format!(
                         "timeline-author-name-{}",
                         row.message.id.0
                     )))
+                    .tooltip(crate::views::tooltip::TextTooltip::single_line(author_tooltip))
                     .on_click(cx.listener({
                         let author_user_id = author_user_id.clone();
                         move |this, _, _, cx| {
@@ -647,20 +648,50 @@ impl TimelineList {
                     .cursor(gpui::CursorStyle::PointingHand)
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(Self::author_name_color(row.author.affinity, is_you)))
+                    .text_color(rgb(text_primary()))
                     .child(row.author.display_name.clone())
                     .into_any_element(),
             ];
-            if let Some(role) = author_role {
-                header_children.push(author_role_crown_badge(role));
+            if !is_you
+                && let Some(marker) = crate::views::identity_marker(
+                    SharedString::from(format!("timeline-author-identity-{}", row.message.id.0)),
+                    row.author.affinity,
+                    &row.author.display_name,
+                    false,
+                )
+            {
+                header_children.push(marker);
             }
             header_children.push(
                 div()
+                    .id(SharedString::from(format!(
+                        "timeline-timestamp-{}-{}",
+                        row.message.id.0, is_thread
+                    )))
                     .text_xs()
                     .text_color(rgb(text_secondary()))
+                    .when_some(
+                        row.message.timestamp_ms.and_then(message_full_timestamp),
+                        |label, full| {
+                            let edited_at = row
+                                .message
+                                .edited
+                                .as_ref()
+                                .and_then(|edit| edit.edited_at_ms)
+                                .map(|edited_ms| message_time_label(Some(edited_ms)));
+                            let tooltip = match edited_at {
+                                Some(edited_at) => format!("{full} · Edited {edited_at}"),
+                                None => full,
+                            };
+                            label.tooltip(crate::views::tooltip::TextTooltip::single_line(tooltip))
+                        },
+                    )
                     .child(timestamp)
                     .into_any_element(),
             );
+            if sending {
+                header_children.push(pending_clock(&row.message.id.0));
+            }
             content = content.child(
                 div()
                     .flex()
@@ -677,49 +708,20 @@ impl TimelineList {
                 .clone()
                 .unwrap_or_else(|| reply_to_id.clone());
 
-            let reply_indicator = div()
-                .id(SharedString::from(format!(
-                    "reply-indicator-{}",
-                    row.message.id.0
-                )))
-                .flex()
-                .items_center()
-                .gap_1()
-                .child(
-                    div()
-                        .id(SharedString::from(format!(
-                            "reply-indicator-hit-{}",
-                            row.message.id.0
-                        )))
-                        .cursor(gpui::CursorStyle::PointingHand)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_thread(thread_target.clone(), window, cx);
-                        }))
-                        .on_mouse_move(cx.listener(|this, _, _, cx| {
-                            this.clear_hovered_message(cx);
-                            cx.stop_propagation();
-                        }))
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .min_w(px(0.))
-                        .child(thread_icon(text_secondary()))
-                        .child(
-                            div()
-                                .text_xs()
-                                .min_w(px(0.))
-                                .text_ellipsis()
-                                .text_color(rgb(text_secondary()))
-                                .child(
-                                    message_memo
-                                        .map(|memo| memo.reply_context.clone())
-                                        .unwrap_or_else(|| {
-                                            cached_reply_context(&row.message, timeline)
-                                        })
-                                        .unwrap_or_else(|| "Reply in thread".to_string()),
-                                ),
-                        ),
-                );
+            let reply_context = message_memo
+                .map(|memo| memo.reply_context.clone())
+                .unwrap_or_else(|| cached_reply_context(&row.message, timeline));
+            let reply_indicator = render_reply_quote(
+                &row.message.id.0,
+                reply_context,
+                cx.listener(move |this, _, window, cx| {
+                    this.open_thread(thread_target.clone(), window, cx);
+                }),
+                cx.listener(|this, _, _, cx| {
+                    this.clear_hovered_message(cx);
+                    cx.stop_propagation();
+                }),
+            );
 
             content = content.child(reply_indicator);
         }
@@ -753,6 +755,9 @@ impl TimelineList {
             &timeline.emoji_source_index,
             &timeline.reaction_index,
             show_thread_reply_badge,
+            timeline.thread_summaries.get(&row.message.id),
+            (timeline.clipped_thread_root_id.as_ref() == Some(&row.message.id))
+                .then_some(row.author.display_name.as_str()),
             is_thread,
             thread_media_max_width,
             is_last_message,
@@ -761,6 +766,7 @@ impl TimelineList {
             video_render_cache,
             message_memo,
             timeline.quick_react_recent.as_ref(),
+            timeline.upload_progress.get(&row.message.id).copied(),
             code_highlight_cache,
             selectable_texts,
             cx,
@@ -812,9 +818,12 @@ impl TimelineList {
                 .gap_3()
                 .items_start()
                 .pt_0p5()
-                .when(is_hovered && !is_highlighted, |d| {
-                    d.bg(tint(panel_alt_bg(), 0.25))
-                })
+                .when(
+                    is_hovered
+                        && !is_highlighted
+                        && timeline.open_thread_root_id.as_ref() != Some(&row.message.id),
+                    |d| d.bg(tint(panel_alt_bg(), 0.25)),
+                )
                 .child(
                     div()
                         .id(SharedString::from(format!(
@@ -886,24 +895,44 @@ impl TimelineList {
                 .flex()
                 .gap_3()
                 .items_start()
-                .when(is_hovered && !is_highlighted, |d| {
-                    d.bg(tint(panel_alt_bg(), 0.25))
-                })
-                .child(div().w(px(32.)).flex_shrink_0())
+                .when(
+                    is_hovered
+                        && !is_highlighted
+                        && timeline.open_thread_root_id.as_ref() != Some(&row.message.id),
+                    |d| d.bg(tint(panel_alt_bg(), 0.25)),
+                )
+                // A continuation has no time to sit beside, so its clock sits
+                // in the avatar column, level with the first line.
+                .child(
+                    div()
+                        .w(px(32.))
+                        .flex_shrink_0()
+                        .flex()
+                        .justify_end()
+                        .pt(px(5.))
+                        .when(sending, |gutter| gutter.child(pending_clock(&row.message.id.0))),
+                )
                 .child(content)
         };
-        row_wrapper.into_any_element()
-    }
-
-    fn author_name_color(affinity: Affinity, is_you: bool) -> u32 {
-        if is_you {
-            return text_primary();
-        }
-        match affinity {
-            Affinity::None => super::link(),
-            Affinity::Positive => affinity_positive(),
-            Affinity::Broken => affinity_broken(),
-        }
+        // The root of the thread open in the right pane stays marked, so the
+        // pane's context is visible in the channel too.
+        let open_thread_parent =
+            !is_thread && timeline.open_thread_root_id.as_ref() == Some(&row.message.id);
+        row_wrapper
+            .when(open_thread_parent, |row| {
+                row.relative()
+                    .bg(tint(accent(), if crate::views::is_dark_theme() { 0.14 } else { 0.08 }))
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .bottom_0()
+                            .w(px(2.))
+                            .bg(rgb(accent())),
+                    )
+            })
+            .into_any_element()
     }
 
     fn mention_colors_for_user(
@@ -924,6 +953,8 @@ impl TimelineList {
         emoji_source_index: &HashMap<String, InlineEmojiRender>,
         reaction_index: &HashMap<crate::domain::ids::MessageId, Vec<MessageReactionRender>>,
         show_thread_reply_badge: bool,
+        thread_summary: Option<&ThreadSummary>,
+        clipped_parent_author: Option<&str>,
         is_thread: bool,
         thread_media_max_width: Option<f32>,
         _is_last_message: bool,
@@ -932,6 +963,7 @@ impl TimelineList {
         video_render_cache: &HashMap<String, Arc<RenderImage>>,
         message_memo: Option<&MessageRenderMemo>,
         quick_react_recent: Option<&QuickReactRecent>,
+        upload_progress: Option<UploadProgress>,
         code_highlight_cache: &mut crate::views::code_highlight::CodeHighlightCache,
         selectable_texts: &mut HashMap<String, Entity<SelectableText>>,
         cx: &mut Context<AppWindow>,
@@ -944,6 +976,13 @@ impl TimelineList {
 
         let media_link_only_message = !image_attachment_message
             && crate::views::is_media_link_only_message(&message.fragments, &message.link_previews);
+        // "(edited)" follows the last line of text when the message ends in text;
+        // otherwise it gets a line of its own under the content.
+        let edited_inline = show_edited_badge
+            && !image_attachment_message
+            && !media_link_only_message
+            && message.fragments.last().is_some_and(is_inline_fragment)
+            && !message_is_emoji_only(&message.fragments, !message.attachments.is_empty());
 
         div()
             .id(SharedString::from(format!(
@@ -959,9 +998,13 @@ impl TimelineList {
             .when(highlighted, |container| {
                 container.rounded_md().bg(tint(accent_soft(), 0.55))
             })
-            .when(message.send_state == MessageSendState::Pending, |container| {
-                container.opacity(0.5)
-            })
+            // Pending text fades in place, still readable; a clock by the time
+            // says why. An uploading attachment shows its progress bar at full
+            // strength instead.
+            .when(
+                message.send_state == MessageSendState::Pending && upload_progress.is_none(),
+                |container| container.opacity(PENDING_MESSAGE_OPACITY),
+            )
             .pb_0p5()
             .relative()
             .child({
@@ -985,6 +1028,7 @@ impl TimelineList {
                         .min_w(px(0.))
                         .child(Self::render_message_fragments(
                             message,
+                            edited_inline,
                             find_query,
                             affinity_index,
                             current_user_id,
@@ -1032,8 +1076,20 @@ impl TimelineList {
                             .map(|(index, attachment)| {
                                 let attachment_label = attachment_display_label(attachment);
                                 let local_path = attachment_local_path(attachment);
+                                let has_inline_preview = matches!(
+                                    attachment.kind,
+                                    AttachmentKind::Image | AttachmentKind::Video
+                                ) && attachment_image_source(attachment).is_some();
                                 let header = {
-                                    let base = attachment_header_row(attachment);
+                                    let base = match upload_progress {
+                                        Some(progress) => crate::views::attachment_upload_row(
+                                            attachment, progress,
+                                        ),
+                                        None if has_inline_preview => {
+                                            attachment_header_row(attachment)
+                                        }
+                                        None => crate::views::attachment_file_row(attachment),
+                                    };
                                     if let Some(ref path) = local_path {
                                         let p = path.clone();
                                         let fname = attachment.name.clone();
@@ -1280,14 +1336,12 @@ impl TimelineList {
                     ),
                 )
             })
-            .when(show_edited_badge, |container| {
+            .when(show_edited_badge && !edited_inline, |container| {
                 container.child(
                     div()
-                        .pt_0p5()
                         .text_xs()
-                        .italic()
                         .text_color(rgb(text_secondary()))
-                        .child("(edited)"),
+                        .child(EDITED_LABEL.trim_start()),
                 )
             })
             .child({
@@ -1642,46 +1696,23 @@ impl TimelineList {
                 show_thread_reply_badge && message.thread_reply_count > 0,
                 |container| {
                     let thread_root_id = message.id.clone();
+                    // In a row so the hover target hugs its content.
                     container.child(
-                        div()
-                            .id(SharedString::from(format!(
-                                "timeline-thread-badge-{}",
-                                message.id.0
-                            )))
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "timeline-thread-badge-hit-{}",
-                                        message.id.0
-                                    )))
-                                    .cursor(gpui::CursorStyle::PointingHand)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_thread(thread_root_id.clone(), window, cx);
-                                    }))
-                                    .on_mouse_move(cx.listener(|this, _, _, cx| {
-                                        this.clear_hovered_message(cx);
-                                        cx.stop_propagation();
-                                    }))
-                                    .text_xs()
-                                    .text_color(rgb(accent()))
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .flex_shrink_0()
-                                    .child(thread_icon(accent()))
-                                    .child(format!(
-                                        "{} {} · View thread",
-                                        message.thread_reply_count,
-                                        if message.thread_reply_count == 1 {
-                                            "reply"
-                                        } else {
-                                            "replies"
-                                        }
-                                    )),
-                            ),
+                        div().flex().min_w(px(0.)).child(
+                            thread_summary_row(
+                                &message.id.0,
+                                message.thread_reply_count,
+                                thread_summary,
+                                clipped_parent_author,
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_thread(thread_root_id.clone(), window, cx);
+                            }))
+                            .on_mouse_move(cx.listener(|this, _, _, cx| {
+                                this.clear_hovered_message(cx);
+                                cx.stop_propagation();
+                            })),
+                        ),
                     )
                 },
             )
@@ -1717,6 +1748,7 @@ impl TimelineList {
 
     fn render_message_fragments(
         message: &crate::domain::message::MessageRecord,
+        edited_inline: bool,
         find_query: Option<&str>,
         affinity_index: &HashMap<UserId, Affinity>,
         current_user_id: Option<&UserId>,
@@ -1755,6 +1787,7 @@ impl TimelineList {
                 emoji_source_index,
                 emoji_only,
                 find_query,
+                edited_inline,
                 selectable_texts,
                 cx,
             );
@@ -1794,6 +1827,7 @@ impl TimelineList {
                     emoji_source_index,
                     emoji_only,
                     find_query,
+                    false,
                     selectable_texts,
                     cx,
                 ));
@@ -1834,6 +1868,7 @@ impl TimelineList {
                 emoji_source_index,
                 emoji_only,
                 find_query,
+                edited_inline,
                 selectable_texts,
                 cx,
             ));
@@ -2149,6 +2184,7 @@ impl TimelineList {
         emoji_source_index: &HashMap<String, InlineEmojiRender>,
         emoji_only: bool,
         find_query: Option<&str>,
+        edited_suffix: bool,
         selectable_texts: &mut HashMap<String, Entity<SelectableText>>,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
@@ -2288,7 +2324,7 @@ impl TimelineList {
         }
         Self::append_find_query_highlight_ranges(&combined, find_query, &mut styled_ranges);
 
-        let parsed = apply_inline_markdown(
+        let mut parsed = apply_inline_markdown(
             &combined,
             &link_ranges,
             &styled_ranges,
@@ -2297,6 +2333,9 @@ impl TimelineList {
                 spoiler_background: Some(panel_alt_bg()),
             },
         );
+        if edited_suffix {
+            append_edited_annotation(&mut parsed.text, &mut parsed.styled_ranges);
+        }
         let remapped_inline_attachments = inline_attachments
             .into_iter()
             .filter_map(|attachment| {
@@ -2971,25 +3010,41 @@ impl TimelineList {
             MessageSendState::Sent | MessageSendState::Pending => div().into_any_element(),
             MessageSendState::Failed => {
                 let retry_message_id = message_id.clone();
+                let delete_message_id = message_id.clone();
                 div()
+                    .pt(px(2.))
+                    // Clear of the next message.
+                    .pb(px(4.))
                     .flex()
                     .items_center()
-                    .gap_1()
+                    .gap(px(6.))
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .child(crate::views::icon_asset(
+                        "assets/icons/alert-triangle.svg",
+                        12.,
+                        danger(),
+                    ))
                     .child(
                         div()
-                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
                             .text_color(rgb(danger()))
-                            .child("Failed to send"),
+                            .child("Not sent"),
                     )
+                    .child(div().text_color(rgb(text_secondary())).child("·"))
                     .child(
                         div()
                             .id(SharedString::from(format!(
                                 "timeline-message-retry-{}",
                                 message_id.0
                             )))
-                            .text_xs()
-                            .text_color(rgb(accent()))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(link()))
                             .cursor(gpui::CursorStyle::PointingHand)
+                            .hover(|style| style.underline())
+                            .tooltip(crate::views::tooltip::TextTooltip::single_line(
+                                "Send this message again".to_string(),
+                            ))
                             .on_mouse_move(cx.listener(|this, _, _, cx| {
                                 this.clear_hovered_message(cx);
                                 cx.stop_propagation();
@@ -2997,7 +3052,30 @@ impl TimelineList {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.retry_failed_message_send(retry_message_id.clone(), cx);
                             }))
-                            .child("· Retry"),
+                            .child("Retry"),
+                    )
+                    .child(div().text_color(rgb(text_secondary())).child("·"))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "timeline-message-discard-{}",
+                                message_id.0
+                            )))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(text_secondary()))
+                            .cursor(gpui::CursorStyle::PointingHand)
+                            .hover(|style| style.underline().text_color(rgb(text_primary())))
+                            .tooltip(crate::views::tooltip::TextTooltip::single_line(
+                                "Remove this unsent message".to_string(),
+                            ))
+                            .on_mouse_move(cx.listener(|this, _, _, cx| {
+                                this.clear_hovered_message(cx);
+                                cx.stop_propagation();
+                            }))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.discard_failed_message(delete_message_id.clone(), cx);
+                            }))
+                            .child("Delete"),
                     )
                     .into_any_element()
             }
@@ -3024,6 +3102,7 @@ impl TimelineList {
                 italic: false,
                 monospace: false,
                 strikethrough: false,
+                meta: false,
             });
         }
         let selectable = if compact_inline {
@@ -3086,6 +3165,7 @@ impl TimelineList {
                 italic: false,
                 monospace: false,
                 strikethrough: false,
+                meta: false,
             });
         }
         let selectable = if compact_inline {
@@ -3145,6 +3225,7 @@ impl TimelineList {
                     italic: false,
                     monospace: false,
                     strikethrough: false,
+                    meta: false,
                 });
             }
             search_from = end;
@@ -3173,6 +3254,7 @@ impl TimelineList {
                 italic: false,
                 monospace: false,
                 strikethrough: false,
+                meta: false,
             });
         }
     }
@@ -3317,6 +3399,269 @@ fn inline_text_segments(text: &str) -> Vec<InlineTextSegment> {
     segments
 }
 
+const EDITED_LABEL: &str = " (edited)";
+
+fn is_inline_fragment(fragment: &MessageFragment) -> bool {
+    matches!(
+        fragment,
+        MessageFragment::Text(_)
+            | MessageFragment::InlineCode(_)
+            | MessageFragment::Emoji { .. }
+            | MessageFragment::Mention(_)
+            | MessageFragment::ChannelMention { .. }
+            | MessageFragment::BroadcastMention(_)
+            | MessageFragment::Link { .. }
+    )
+}
+
+/// Appends the small secondary "(edited)" annotation after a message's last run.
+/// It is drawn at the inline-code size and left out of copied text.
+fn append_edited_annotation(text: &mut String, styled_ranges: &mut Vec<StyledRange>) {
+    let start = text.len();
+    text.push_str(EDITED_LABEL);
+    styled_ranges.push(StyledRange {
+        byte_range: start..text.len(),
+        color: Some(text_secondary()),
+        background_color: None,
+        bold: false,
+        italic: false,
+        monospace: false,
+        strikethrough: false,
+        meta: true,
+    });
+}
+
+/// Quote bar above a reply: who it answers and one line of what they said.
+/// Clicking opens the thread; the tooltip shows the excerpt in full.
+fn render_reply_quote(
+    message_key: &str,
+    context: Option<ReplyContext>,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    on_mouse_move: impl Fn(&gpui::MouseMoveEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let tooltip = context
+        .as_ref()
+        .filter(|context| !context.excerpt.is_empty())
+        .map(|context| format!("{}: {}", context.author, context.excerpt));
+    let group = SharedString::from(format!("reply-quote-{message_key}"));
+    div()
+        .id(SharedString::from(format!("reply-indicator-{message_key}")))
+        .group(group.clone())
+        .w_full()
+        .min_w(px(0.))
+        .mt(px(2.))
+        .mb(px(2.))
+        .pl(px(8.))
+        .line_height(px(18.))
+        .border_l_2()
+        .border_color(tint(text_secondary(), 0.55))
+        .group_hover(group, |style| style.border_color(rgb(accent())))
+        .cursor(gpui::CursorStyle::PointingHand)
+        .on_click(on_click)
+        .on_mouse_move(on_mouse_move)
+        .when_some(tooltip, |quote, tooltip| {
+            quote.tooltip(crate::views::tooltip::TextTooltip::builder(tooltip))
+        })
+        .text_xs()
+        .text_color(rgb(text_secondary()))
+        .child(TruncatedLine::new(match context {
+            Some(ReplyContext { author, excerpt }) => vec![
+                Segment {
+                    text: author,
+                    color: rgb(text_primary()).into(),
+                    weight: FontWeight::SEMIBOLD,
+                },
+                Segment {
+                    text: if excerpt.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\u{2002}{excerpt}")
+                    },
+                    color: rgb(text_secondary()).into(),
+                    weight: FontWeight::NORMAL,
+                },
+            ],
+            None => vec![Segment {
+                text: "Reply in thread".to_string(),
+                color: rgb(text_secondary()).into(),
+                weight: FontWeight::NORMAL,
+            }],
+        }))
+        .into_any_element()
+}
+
+fn hairline(color: u32) -> gpui::Div {
+    div().flex_1().min_w(px(16.)).h(px(1.)).bg(rgb(color))
+}
+
+/// Centered day label on a hairline ("Yesterday", "Tuesday, Nov 4").
+fn day_divider(label: &str, compact: bool) -> AnyElement {
+    div()
+        .w_full()
+        .px_4()
+        .pt(px(if compact { 8. } else { 16. }))
+        .pb(px(if compact { 4. } else { 8. }))
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(hairline(border()))
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(text_secondary()))
+                .child(label.to_string()),
+        )
+        .child(hairline(border()))
+        .into_any_element()
+}
+
+/// Full-width rule where unread messages begin, labelled at the trailing edge so
+/// it never reads as another day divider.
+fn new_messages_divider(label: &str, compact: bool) -> AnyElement {
+    div()
+        .w_full()
+        .px_4()
+        .py(px(if compact { 4. } else { 8. }))
+        .flex()
+        .items_center()
+        .gap_2()
+        // The label carries the signal; the rule only marks the boundary.
+        .child(hairline(new_messages()).bg(tint(new_messages(), 0.4)))
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(new_messages()))
+                .child(label.to_string()),
+        )
+        .into_any_element()
+}
+
+/// "2 replies", or "2 replies to Alice Johnson" while the parent's author line
+/// is scrolled out of view above the summary.
+fn thread_summary_label(reply_count: u32, clipped_parent_author: Option<&str>) -> String {
+    let noun = if reply_count == 1 { "reply" } else { "replies" };
+    match clipped_parent_author.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(author) => format!("{reply_count} {noun} to {author}"),
+        None => format!("{reply_count} {noun}"),
+    }
+}
+
+/// Opacity of a message body while it is being sent: faded, still readable.
+const PENDING_MESSAGE_OPACITY: f32 = 0.7;
+
+/// 12px clock by a message still being sent; hover says so.
+fn pending_clock(message_id: &str) -> AnyElement {
+    div()
+        .id(SharedString::from(format!("timeline-sending-{message_id}")))
+        .flex_shrink_0()
+        .size(px(14.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .tooltip(crate::views::tooltip::TextTooltip::single_line("Sending…".to_string()))
+        .child(crate::views::icon_asset("assets/icons/clock.svg", 12., text_secondary()))
+        .into_any_element()
+}
+
+/// Summary under a thread root in the channel: the repliers' faces, "2 replies"
+/// and when the last one arrived. The whole row is one 24px target.
+fn thread_summary_row(
+    message_id: &str,
+    reply_count: u32,
+    summary: Option<&ThreadSummary>,
+    clipped_parent_author: Option<&str>,
+) -> gpui::Stateful<gpui::Div> {
+    let group = SharedString::from(format!("timeline-thread-summary-{message_id}"));
+    let repliers = summary.map_or(&[][..], |summary| summary.repliers.as_slice());
+    let last_reply = summary
+        .and_then(|summary| summary.last_reply_ms)
+        .map(|timestamp_ms| format!("Last reply {}", compact_date_label(Some(timestamp_ms))));
+    div()
+        .id(group.clone())
+        .group(group.clone())
+        .h(px(24.))
+        // Outset so the faces line up with the message text above.
+        .ml(px(-4.))
+        .pl(px(4.))
+        .pr(px(8.))
+        .max_w_full()
+        .rounded(px(6.))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .cursor(gpui::CursorStyle::PointingHand)
+        .hover(|style| style.bg(tint(text_primary(), 0.06)))
+        .when(repliers.is_empty(), |row| row.child(thread_icon(link())))
+        .when(!repliers.is_empty(), |row| {
+            row.child(div().flex().items_center().gap(px(2.)).children(
+                repliers.iter().map(|replier| {
+                    Avatar::render(
+                        &replier.display_name,
+                        replier.avatar_asset.as_deref(),
+                        16.,
+                        default_avatar_background(&replier.display_name),
+                        text_primary(),
+                    )
+                }),
+            ))
+        })
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(link()))
+                .child(thread_summary_label(reply_count, clipped_parent_author)),
+        )
+        .when_some(last_reply, |row, last_reply| {
+            row.child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(12.))
+                    .text_color(rgb(text_secondary()))
+                    .child(last_reply),
+            )
+        })
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(12.))
+                .text_color(gpui::transparent_black())
+                .group_hover(group, |style| style.text_color(rgb(text_secondary())))
+                .child("View thread"),
+        )
+}
+
+/// Rule under a thread's root message: "2 replies" leading a hairline that runs
+/// to the pane's right inset.
+pub(crate) fn thread_replies_divider(reply_count: usize) -> AnyElement {
+    div()
+        // The pane's 16px inset on both sides, like its rows and the composer.
+        .px_4()
+        .pt_3()
+        .pb_2()
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(text_secondary()))
+                .child(format!(
+                    "{reply_count} {}",
+                    if reply_count == 1 { "reply" } else { "replies" }
+                )),
+        )
+        .child(hairline(border()))
+        .into_any_element()
+}
+
 fn reaction_hover_text(reaction: &MessageReactionRender) -> Option<String> {
     if reaction.actors.is_empty() {
         return None;
@@ -3344,17 +3689,6 @@ fn reaction_hover_text(reaction: &MessageReactionRender) -> Option<String> {
         return Some(format!("{} (+{} more)", labels.join(", "), remaining));
     }
     Some(labels.join(", "))
-}
-
-fn author_role_crown_badge(_role: TeamAuthorRole) -> AnyElement {
-    div()
-        .relative()
-        .top(px(-1.))
-        .flex()
-        .items_center()
-        .text_color(rgb(warning()))
-        .child(crown_icon(warning()))
-        .into_any_element()
 }
 
 fn is_emoji_only(text: &str) -> bool {
@@ -3438,6 +3772,14 @@ fn has_prefix(chars: &[char], start: usize, prefix: &[char]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thread_summary_names_the_parent_only_when_it_is_out_of_view() {
+        assert_eq!(thread_summary_label(2, None), "2 replies");
+        assert_eq!(thread_summary_label(1, None), "1 reply");
+        assert_eq!(thread_summary_label(2, Some("Alice Johnson")), "2 replies to Alice Johnson");
+        assert_eq!(thread_summary_label(2, Some("  ")), "2 replies");
+    }
 
     #[test]
     fn keybase_alert_emoji_renders_without_custom_assets_and_preserves_custom_precedence() {

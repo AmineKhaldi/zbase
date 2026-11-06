@@ -31,7 +31,6 @@ use crate::{
         recent_sidebar::build_recent_rows,
         settings_model::SidebarMode,
         sidebar_model::{SidebarAvatar, SidebarModel, team_avatar_key},
-        timeline_model::TeamAuthorRole,
     },
     services::{
         backends::router::BackendRouter, local_store::LocalStore, settings_store::SettingsStore,
@@ -52,20 +51,18 @@ use crate::{
     },
     views::{
         MAIN_PANEL_MIN_WIDTH_PX, RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX, SHELL_GAP_PX,
-        SHELL_HORIZONTAL_PADDING_PX, app_backdrop, badge, border,
+        SHELL_HORIZONTAL_PADDING_PX, badge, border,
         calls::MiniCallDock,
         composer::render_autocomplete_popup,
-        glass_surface_dark,
         input::TextField,
-        is_dark_theme,
         main_panel::MainPanelHost,
         overlays::OverlayHost,
         panel_alt_bg, panel_bg, panel_surface,
         right_pane::{RightPaneHost, RightPaneResizeDrag},
         selectable_text::SelectableText,
-        shell_border_strong,
-        sidebar::{Sidebar, SidebarHost},
-        sidebar_bg, subtle_surface, text_primary, text_secondary, tint, with_theme,
+        shell_border, shell_border_strong,
+        sidebar::{Sidebar, SidebarChrome, SidebarHost, SidebarMenu},
+        subtle_surface, text_primary, text_secondary, tint, with_theme, with_window_active,
     },
 };
 use gpui::prelude::FluentBuilder;
@@ -229,6 +226,11 @@ struct ClosingPane {
 pub struct AppWindow {
     models: AppModels,
     pane_window_sizing: PaneWindowSizing,
+    /// The sidebar's width changed (Previews are wider); on the next frame the
+    /// window grows to keep the conversation's width, or the sidebar narrows.
+    sidebar_fit_pending: bool,
+    /// The sidebar order the View menu's check mark shows.
+    view_menu_mode: Option<SidebarMode>,
     closing_pane: Option<ClosingPane>,
     window_preferences: Option<WindowPreferences>,
     observed_window_bounds: Option<WindowPreferences>,
@@ -244,7 +246,11 @@ pub struct AppWindow {
     search_input: Entity<TextField>,
     composer_input: Entity<TextField>,
     thread_input: Entity<TextField>,
+    /// Whether the composer and thread reply fields hold text; drives the send buttons.
+    composer_has_text: bool,
+    thread_has_text: bool,
     sidebar_filter_input: Entity<TextField>,
+    members_filter_input: Entity<TextField>,
     selectable_texts: HashMap<String, Entity<SelectableText>>,
     subscriptions: Vec<Subscription>,
     thread_resize_drag: Option<ThreadResizeDrag>,
@@ -271,6 +277,13 @@ pub struct AppWindow {
     last_thread_reply_count: usize,
     pending_thread_scroll_to_bottom: bool,
     sidebar_conversation_avatars: HashMap<String, SidebarAvatar>,
+    /// Second lines of the Previews sidebar style, by conversation id.
+    sidebar_previews: HashMap<String, crate::models::sidebar_preview::SidebarPreview>,
+    /// Who is typing in each conversation, from Keybase's typing notifications.
+    sidebar_typing: HashMap<ConversationId, Vec<UserId>>,
+    /// Conversations whose newest message is yours and failed to send, with
+    /// that message's time; a newer message elsewhere supersedes it.
+    sidebar_failed_sends: HashMap<ConversationId, i64>,
     sidebar_view: Option<Entity<CachedSidebarView>>,
     keybase_inspector: KeybaseInspectorState,
     perf_harness: PerfHarness,
@@ -297,6 +310,7 @@ pub struct AppWindow {
     og_result_receiver: Receiver<OgFetchResult>,
     last_mark_read_attempt: HashMap<String, (String, Instant)>,
     window_is_focused: bool,
+    settings_window: Option<gpui::WindowHandle<crate::views::settings_window::SettingsWindow>>,
     hover_settle_seq: u64,
     hover_clear_seq: u64,
     hover_clear_pending: bool,
@@ -314,6 +328,8 @@ pub struct AppWindow {
     dismissed_composer_autocomplete: Option<AutocompleteDismissSignature>,
     dismissed_thread_autocomplete: Option<AutocompleteDismissSignature>,
     last_autocomplete_nav: Option<(InputAutocompleteTarget, isize, Instant)>,
+    /// The composer whose format menu is open, if any.
+    composer_format_menu: Option<crate::views::composer::ComposerTarget>,
     resolved_theme: crate::app::theme::ThemeVariant,
     splash_open: bool,
     splash_shown_at: Instant,
@@ -359,6 +375,8 @@ struct ShellLayout {
 #[derive(Default)]
 struct SyncCache {
     projected_conversation_id: Option<ConversationId>,
+    /// Signed-in user the sidebar previews were built for ("You").
+    preview_user: Option<UserId>,
     workspace_sig: Option<u64>,
     sidebar_sections_sig: Option<u64>,
     sidebar_avatar_sig: Option<u64>,
@@ -366,7 +384,6 @@ struct SyncCache {
     timeline_link_previews_sig: Option<u64>,
     timeline_emoji_sig: Option<u64>,
     timeline_reactions_sig: Option<u64>,
-    timeline_author_roles_sig: Option<u64>,
     deferred_model_sync: bool,
 }
 
@@ -379,6 +396,9 @@ struct SidebarViewState {
     conversation_avatars: HashMap<String, SidebarAvatar>,
     current_route: Route,
     theme: crate::app::theme::ThemeVariant,
+    window_active: bool,
+    can_go_back: bool,
+    can_go_forward: bool,
 }
 
 struct CachedSidebarView {
@@ -387,6 +407,11 @@ struct CachedSidebarView {
     hovered_row: Option<String>,
     scroll_handle: ScrollHandle,
     recent_scroll: UniformListScrollHandle,
+    /// The pop-up menu showing, if any.
+    menu: Option<SidebarMenu>,
+    /// A press outside that just closed a menu; the same press must not
+    /// reopen it when it lands on the menu's own button.
+    menu_dismissed: Option<(SidebarMenu, Instant)>,
 }
 
 #[derive(Clone)]
@@ -483,6 +508,15 @@ impl CachedSidebarView {
             hovered_row: None,
             scroll_handle: ScrollHandle::new(),
             recent_scroll,
+            menu: None,
+            menu_dismissed: None,
+        }
+    }
+
+    fn open_menu(&mut self, menu: Option<SidebarMenu>, cx: &mut Context<Self>) {
+        if self.menu != menu {
+            self.menu = menu;
+            cx.notify();
         }
     }
 
@@ -497,19 +531,28 @@ impl CachedSidebarView {
 
 impl Render for CachedSidebarView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let chrome = SidebarChrome {
+            can_go_back: self.state.can_go_back,
+            can_go_forward: self.state.can_go_forward,
+            search_open: matches!(self.state.current_route, Route::Search { .. }),
+            menu: self.menu,
+        };
         with_theme(self.state.theme, || {
-            Sidebar.render(
-                &self.state.sidebar,
-                &self.state.connectivity,
-                &self.state.current_user_display_name,
-                self.state.current_user_avatar_asset.as_deref(),
-                &self.state.conversation_avatars,
-                &self.state.current_route,
-                self.hovered_row.as_deref(),
-                &self.scroll_handle,
-                &self.recent_scroll,
-                cx,
-            )
+            with_window_active(self.state.window_active, || {
+                Sidebar.render(
+                    &self.state.sidebar,
+                    &self.state.connectivity,
+                    &self.state.current_user_display_name,
+                    self.state.current_user_avatar_asset.as_deref(),
+                    &self.state.conversation_avatars,
+                    &self.state.current_route,
+                    self.hovered_row.as_deref(),
+                    &self.scroll_handle,
+                    &self.recent_scroll,
+                    chrome,
+                    cx,
+                )
+            })
         })
     }
 }
@@ -545,6 +588,39 @@ impl SidebarHost for CachedSidebarView {
                 app_window.navigate_to(Route::Preferences, window, cx);
             });
         });
+    }
+
+    fn sidebar_open_own_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let owner = self.owner.clone();
+        window.defer(cx, move |window, cx| {
+            let _ = owner.update(cx, |app_window, cx| {
+                app_window.open_own_profile(window, cx);
+            });
+        });
+    }
+
+    fn sidebar_toggle_menu(
+        &mut self,
+        menu: SidebarMenu,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let just_dismissed = self
+            .menu_dismissed
+            .take()
+            .is_some_and(|(dismissed, at)| dismissed == menu && at.elapsed() < Duration::from_millis(500));
+        if just_dismissed {
+            return;
+        }
+        let next = (self.menu != Some(menu)).then_some(menu);
+        self.open_menu(next, cx);
+    }
+
+    fn sidebar_close_menu(&mut self, dismissed: bool, cx: &mut Context<Self>) {
+        if dismissed && let Some(menu) = self.menu {
+            self.menu_dismissed = Some((menu, Instant::now()));
+        }
+        self.open_menu(None, cx);
     }
 
     fn sidebar_show_hover_tooltip(
@@ -603,6 +679,24 @@ impl SidebarHost for CachedSidebarView {
         });
     }
 
+    fn sidebar_navigate_history(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = self.owner.clone();
+        window.defer(cx, move |window, cx| {
+            let _ = owner.update(cx, |app_window, cx| {
+                if forward {
+                    app_window.navigate_forward(window, cx);
+                } else {
+                    app_window.navigate_back(window, cx);
+                }
+            });
+        });
+    }
+
     fn sidebar_set_hovered_row(&mut self, label: Option<String>, cx: &mut Context<Self>) {
         if self.hovered_row != label {
             self.hovered_row = label;
@@ -631,6 +725,15 @@ impl SidebarHost for AppWindow {
     fn sidebar_open_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.navigate_to(Route::Preferences, window, cx);
     }
+
+    fn sidebar_open_own_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_own_profile(window, cx);
+    }
+
+    // The menus live in the cached sidebar view; this uncached fallback has none.
+    fn sidebar_toggle_menu(&mut self, _: SidebarMenu, _: &mut Window, _: &mut Context<Self>) {}
+
+    fn sidebar_close_menu(&mut self, _dismissed: bool, _cx: &mut Context<Self>) {}
 
     fn sidebar_show_hover_tooltip(
         &mut self,
@@ -663,6 +766,19 @@ impl SidebarHost for AppWindow {
         self.navigate_to(route, window, cx);
     }
 
+    fn sidebar_navigate_history(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if forward {
+            self.navigate_forward(window, cx);
+        } else {
+            self.navigate_back(window, cx);
+        }
+    }
+
     fn sidebar_set_hovered_row(&mut self, _label: Option<String>, _cx: &mut Context<Self>) {}
 
     fn sidebar_hovered_row(&self) -> Option<&str> {
@@ -686,6 +802,7 @@ impl AppWindow {
         composer_input: Entity<TextField>,
         thread_input: Entity<TextField>,
         sidebar_filter_input: Entity<TextField>,
+        members_filter_input: Entity<TextField>,
     ) -> Self {
         let last_timeline_message_count = timeline_message_count(&models);
         let last_timeline_latest_message_id = latest_timeline_message_id(&models.timeline.rows);
@@ -711,6 +828,8 @@ impl AppWindow {
         Self {
             models,
             pane_window_sizing: PaneWindowSizing::default(),
+            sidebar_fit_pending: true,
+            view_menu_mode: None,
             closing_pane: None,
             window_preferences: None,
             observed_window_bounds: None,
@@ -726,7 +845,10 @@ impl AppWindow {
             search_input,
             composer_input,
             thread_input,
+            composer_has_text: false,
+            thread_has_text: false,
             sidebar_filter_input,
+            members_filter_input,
             selectable_texts: HashMap::new(),
             subscriptions: Vec::new(),
             thread_resize_drag: None,
@@ -755,6 +877,9 @@ impl AppWindow {
             last_thread_reply_count,
             pending_thread_scroll_to_bottom: false,
             sidebar_conversation_avatars: HashMap::new(),
+            sidebar_previews: HashMap::new(),
+            sidebar_typing: HashMap::new(),
+            sidebar_failed_sends: HashMap::new(),
             sidebar_view: None,
             keybase_inspector: KeybaseInspectorState::default(),
             perf_harness: PerfHarness::from_env(),
@@ -781,6 +906,7 @@ impl AppWindow {
             og_result_receiver,
             last_mark_read_attempt: HashMap::new(),
             window_is_focused: false,
+            settings_window: None,
             hover_settle_seq: 0,
             hover_clear_seq: 0,
             hover_clear_pending: false,
@@ -798,6 +924,7 @@ impl AppWindow {
             dismissed_composer_autocomplete: None,
             dismissed_thread_autocomplete: None,
             last_autocomplete_nav: None,
+            composer_format_menu: None,
             resolved_theme: crate::app::theme::ThemeVariant::Light,
             splash_open: true,
             splash_shown_at: Instant::now(),
@@ -838,12 +965,28 @@ impl AppWindow {
             }),
             cx.observe_window_activation(window, |this, window, cx| {
                 this.window_is_focused = window.is_window_active();
-                if this.window_is_focused && this.request_mark_conversation_read_if_needed() {
-                    this.refresh(cx);
+                if this.window_is_focused {
+                    this.request_mark_conversation_read_if_needed();
                 }
+                // Selection and focus rings change with key status.
+                this.refresh(cx);
             }),
             cx.observe_window_appearance(window, |this, _, cx| {
                 this.refresh(cx);
+            }),
+            cx.observe(&self.composer_input, |this, input, cx| {
+                let has_text = !input.read(cx).is_blank();
+                if this.composer_has_text != has_text {
+                    this.composer_has_text = has_text;
+                    cx.notify();
+                }
+            }),
+            cx.observe(&self.thread_input, |this, input, cx| {
+                let has_text = !input.read(cx).is_blank();
+                if this.thread_has_text != has_text {
+                    this.thread_has_text = has_text;
+                    cx.notify();
+                }
             }),
             cx.observe(&self.quick_switcher_input, |this, input, cx| {
                 let observer_started_at = Instant::now();
@@ -1093,6 +1236,7 @@ impl AppWindow {
                 this.models.sync_live_search_query(query.clone());
                 this.dispatch_ui_action(UiAction::SetSearchQuery(query));
             }),
+            cx.observe(&self.members_filter_input, |_, _, cx| cx.notify()),
             cx.observe(&self.sidebar_filter_input, |this, input, cx| {
                 let filter = input.read(cx).text();
                 this.models.set_sidebar_filter(filter.clone());
@@ -1132,6 +1276,19 @@ impl AppWindow {
                 .collect();
             self.app_store = AppStore::new(state);
             self.splash_open = false;
+        }
+        #[cfg(any(test, feature = "demo-fixtures"))]
+        if self.bench_skip_backend
+            && env_flag("ZBASE_BENCH_USE_DEMO")
+            && self.bench_script.is_none()
+            && env_usize(ENV_BENCH_TIMELINE_MESSAGES)
+                .filter(|count| *count > 0)
+                .is_none()
+        {
+            let scene = crate::app::demo::DemoScene::from_env();
+            cx.defer_in(window, move |this, window, cx| {
+                this.apply_demo_scene(scene, window, cx);
+            });
         }
         if let Some(script) = self.bench_script {
             tracing::warn!(
@@ -2579,6 +2736,157 @@ impl AppWindow {
         self.bench_profile_initialized = true;
     }
 
+    /// Opens the demo build into one UI state through the same handlers a user
+    /// would trigger, for repeatable screenshots (`ZBASE_DEMO_SCENE`).
+    #[cfg(any(test, feature = "demo-fixtures"))]
+    fn apply_demo_scene(
+        &mut self,
+        scene: crate::app::demo::DemoScene,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::{app::demo::DemoScene, models::demo};
+        tracing::warn!("demo.scene={}", scene.slug());
+        let conversation = if scene == DemoScene::Dm {
+            demo::DEMO_DM_ID
+        } else {
+            demo::DEMO_GENERAL_ID
+        };
+        self.navigate_to(
+            demo::demo_route_for_conversation(&ConversationId::new(conversation)),
+            window,
+            cx,
+        );
+        // Shots show a key window unless the scene is about the inactive look.
+        if scene != DemoScene::Inactive {
+            cx.activate(true);
+            window.activate_window();
+        }
+        match scene {
+            DemoScene::Chat | DemoScene::ChatPreviews | DemoScene::Dm => {}
+            DemoScene::ChatPreviewsLive => {
+                self.apply_typing_indicator_update(
+                    &ConversationId::new(demo::DEMO_DM_ID),
+                    &[UserId::new(demo::DEMO_PROFILE_USER)],
+                );
+                self.models.seed_composer_draft(
+                    ConversationId::new(demo::DEMO_DESIGN_ID),
+                    "Can we try the banner **without** the gradient?",
+                );
+                self.sidebar_failed_sends
+                    .insert(ConversationId::new(demo::DEMO_RELEASES_ID), i64::MAX);
+                self.refresh(cx);
+            }
+            DemoScene::IdentityMenu | DemoScene::OrderMenu => {
+                let menu = if scene == DemoScene::IdentityMenu {
+                    SidebarMenu::Identity
+                } else {
+                    SidebarMenu::Order
+                };
+                self.refresh(cx);
+                if let Some(sidebar) = self.sidebar_view.as_ref() {
+                    sidebar.update(cx, |sidebar, cx| sidebar.open_menu(Some(menu), cx));
+                }
+            }
+            DemoScene::ChatGrouped | DemoScene::ChatPreviewsGrouped => {
+                self.set_sidebar_mode(crate::models::settings_model::SidebarMode::Grouped, cx);
+            }
+            DemoScene::ChatStates => {
+                let mut events = demo::demo_send_state_messages()
+                    .into_iter()
+                    .map(BackendEvent::MessageUpserted)
+                    .collect::<Vec<_>>();
+                events.push(BackendEvent::AttachmentUploadProgress {
+                    client_message_id: crate::state::ids::ClientMessageId::new(
+                        demo::DEMO_UPLOAD_CLIENT_ID,
+                    ),
+                    sent_bytes: demo::DEMO_UPLOAD_SENT_BYTES,
+                    total_bytes: demo::DEMO_UPLOAD_BYTES,
+                });
+                self.apply_backend_events_inline(events);
+                self.scroll_timeline_list_to_bottom();
+                self.refresh(cx);
+            }
+            DemoScene::Offline => {
+                self.apply_backend_events_inline(vec![BackendEvent::AccountDisconnected {
+                    account_id: crate::domain::backend::AccountId::new("account_demo_keybase"),
+                    reason: "Keybase service stopped".to_string(),
+                }]);
+                self.refresh(cx);
+            }
+            DemoScene::Inactive => {
+                self.toggle_members_pane_action(&commands::ToggleMembersPane, window, cx);
+                window.focus(&self.composer_input.focus_handle(cx));
+            }
+            DemoScene::MembersFilterEmpty => {
+                self.toggle_members_pane_action(&commands::ToggleMembersPane, window, cx);
+                self.members_filter_input
+                    .update(cx, |input, cx| input.set_text(demo::DEMO_MEMBERS_EMPTY_FILTER, cx));
+                window.focus(&self.members_filter_input.focus_handle(cx));
+            }
+            DemoScene::Thread => {
+                self.open_thread(MessageId::new(demo::DEMO_THREAD_ROOT_ID), window, cx);
+            }
+            DemoScene::ComposerFormat => {
+                let draft = demo::DEMO_FORMAT_DRAFT;
+                let selected = draft.find(demo::DEMO_FORMAT_SELECTION).unwrap_or(0);
+                self.composer_input.update(cx, |input, cx| {
+                    input.replace_all_and_select(
+                        draft.to_string(),
+                        selected..selected + demo::DEMO_FORMAT_SELECTION.len(),
+                        cx,
+                    );
+                });
+                window.focus(&self.composer_input.focus_handle(cx));
+                self.composer_format_menu =
+                    Some(crate::views::composer::ComposerTarget::Conversation);
+                self.refresh(cx);
+            }
+            DemoScene::ThreadEmpty => {
+                self.open_thread(MessageId::new(demo::DEMO_UNTHREADED_MESSAGE_ID), window, cx);
+            }
+            DemoScene::Profile => {
+                self.open_user_profile_panel(UserId::new(demo::DEMO_PROFILE_USER), window, cx);
+            }
+            DemoScene::Members => {
+                self.toggle_members_pane_action(&commands::ToggleMembersPane, window, cx);
+            }
+            DemoScene::NewChat => {
+                self.open_new_chat(window, cx);
+                self.new_chat_add_participant(
+                    demo::demo_user_summary(&UserId::new(demo::DEMO_NEW_CHAT_PICK)),
+                    cx,
+                );
+                self.new_chat_input
+                    .update(cx, |input, cx| input.set_text(demo::DEMO_NEW_CHAT_QUERY, cx));
+            }
+            DemoScene::Preferences => {
+                self.open_preferences_action(&commands::OpenPreferences, window, cx);
+            }
+            DemoScene::QuickSwitcher => {
+                self.toggle_quick_switcher_action(&commands::ToggleQuickSwitcher, window, cx);
+            }
+            DemoScene::QuickSwitcherSearch => {
+                self.toggle_quick_switcher_action(&commands::ToggleQuickSwitcher, window, cx);
+                self.quick_switcher_input
+                    .update(cx, |input, cx| input.set_text(demo::DEMO_SEARCH_QUERY, cx));
+            }
+            DemoScene::Search | DemoScene::SearchEmpty => {
+                let query = if scene == DemoScene::Search {
+                    demo::DEMO_SEARCH_QUERY
+                } else {
+                    demo::DEMO_SEARCH_EMPTY_QUERY
+                };
+                // Type the query, then press Enter once the input observer has run.
+                self.search_input
+                    .update(cx, |input, cx| input.set_text(query, cx));
+                cx.defer_in(window, |this, window, cx| {
+                    this.submit_search_input(window, cx);
+                });
+            }
+        }
+    }
+
     #[cfg(any(test, feature = "demo-fixtures"))]
     fn inflate_bench_timeline_messages(&mut self, message_count: usize) {
         if message_count <= timeline_message_count(&self.models) {
@@ -2678,6 +2986,8 @@ impl AppWindow {
         }
 
         self.models.timeline.rows = rows;
+        self.models.timeline.thread_summaries =
+            crate::models::timeline_model::thread_summaries(&self.models.timeline.rows);
         self.models.timeline.highlighted_message_id = newest_message_id;
         self.models.timeline.unread_marker = None;
         self.timeline_row_render_cache.invalidate();
@@ -2706,6 +3016,9 @@ impl AppWindow {
             conversation_avatars: self.sidebar_conversation_avatars.clone(),
             current_route: self.models.navigation.current.clone(),
             theme: self.resolved_theme,
+            window_active: self.window_is_focused,
+            can_go_back: !self.models.navigation.back_stack.is_empty(),
+            can_go_forward: !self.models.navigation.forward_stack.is_empty(),
         }
     }
 
@@ -2732,10 +3045,20 @@ impl AppWindow {
         for error in self.app_store.take_toasts() {
             self.models.push_toast(error, None);
         }
+        self.sync_sidebar_live_previews();
+        self.sync_view_menu();
         self.sync_sidebar_view_state(cx);
+        self.sync_composer_placeholder(cx);
         self.sync_timeline_list_state_len(self.models.timeline.rows.len());
         self.perf_harness.record_refresh();
         cx.notify();
+    }
+
+    /// Names the destination in the empty composer ("Message #general").
+    fn sync_composer_placeholder(&mut self, cx: &mut Context<Self>) {
+        let placeholder = composer_placeholder(&self.models.conversation.summary);
+        self.composer_input
+            .update(cx, |input, cx| input.set_placeholder(placeholder, cx));
     }
 
     fn reset_timeline_scroll_state(&mut self) {
@@ -2771,17 +3094,88 @@ impl AppWindow {
         conversation_id: &ConversationId,
         users: &[UserId],
     ) -> bool {
+        let sidebar_changed = if users.is_empty() {
+            self.sidebar_typing.remove(conversation_id).is_some()
+        } else {
+            self.sidebar_typing.insert(conversation_id.clone(), users.to_vec()).as_deref()
+                != Some(users)
+        };
         if &self.models.timeline.conversation_id != conversation_id {
-            return false;
+            return sidebar_changed;
         }
 
-        let next_label = typing_indicator_label(users);
+        let next_label = crate::state::reducer::typing_label_for_users(
+            users,
+            &self.app_store.snapshot().backend.user_profiles,
+        );
         if self.models.timeline.typing_text == next_label {
-            return false;
+            return sidebar_changed;
         }
 
         self.models.timeline.typing_text = next_label;
         true
+    }
+
+    /// What each conversation's preview line shows instead of its newest
+    /// message: a failed send, someone typing, or your unsent draft.
+    fn sync_sidebar_live_previews(&mut self) {
+        use crate::{
+            domain::message::MessageSendState,
+            models::sidebar_preview::{PreviewNames, live_preview},
+        };
+        let snapshot = self.app_store.snapshot();
+        if let Some(open) = snapshot.timeline.conversation_id.clone() {
+            let me = self.models.app.current_user_id.as_ref();
+            let failed = snapshot.timeline.messages.last().filter(|message| {
+                Some(&message.author_id) == me && message.send_state == MessageSendState::Failed
+            });
+            match failed {
+                Some(message) => {
+                    self.sidebar_failed_sends
+                        .insert(open, message.timestamp_ms.unwrap_or(i64::MAX));
+                }
+                None => {
+                    self.sidebar_failed_sends.remove(&open);
+                }
+            }
+        }
+        let names = PreviewNames {
+            me: self.models.app.current_user_id.as_ref().map(|id| id.0.as_str()),
+            display_names: &self.models.quick_switcher_profile_names,
+        };
+        let drafts = self
+            .models
+            .composer_draft_texts()
+            .collect::<HashMap<_, _>>();
+        let open = &self.models.timeline.conversation_id;
+        let live = self
+            .models
+            .workspace
+            .channels
+            .iter()
+            .chain(&self.models.workspace.direct_messages)
+            .filter_map(|summary| {
+                let typing = self.sidebar_typing.get(&summary.id).and_then(|users| {
+                    names.typing_line(&users.iter().map(|user| user.0.as_str()).collect::<Vec<_>>())
+                });
+                let newest = summary
+                    .last_message
+                    .as_ref()
+                    .map_or(summary.last_activity_ms, |message| message.timestamp_ms);
+                let not_sent = self
+                    .sidebar_failed_sends
+                    .get(&summary.id)
+                    .is_some_and(|failed_at| *failed_at >= newest);
+                live_preview(
+                    typing,
+                    drafts.get(&summary.id).copied(),
+                    not_sent,
+                    &summary.id == open,
+                )
+                .map(|live| (summary.id.0.clone(), live))
+            })
+            .collect::<HashMap<_, _>>();
+        self.models.sidebar.live_previews = live;
     }
 
     fn timeline_is_near_top(&self) -> bool {
@@ -3117,7 +3511,11 @@ impl AppWindow {
         self.models.search.results = snapshot.search.results.clone();
         self.models.search.highlighted_index = snapshot.search.highlighted_index;
         self.models.search.is_loading = snapshot.search.is_loading;
+        self.models.search.submitted_query = snapshot.search.submitted_query.clone();
         self.models.new_chat.open = snapshot.new_chat.open;
+        if self.models.new_chat.search_query != snapshot.new_chat.search_query {
+            self.models.new_chat.highlighted_index = 0;
+        }
         self.models.new_chat.search_query = snapshot.new_chat.search_query.clone();
         self.models.new_chat.search_results = snapshot.new_chat.search_results.clone();
         self.models.new_chat.selected_participants =
@@ -3257,7 +3655,24 @@ impl AppWindow {
         let sidebar_sections_sig = sidebar_sections_state_signature(&snapshot.sidebar.sections);
         let sidebar_sections_changed =
             self.sync_cache.sidebar_sections_sig != Some(sidebar_sections_sig);
-        if sidebar_sections_changed || workspace_changed {
+        // Previews name people ("You", "Lena"), so they follow profile changes too.
+        let previews_changed = quick_switcher_profiles_changed
+            || self.sync_cache.preview_user != self.models.app.current_user_id;
+        if sidebar_sections_changed || workspace_changed || previews_changed {
+            self.sync_cache.preview_user = self.models.app.current_user_id.clone();
+            self.sidebar_previews = crate::models::sidebar_preview::sidebar_previews(
+                snapshot
+                    .workspace
+                    .channels
+                    .iter()
+                    .chain(&snapshot.workspace.direct_messages),
+                &crate::models::sidebar_preview::PreviewNames {
+                    me: self.models.app.current_user_id.as_ref().map(|id| id.0.as_str()),
+                    display_names: &self.models.quick_switcher_profile_names,
+                },
+            );
+        }
+        if sidebar_sections_changed || workspace_changed || previews_changed {
             let channel_teams = snapshot
                 .workspace
                 .channels
@@ -3270,6 +3685,14 @@ impl AppWindow {
                         .map(|group| (summary.id.0.as_str(), group))
                 })
                 .collect::<HashMap<_, _>>();
+            let muted = snapshot
+                .workspace
+                .channels
+                .iter()
+                .chain(&snapshot.workspace.direct_messages)
+                .filter(|summary| summary.muted)
+                .map(|summary| summary.id.0.as_str())
+                .collect::<HashSet<_>>();
             self.models.sidebar.sections = snapshot
                 .sidebar
                 .sections
@@ -3295,6 +3718,11 @@ impl AppWindow {
                                     },
                                     unread_count: row.unread_count,
                                     mention_count: row.mention_count,
+                                    preview: route_conversation_key(&route)
+                                        .and_then(|id| self.sidebar_previews.get(id))
+                                        .cloned(),
+                                    muted: route_conversation_key(&route)
+                                        .is_some_and(|id| muted.contains(id)),
                                     route,
                                 }
                             })
@@ -3306,7 +3734,7 @@ impl AppWindow {
             self.sync_cache.sidebar_sections_sig = Some(sidebar_sections_sig);
         }
         self.models.sidebar.highlighted_route = snapshot.sidebar.highlighted_route.clone();
-        if sidebar_sections_changed || workspace_changed {
+        if sidebar_sections_changed || workspace_changed || previews_changed {
             self.models.apply_saved_sidebar_order();
         }
         if route_changed {
@@ -3314,12 +3742,17 @@ impl AppWindow {
         }
 
         self.models.restore_sidebar_mode();
-        if sidebar_sections_changed || workspace_changed || active_workspace_changed {
+        if sidebar_sections_changed
+            || workspace_changed
+            || active_workspace_changed
+            || previews_changed
+        {
             self.models.sidebar.recent_rows = build_recent_rows(
                 &snapshot.workspace.channels,
                 &snapshot.workspace.direct_messages,
                 &self.models.sidebar.sections,
                 &self.models.app.active_workspace_id,
+                &self.sidebar_previews,
             );
         }
 
@@ -3332,6 +3765,7 @@ impl AppWindow {
             &snapshot.workspace.direct_messages,
             &snapshot.workspace.channels,
             &snapshot.backend.user_profiles,
+            &snapshot.backend.user_presences,
         );
         if self.sync_cache.sidebar_avatar_sig != Some(sidebar_avatar_sig) {
             let dm_conversation_avatar_assets = snapshot
@@ -3344,6 +3778,7 @@ impl AppWindow {
                         SidebarAvatar::Participants(dm_participant_avatars(
                             summary,
                             &snapshot.backend.user_profiles,
+                            &snapshot.backend.user_presences,
                         )),
                     )
                 })
@@ -3543,65 +3978,13 @@ impl AppWindow {
                 .unwrap_or_default();
             self.sync_cache.timeline_reactions_sig = Some(timeline_reactions_sig);
         }
-        let timeline_author_roles_sig = timeline_author_roles_signature(
-            snapshot.timeline.conversation_id.as_ref(),
-            &snapshot.backend.conversation_team_ids,
-            &snapshot.backend.team_roles,
-        );
-        let timeline_author_roles_changed =
-            self.sync_cache.timeline_author_roles_sig != Some(timeline_author_roles_sig);
-        if timeline_author_roles_changed {
-            let timeline_is_dm =
-                snapshot
-                    .timeline
-                    .conversation_id
-                    .as_ref()
-                    .is_some_and(|conversation_id| {
-                        snapshot
-                            .workspace
-                            .direct_messages
-                            .iter()
-                            .any(|summary| summary.id == *conversation_id)
-                    });
-            self.models.timeline.author_role_index = if timeline_is_dm {
-                HashMap::new()
-            } else {
-                snapshot
-                    .timeline
-                    .conversation_id
-                    .as_ref()
-                    .and_then(|conversation_id| {
-                        snapshot.backend.conversation_team_ids.get(conversation_id)
-                    })
-                    .and_then(|team_id| snapshot.backend.team_roles.get(team_id))
-                    .map(|roles_by_user| {
-                        roles_by_user
-                            .iter()
-                            .filter_map(|(user_id, role)| {
-                                let mapped = match role {
-                                    crate::state::event::TeamRoleKind::Admin => {
-                                        TeamAuthorRole::Admin
-                                    }
-                                    crate::state::event::TeamRoleKind::Owner => {
-                                        TeamAuthorRole::Owner
-                                    }
-                                    crate::state::event::TeamRoleKind::Member => return None,
-                                };
-                                Some((
-                                    crate::domain::ids::UserId::new(user_id.0.to_ascii_lowercase()),
-                                    mapped,
-                                ))
-                            })
-                            .collect::<HashMap<_, _>>()
-                    })
-                    .unwrap_or_default()
-            };
-            self.sync_cache.timeline_author_roles_sig = Some(timeline_author_roles_sig);
-        }
         self.models.timeline.highlighted_message_id =
             snapshot.timeline.highlighted_message_id.clone();
         self.models.timeline.unread_marker = snapshot.timeline.unread_marker.clone();
         self.models.timeline.typing_text = snapshot.timeline.typing_text.clone();
+        if self.models.timeline.upload_progress != snapshot.timeline.upload_progress {
+            self.models.timeline.upload_progress = snapshot.timeline.upload_progress.clone();
+        }
         self.models.timeline.current_user_id = current_user_id.clone();
         self.models.timeline.affinity_index = snapshot.backend.user_affinities.clone();
         self.models.timeline.older_cursor = snapshot.timeline.older_cursor.clone();
@@ -3797,8 +4180,20 @@ impl AppWindow {
             let unread_marker = snapshot.timeline.unread_marker.clone();
             let mut unread_divider_inserted = unread_marker.is_none();
             let mut previous_message: Option<(UserId, Option<i64>, bool)> = None;
+            let mut day_dividers =
+                crate::models::timeline_model::DayDividers::new(chrono::Local::now().date_naive());
 
             for message in &timeline_messages {
+                let renders = !is_non_text_placeholder_message(message)
+                    && !matches!(message.event, Some(ChatEvent::MessageDeleted { .. }));
+                // Open each local calendar day with a divider; the row timestamps
+                // then only need the time of day.
+                if renders && let Some(label) = day_dividers.before(message.timestamp_ms) {
+                    rows.push(crate::models::timeline_model::TimelineRow::DateDivider(
+                        label,
+                    ));
+                    previous_message = None;
+                }
                 if !unread_divider_inserted
                     && unread_marker.as_ref().is_some_and(|marker| {
                         message_starts_unread_region(message, marker, current_user_id.as_ref())
@@ -3953,6 +4348,8 @@ impl AppWindow {
             }
 
             self.models.timeline.rows = rows;
+            self.models.timeline.thread_summaries =
+                crate::models::timeline_model::thread_summaries(&self.models.timeline.rows);
             self.sync_timeline_list_state_len(self.models.timeline.rows.len());
             if let Some(anchor_message_id) = timeline_anchor_message_id.as_ref()
                 && self.models.timeline.pending_scroll_target.is_none()
@@ -3976,7 +4373,6 @@ impl AppWindow {
         if conversation_changed
             || timeline_emoji_changed
             || timeline_reactions_changed
-            || timeline_author_roles_changed
             || timeline_rows_changed
             || timeline_link_previews_changed
         {
@@ -4416,6 +4812,12 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Settings live in their own window; the route only survives as a way to
+        // ask for it (sidebar profile, toasts, command palette, activity items).
+        if route == Route::Preferences {
+            self.open_settings_window(window, cx);
+            return;
+        }
         self.capture_live_inputs(cx);
         self.models.dismiss_overlays();
         self.jump_to_message_active = false;
@@ -4727,6 +5129,42 @@ impl AppWindow {
         }
     }
 
+    /// Keeps the conversation at least `MAIN_PANEL_MIN_WIDTH_PX` wide after the
+    /// sidebar widened: grows the window when the screen has room, otherwise
+    /// narrows the sidebar (never below the compact width).
+    fn fit_window_to_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.sidebar_fit_pending) {
+            return;
+        }
+        let viewport = window.viewport_size();
+        let width = f32::from(viewport.width);
+        let required = self.models.sidebar.width_px
+            + RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX
+            + crate::views::MAIN_PANEL_MIN_WIDTH_PX;
+        if width + 1. >= required {
+            return;
+        }
+        let room = window
+            .display(cx)
+            .map(|display| f32::from(display.bounds().size.width))
+            .unwrap_or(width);
+        if !window.is_fullscreen() && !window.is_maximized() && room >= required {
+            window.on_next_frame(move |window, _| {
+                if !window.is_fullscreen() && !window.is_maximized() {
+                    window.resize(gpui::size(px(required), viewport.height));
+                }
+            });
+        } else {
+            let fitted = (width - RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX
+                - crate::views::MAIN_PANEL_MIN_WIDTH_PX)
+                .max(crate::views::SIDEBAR_WIDTH_PX);
+            if fitted < self.models.sidebar.width_px {
+                self.models.set_sidebar_width(fitted);
+                self.sync_sidebar_view_state(cx);
+            }
+        }
+    }
+
     fn sync_pane_window_size(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let viewport = window.viewport_size();
         let pane_width = (!matches!(self.models.navigation.right_pane, RightPaneMode::Hidden))
@@ -4826,7 +5264,7 @@ impl AppWindow {
     fn toggle_simple_pane(&mut self, pane: RightPaneMode, cx: &mut Context<Self>) {
         if pane != RightPaneMode::Hidden && !self.models.settings.show_right_pane {
             self.models.push_toast(
-                "Right pane is disabled in preferences",
+                "The side panel is turned off in Settings",
                 Some(ToastAction::OpenPreferences),
             );
             self.refresh(cx);
@@ -4836,6 +5274,11 @@ impl AppWindow {
         if self.models.navigation.right_pane == pane {
             self.close_right_pane_state(cx);
         } else {
+            if pane == RightPaneMode::Members {
+                // Each opening starts with the full list.
+                self.members_filter_input
+                    .update(cx, |input, cx| input.set_text("", cx));
+            }
             self.models.set_right_pane(pane);
         }
         self.refresh(cx);
@@ -4869,7 +5312,7 @@ impl AppWindow {
         }
         if !self.models.settings.show_right_pane {
             self.models.push_toast(
-                "Right pane is disabled in preferences",
+                "The side panel is turned off in Settings",
                 Some(ToastAction::OpenPreferences),
             );
             self.refresh(cx);
@@ -4896,6 +5339,13 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         self.open_user_profile_card(user_id, cx);
+    }
+
+    /// Your own profile, from the identity menu in the sidebar footer.
+    pub(crate) fn open_own_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(user_id) = self.models.app.current_user_id.clone() {
+            self.open_user_profile_panel(user_id, window, cx);
+        }
     }
 
     pub(crate) fn profile_open_message(&mut self, user_id: UserId, cx: &mut Context<Self>) {
@@ -5054,6 +5504,28 @@ impl AppWindow {
         }
     }
 
+    /// Marks the open thread's root and a thread root whose header has scrolled
+    /// above the top edge, read from the list's last layout.
+    fn sync_timeline_view_markers(&mut self) {
+        /// How much of a row may scroll away before its author line is gone.
+        const HEADER_CLIP_PX: f32 = 20.;
+        self.models.timeline.open_thread_root_id = (self.models.navigation.right_pane
+            == RightPaneMode::Thread)
+            .then(|| self.models.thread_pane.root_message_id.clone())
+            .flatten();
+        let top = self.timeline_list_state.logical_scroll_top();
+        let clipped = match self.models.timeline.rows.get(top.item_ix) {
+            Some(crate::models::timeline_model::TimelineRow::Message(row))
+                if row.message.thread_reply_count > 0
+                    && f32::from(top.offset_in_item) > HEADER_CLIP_PX =>
+            {
+                Some(row.message.id.clone())
+            }
+            _ => None,
+        };
+        self.models.timeline.clipped_thread_root_id = clipped;
+    }
+
     pub(crate) fn render_timeline_row_virtualized(
         &mut self,
         ix: usize,
@@ -5076,6 +5548,7 @@ impl AppWindow {
                 row,
                 &mut self.timeline_row_render_cache,
                 find_query,
+                self.models.settings.density == crate::models::settings_model::Density::Compact,
                 &self.video_render_cache,
                 &mut self.code_highlight_cache,
                 &mut self.selectable_texts,
@@ -5281,6 +5754,70 @@ impl AppWindow {
             window,
             cx,
         );
+    }
+
+    /// Author and friendly location for each search result, shown on the
+    /// Search page and the scoped search pane.
+    fn search_result_contexts(&self) -> Vec<crate::views::search::SearchResultContext> {
+        let showing_search = matches!(self.models.navigation.current, Route::Search { .. })
+            || self.models.navigation.right_pane == RightPaneMode::Search;
+        if !showing_search {
+            return Vec::new();
+        }
+        self.models
+            .search
+            .results
+            .iter()
+            .map(|result| {
+                self.message_hit_context(
+                    &result.message.author_id,
+                    self.models.conversation_location_label(&result.conversation_id),
+                )
+            })
+            .collect()
+    }
+
+    /// Who wrote a message hit and where it lives, resolved from profiles.
+    fn message_hit_context(
+        &self,
+        author: &UserId,
+        location: Option<String>,
+    ) -> crate::views::search::SearchResultContext {
+        let profiles = &self.app_store.snapshot().backend.user_profiles;
+        let profile = profiles
+            .get(author)
+            .or_else(|| profiles.get(&UserId::new(author.0.to_ascii_lowercase())));
+        crate::views::search::SearchResultContext {
+            author_name: profile
+                .map(|profile| profile.display_name.trim())
+                .filter(|name| !name.is_empty())
+                .unwrap_or(author.0.as_str())
+                .to_string(),
+            author_avatar: profile.and_then(|profile| profile.avatar_asset.clone()),
+            location,
+        }
+    }
+
+    /// Contexts for the quick switcher's message hits, by result index.
+    fn quick_switcher_hit_contexts(
+        &self,
+    ) -> HashMap<usize, crate::views::search::SearchResultContext> {
+        if !self.models.overlay.quick_switcher_open {
+            return HashMap::new();
+        }
+        self.models
+            .quick_switcher
+            .results
+            .iter()
+            .enumerate()
+            .filter_map(|(index, result)| {
+                let author = result.author_id.as_ref()?;
+                Some((
+                    index,
+                    self.message_hit_context(author, Some(result.label.clone())),
+                ))
+            })
+            .collect()
     }
 
     pub(crate) fn open_search_result_at(
@@ -5583,10 +6120,46 @@ impl AppWindow {
         }
     }
 
-    pub(crate) fn cycle_theme(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.models.cycle_theme();
-        self.persist_settings();
-        self.refresh(cx);
+    pub(crate) fn set_theme_mode(
+        &mut self,
+        mode: crate::models::settings_model::ThemeMode,
+        cx: &mut Context<Self>,
+    ) {
+        if self.models.set_theme_mode(mode) {
+            self.persist_settings();
+            self.refresh(cx);
+        }
+    }
+
+    pub(crate) fn set_density(
+        &mut self,
+        density: crate::models::settings_model::Density,
+        cx: &mut Context<Self>,
+    ) {
+        if self.models.set_density(density) {
+            // Row heights change with density; measure them again.
+            self.timeline_list_state
+                .reset(self.timeline_list_state.item_count());
+            self.persist_settings();
+            self.refresh(cx);
+        }
+    }
+
+    pub(crate) fn set_reduced_motion(&mut self, reduced: bool, cx: &mut Context<Self>) {
+        if self.models.set_reduced_motion(reduced) {
+            self.persist_settings();
+            self.refresh(cx);
+        }
+    }
+
+    pub(crate) fn set_show_right_pane(&mut self, show: bool, cx: &mut Context<Self>) {
+        if !show && self.models.navigation.right_pane != RightPaneMode::Hidden {
+            self.close_right_pane_state(cx);
+        }
+        if self.models.set_show_right_pane(show) {
+            self.persist_settings();
+            self.refresh(cx);
+        }
     }
 
     pub(crate) fn focus_search_input(
@@ -5596,6 +6169,15 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.search_input.focus_handle(cx));
+    }
+
+    pub(crate) fn focus_members_filter_input(
+        &mut self,
+        _: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.focus(&self.members_filter_input.focus_handle(cx));
     }
 
     pub(crate) fn focus_find_in_chat_input(
@@ -5770,6 +6352,10 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         self.dispatch_ui_action(UiAction::ToggleSearchFilter(filter));
+        // Filters narrow the current search, so run it again right away.
+        if self.models.search.submitted_query.is_some() {
+            self.dispatch_ui_action(UiAction::SubmitSearch);
+        }
         self.refresh(cx);
     }
 
@@ -5786,7 +6372,20 @@ impl AppWindow {
         }
     }
 
-    fn set_sidebar_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>) {
+    pub(crate) fn set_sidebar_style(
+        &mut self,
+        style: crate::models::settings_model::SidebarStyle,
+        cx: &mut Context<Self>,
+    ) {
+        if self.models.set_sidebar_style(style) {
+            self.sidebar_fit_pending = true;
+            self.persist_settings();
+            self.reveal_recent_sidebar_route(&self.models.navigation.current);
+            self.refresh(cx);
+        }
+    }
+
+    pub(crate) fn set_sidebar_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>) {
         self.models.set_sidebar_mode(mode);
         self.reveal_recent_sidebar_route(&self.models.navigation.current);
         self.persist_settings();
@@ -6285,24 +6884,137 @@ impl AppWindow {
         self.composer_insert_emoji_item(item, cx);
     }
 
-    pub(crate) fn composer_insert_mention(&mut self, cx: &mut Context<Self>) {
-        self.composer_input
-            .update(cx, |input, cx| input.insert_text("@", cx));
+    fn composer_editor(
+        &self,
+        target: crate::views::composer::ComposerTarget,
+    ) -> &Entity<TextField> {
+        match target {
+            crate::views::composer::ComposerTarget::Conversation => &self.composer_input,
+            crate::views::composer::ComposerTarget::Thread => &self.thread_input,
+        }
+    }
+
+    /// The composer's "@" button: types an `@` at the caret (after a space when
+    /// it would otherwise run into a word) so the mention list opens.
+    pub(crate) fn composer_insert_mention(
+        &mut self,
+        target: crate::views::composer::ComposerTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let editor = self.composer_editor(target).clone();
+        window.focus(&editor.focus_handle(cx));
+        editor.update(cx, |input, cx| {
+            let text = input.text();
+            let caret = input.selected_range().start.min(text.len());
+            let needs_space = text[..caret]
+                .chars()
+                .next_back()
+                .is_some_and(|previous| !previous.is_whitespace());
+            input.insert_text(if needs_space { " @" } else { "@" }, cx);
+        });
+        self.composer_format_menu = None;
         self.sync_drafts_from_inputs(cx);
         self.refresh(cx);
     }
 
-    pub(crate) fn thread_insert_mention(&mut self, cx: &mut Context<Self>) {
-        self.thread_input
-            .update(cx, |input, cx| input.insert_text("@", cx));
+    pub(crate) fn toggle_composer_format_menu(
+        &mut self,
+        target: crate::views::composer::ComposerTarget,
+        cx: &mut Context<Self>,
+    ) {
+        self.composer_format_menu = if self.composer_format_menu == Some(target) {
+            None
+        } else {
+            Some(target)
+        };
+        self.refresh(cx);
+    }
+
+    pub(crate) fn close_composer_format_menu(&mut self, cx: &mut Context<Self>) {
+        if self.composer_format_menu.take().is_some() {
+            self.refresh(cx);
+        }
+    }
+
+    /// Wraps the composer's selection in `format`'s Markdown, keeping it selected.
+    pub(crate) fn apply_composer_format(
+        &mut self,
+        target: crate::views::composer::ComposerTarget,
+        format: crate::models::composer_model::MarkdownFormat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let editor = self.composer_editor(target).clone();
+        editor.update(cx, |input, cx| {
+            let (text, selection) = crate::models::composer_model::apply_markdown_format(
+                &input.text(),
+                input.selected_range(),
+                format,
+            );
+            input.replace_all_and_select(text, selection, cx);
+        });
+        window.focus(&editor.focus_handle(cx));
+        self.composer_format_menu = None;
         self.sync_drafts_from_inputs(cx);
         self.refresh(cx);
     }
 
-    pub(crate) fn composer_insert_formatting(&mut self, cx: &mut Context<Self>) {
-        self.composer_input
-            .update(cx, |input, cx| input.insert_text("*bold* ", cx));
-        self.refresh(cx);
+    /// ⌘B / ⌘I / ⌘E in whichever composer has focus.
+    fn apply_format_to_focused_composer(
+        &mut self,
+        format: crate::models::composer_model::MarkdownFormat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::views::composer::ComposerTarget;
+        let target = if self.composer_input.focus_handle(cx).is_focused(window) {
+            ComposerTarget::Conversation
+        } else if self.thread_input.focus_handle(cx).is_focused(window) {
+            ComposerTarget::Thread
+        } else {
+            return;
+        };
+        self.apply_composer_format(target, format, window, cx);
+    }
+
+    fn format_bold_action(
+        &mut self,
+        _: &commands::FormatBold,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_format_to_focused_composer(
+            crate::models::composer_model::MarkdownFormat::Bold,
+            window,
+            cx,
+        );
+    }
+
+    fn format_italic_action(
+        &mut self,
+        _: &commands::FormatItalic,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_format_to_focused_composer(
+            crate::models::composer_model::MarkdownFormat::Italic,
+            window,
+            cx,
+        );
+    }
+
+    fn format_code_action(
+        &mut self,
+        _: &commands::FormatCode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_format_to_focused_composer(
+            crate::models::composer_model::MarkdownFormat::Code,
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn toggle_emoji_picker(&mut self, cx: &mut Context<Self>) {
@@ -6877,6 +7589,12 @@ impl AppWindow {
         self.refresh(cx);
     }
 
+    /// "Delete" on a message that failed to send: drop the local copy.
+    pub(crate) fn discard_failed_message(&mut self, message_id: MessageId, cx: &mut Context<Self>) {
+        self.dispatch_ui_action(UiAction::DiscardFailedMessage { message_id });
+        self.refresh(cx);
+    }
+
     pub(crate) fn retry_failed_message_send(
         &mut self,
         message_id: MessageId,
@@ -6906,6 +7624,10 @@ impl AppWindow {
         let Some(retry_text) = retry_text.filter(|text| !text.is_empty()) else {
             return;
         };
+        // The resend replaces the failed copy rather than sitting beside it.
+        self.dispatch_ui_action(UiAction::DiscardFailedMessage {
+            message_id: message_id.clone(),
+        });
         let draft_key = DraftKey::Conversation(self.models.composer.conversation_id.clone());
         self.models.composer.mode = ComposerMode::Compose;
         self.models.composer.draft_text = retry_text.clone();
@@ -7495,6 +8217,9 @@ impl AppWindow {
             self.dispatch_ui_action(UiAction::CloseNewChat);
         }
         self.models.dismiss_overlays();
+        if let Some(sidebar) = self.sidebar_view.as_ref() {
+            sidebar.update(cx, |sidebar, cx| sidebar.open_menu(None, cx));
+        }
         self.keybase_inspector.open = false;
         self.splash_open = false;
         self.sync_inputs_from_models(cx);
@@ -8048,7 +8773,95 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.navigate_to(Route::Preferences, window, cx);
+        self.open_settings_window(window, cx);
+    }
+
+    fn sort_sidebar_by_recent_action(
+        &mut self,
+        _: &commands::SortSidebarByRecent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_sidebar_mode(SidebarMode::Recent, cx);
+    }
+
+    fn group_sidebar_by_team_action(
+        &mut self,
+        _: &commands::GroupSidebarByTeam,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_sidebar_mode(SidebarMode::Grouped, cx);
+    }
+
+    /// Moves the View menu's check mark to the current sidebar order.
+    fn sync_view_menu(&mut self) {
+        use crate::app::bootstrap::{GROUP_BY_TEAM_ITEM, SORT_BY_RECENT_ITEM, VIEW_MENU};
+        let mode = self.models.sidebar.mode;
+        if self.view_menu_mode == Some(mode) {
+            return;
+        }
+        self.view_menu_mode = Some(mode);
+        crate::app::menu_state::set_checked(
+            VIEW_MENU,
+            SORT_BY_RECENT_ITEM,
+            mode == SidebarMode::Recent,
+        );
+        crate::app::menu_state::set_checked(
+            VIEW_MENU,
+            GROUP_BY_TEAM_ITEM,
+            mode == SidebarMode::Grouped,
+        );
+    }
+
+    /// Brings the Settings window forward, opening it over this window if needed.
+    pub(crate) fn open_settings_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.models.dismiss_overlays();
+        if let Some(handle) = self.settings_window
+            && handle
+                .update(cx, |_, settings_window, _| settings_window.activate_window())
+                .is_ok()
+        {
+            return;
+        }
+        let app = cx.entity().downgrade();
+        let main_window = window.window_handle();
+        let main_bounds = window.bounds();
+        // The new window renders right away and reads this window's settings, so
+        // open it once this update has finished.
+        cx.defer(move |cx| {
+            let handle = crate::views::settings_window::SettingsWindow::open(
+                app.clone(),
+                main_window,
+                main_bounds,
+                cx,
+            );
+            let _ = app.update(cx, |this, _| this.settings_window = handle);
+        });
+    }
+
+    pub(crate) fn settings_model(&self) -> &crate::models::settings_model::SettingsModel {
+        &self.models.settings
+    }
+
+    /// Account and sidebar order, for the Settings window.
+    pub(crate) fn preferences_context(&self) -> crate::views::preferences::PreferencesContext {
+        let app = &self.models.app;
+        crate::views::preferences::PreferencesContext {
+            sidebar_mode: self.models.sidebar.mode,
+            account: app.current_user_id.as_ref().map(|user_id| {
+                crate::views::preferences::AccountSummary {
+                    display_name: if app.current_user_display_name.trim().is_empty() {
+                        user_id.0.clone()
+                    } else {
+                        app.current_user_display_name.clone()
+                    },
+                    username: user_id.0.clone(),
+                    avatar_asset: app.current_user_avatar_asset.clone(),
+                    connectivity: app.connectivity.clone(),
+                }
+            }),
+        }
     }
 
     fn toggle_thread_pane_action(
@@ -8158,7 +8971,23 @@ impl AppWindow {
                 }
             }
         } else if self.models.overlay.new_chat_open {
-            self.new_chat_create(window, cx);
+            // With a query, Return takes the highlighted person; with none,
+            // it starts the conversation.
+            if let Some(candidate) = self.models.new_chat.highlighted_candidate().cloned() {
+                let already_added = self
+                    .models
+                    .new_chat
+                    .selected_participants
+                    .iter()
+                    .any(|user| user.id == candidate.id);
+                if !already_added {
+                    self.new_chat_add_participant(candidate, cx);
+                }
+                self.new_chat_input
+                    .update(cx, |input, cx| input.set_text(String::new(), cx));
+            } else {
+                self.new_chat_create(window, cx);
+            }
         } else if self.search_input.focus_handle(cx).is_focused(window) {
             if matches!(self.models.navigation.current, Route::Search { .. }) {
                 if let Some(index) = self.models.search.highlighted_index {
@@ -8205,6 +9034,9 @@ impl AppWindow {
         if self.models.overlay.quick_switcher_open {
             self.models.move_quick_switcher_selection(-1);
             self.refresh(cx);
+        } else if self.models.overlay.new_chat_open {
+            self.models.new_chat.move_highlight(-1);
+            self.refresh(cx);
         } else if matches!(self.models.navigation.current, Route::Search { .. }) {
             self.models.move_search_highlight(-1);
             self.refresh(cx);
@@ -8234,6 +9066,9 @@ impl AppWindow {
         }
         if self.models.overlay.quick_switcher_open {
             self.models.move_quick_switcher_selection(1);
+            self.refresh(cx);
+        } else if self.models.overlay.new_chat_open {
+            self.models.new_chat.move_highlight(1);
             self.refresh(cx);
         } else if matches!(self.models.navigation.current, Route::Search { .. }) {
             self.models.move_search_highlight(1);
@@ -8317,6 +9152,26 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         self.open_new_chat(window, cx);
+    }
+
+    /// ⌘↵ in New conversation: start the chat with the people in To. With
+    /// nobody added yet, the highlighted person is added first.
+    fn start_new_chat_action(
+        &mut self,
+        _: &commands::StartNewChat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.models.overlay.new_chat_open {
+            cx.propagate();
+            return;
+        }
+        if self.models.new_chat.selected_participants.is_empty()
+            && let Some(candidate) = self.models.new_chat.highlighted_candidate().cloned()
+        {
+            self.new_chat_add_participant(candidate, cx);
+        }
+        self.new_chat_create(window, cx);
     }
 
     fn toggle_find_in_chat_action(
@@ -8447,6 +9302,10 @@ impl AppWindow {
                 return;
             }
         }
+        if self.composer_format_menu.is_some() {
+            self.close_composer_format_menu(cx);
+            return;
+        }
         let had_overlay = self.models.overlay.new_chat_open
             || self.models.overlay.quick_switcher_open
             || self.models.overlay.command_palette_open
@@ -8489,6 +9348,7 @@ impl AppWindow {
 impl Render for AppWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let render_t0 = Instant::now();
+        self.fit_window_to_sidebar(window, cx);
         self.sync_pane_window_size(window, cx);
         self.remember_window_preferences(window);
         if self.pending_file_upload_caption_focus {
@@ -8505,7 +9365,22 @@ impl Render for AppWindow {
             self.sync_sidebar_view_state(cx);
         }
 
-        let element = with_theme(resolved_theme, || {
+        self.sync_timeline_view_markers();
+
+        // A background window keeps keyboard focus but shows no focus rings.
+        let window_active = window.is_window_active();
+        let composer_input_focused =
+            window_active && self.composer_input.focus_handle(cx).is_focused(window);
+        let thread_input_focused =
+            window_active && self.thread_input.focus_handle(cx).is_focused(window);
+        let search_input_focused =
+            window_active && self.search_input.focus_handle(cx).is_focused(window);
+        let new_chat_input_focused =
+            window_active && self.new_chat_input.focus_handle(cx).is_focused(window);
+        let members_filter_focused =
+            window_active && self.members_filter_input.focus_handle(cx).is_focused(window);
+        let search_contexts = self.search_result_contexts();
+        let element = with_theme(resolved_theme, || with_window_active(window_active, || {
             let mut shell_layout = shell_layout(
                 &self.models.navigation.right_pane,
                 self.models.thread_pane.width_px,
@@ -8559,6 +9434,16 @@ impl Render for AppWindow {
                     &mut self.code_highlight_cache,
                     &mut self.selectable_texts,
                     &self.thread_input,
+                    crate::views::composer::ComposerFieldState {
+                        focused: thread_input_focused,
+                        can_send: self.thread_has_text,
+                        send_notice: self.models.app.connectivity.send_notice(),
+                        format_menu_open: self.composer_format_menu
+                            == Some(crate::views::composer::ComposerTarget::Thread),
+                    },
+                    &self.members_filter_input,
+                    members_filter_focused,
+                    &search_contexts,
                     &self.thread_scroll,
                     &self.profile_scroll,
                     &self.profile_social_scroll,
@@ -8595,7 +9480,8 @@ impl Render for AppWindow {
                 .size_full()
                 .relative()
                 .flex()
-                .bg(app_backdrop())
+                // No fill here: each pane paints its own, and the sidebar's is
+                // translucent over the window's blurred backdrop.
                 .overflow_hidden()
                 .track_focus(&self.focus_handle)
                 .key_context("Workspace")
@@ -8608,6 +9494,8 @@ impl Render for AppWindow {
                 .on_action(cx.listener(Self::open_quick_switcher_recent_5_action))
                 .on_action(cx.listener(Self::show_activity_action))
                 .on_action(cx.listener(Self::open_preferences_action))
+                .on_action(cx.listener(Self::sort_sidebar_by_recent_action))
+                .on_action(cx.listener(Self::group_sidebar_by_team_action))
                 .on_action(cx.listener(Self::toggle_thread_pane_action))
                 .on_action(cx.listener(Self::toggle_members_pane_action))
                 .on_action(cx.listener(Self::toggle_details_pane_action))
@@ -8636,6 +9524,10 @@ impl Render for AppWindow {
                 .on_action(cx.listener(Self::dismiss_overlays_action))
                 .on_action(cx.listener(Self::dismiss_hover_toolbar_action))
                 .on_action(cx.listener(Self::open_url_action))
+                .on_action(cx.listener(Self::format_bold_action))
+                .on_action(cx.listener(Self::format_italic_action))
+                .on_action(cx.listener(Self::format_code_action))
+                .on_action(cx.listener(Self::start_new_chat_action))
                 .on_drag_move::<RightPaneResizeDrag>(
                     cx.listener(Self::update_thread_resize_drag_on_drag),
                 )
@@ -8685,6 +9577,19 @@ impl Render for AppWindow {
                                 None,
                                 &self.sidebar_scroll_handle,
                                 &self.sidebar_recent_scroll,
+                                SidebarChrome {
+                                    can_go_back: !self.models.navigation.back_stack.is_empty(),
+                                    can_go_forward: !self
+                                        .models
+                                        .navigation
+                                        .forward_stack
+                                        .is_empty(),
+                                    search_open: matches!(
+                                        self.models.navigation.current,
+                                        Route::Search { .. }
+                                    ),
+                                    menu: None,
+                                },
                                 cx,
                             )
                         },
@@ -8715,11 +9620,10 @@ impl Render for AppWindow {
                         .w(px(RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX))
                         .flex_shrink_0()
                         .h_full()
-                        .bg(if is_dark_theme() {
-                            tint(sidebar_bg(), 0.98)
-                        } else {
-                            glass_surface_dark()
-                        })
+                        .bg(crate::views::sidebar_surface())
+                        // 1px hairline where the sidebar meets the conversation.
+                        .border_r_1()
+                        .border_color(shell_border())
                         .cursor(CursorStyle::ResizeColumn)
                         .id("sidebar-resize-handle")
                         .flex_shrink_0()
@@ -8745,8 +9649,18 @@ impl Render for AppWindow {
                         closing_main_width,
                         &self.video_render_cache,
                         &self.search_input,
+                        &search_contexts,
+                        search_input_focused,
                         &self.find_in_chat_input,
                         &self.composer_input,
+                        crate::views::composer::ComposerFieldState {
+                            focused: composer_input_focused,
+                            can_send: self.composer_has_text
+                                || !self.models.composer.attachments.is_empty(),
+                            send_notice: self.models.app.connectivity.send_notice(),
+                            format_menu_open: self.composer_format_menu
+                                == Some(crate::views::composer::ComposerTarget::Conversation),
+                        },
                         &self.timeline_list_state,
                         self.timeline_unseen_count,
                         !self.timeline_is_near_bottom() && !self.models.timeline.rows.is_empty(),
@@ -8772,6 +9686,7 @@ impl Render for AppWindow {
                 .child({
                     let overlay_t0 = Instant::now();
                     let quick_switcher_indexing_status = self.quick_switcher_indexing_status_text();
+                    let quick_switcher_hits = self.quick_switcher_hit_contexts();
                     let snapshot = self.app_store.snapshot();
                     let custom_emoji_index =
                         snapshot
@@ -8799,12 +9714,15 @@ impl Render for AppWindow {
                         &self.models.new_chat,
                         &self.quick_switcher_input,
                         &self.new_chat_input,
+                        new_chat_input_focused,
                         &self.file_upload_caption_input,
                         &self.models.emoji_picker,
                         &self.emoji_picker_input,
                         custom_emoji_index,
                         supports_custom_emoji,
                         quick_switcher_indexing_status.as_deref(),
+                        &quick_switcher_hits,
+                        &self.sidebar_conversation_avatars,
                         window.viewport_size(),
                         cx,
                     );
@@ -8846,7 +9764,7 @@ impl Render for AppWindow {
                     };
                     div.child(crate::views::splash::SplashView.render(&status, cx))
                 })
-        });
+        }));
 
         let render_elapsed = render_t0.elapsed();
         self.perf_harness
@@ -9078,6 +9996,17 @@ fn build_channel_details(
                     Some(TeamRoleKind::Admin | TeamRoleKind::Owner)
                 )
             }),
+            is_team_owner: team_role_map
+                .is_some_and(|roles| matches!(roles.get(&user_id), Some(TeamRoleKind::Owner))),
+            availability: backend
+                .user_presences
+                .get(&user_id)
+                .or_else(|| {
+                    backend
+                        .user_presences
+                        .get(&UserId::new(user_id.0.to_ascii_lowercase()))
+                })
+                .map(|presence| presence.availability.clone()),
         };
         members.push(preview);
     }
@@ -9184,16 +10113,6 @@ fn scroll_list_to_bottom(state: &ListState) {
     });
 }
 
-fn typing_indicator_label(users: &[UserId]) -> Option<String> {
-    if users.is_empty() {
-        None
-    } else if users.len() == 1 {
-        Some(format!("{} is typing…", users[0].0))
-    } else {
-        Some(format!("{} people are typing…", users.len()))
-    }
-}
-
 fn quick_switcher_seq_from_query_id(query_id: &str) -> Option<u64> {
     query_id
         .strip_prefix("quick-switcher-")
@@ -9297,6 +10216,36 @@ fn mix_sig_conversation_summary(
     );
     mix_sig_str(sig, &summary.topic);
     mix_sig(sig, summary.last_activity_ms as u64);
+    match &summary.last_message {
+        Some(preview) => {
+            use crate::domain::message_preview::PreviewBody;
+            mix_sig(sig, 1);
+            mix_sig_str(sig, preview.message_id.as_ref().map_or("", |id| id.0.as_str()));
+            mix_sig_str(sig, preview.author_id.as_ref().map_or("", |id| id.0.as_str()));
+            mix_sig(sig, preview.timestamp_ms as u64);
+            match &preview.body {
+                PreviewBody::Text(text) => {
+                    mix_sig(sig, 1);
+                    mix_sig_str(sig, text);
+                }
+                PreviewBody::Attachment { name, caption, .. } => {
+                    mix_sig(sig, 2);
+                    mix_sig_str(sig, name);
+                    mix_sig_str(sig, caption.as_deref().unwrap_or(""));
+                }
+                PreviewBody::Event(text) => {
+                    mix_sig(sig, 3);
+                    mix_sig_str(sig, text);
+                }
+                PreviewBody::Deleted => mix_sig(sig, 4),
+                PreviewBody::Snippet(text) => {
+                    mix_sig(sig, 5);
+                    mix_sig_str(sig, text);
+                }
+            }
+        }
+        None => mix_sig(sig, 0),
+    }
     mix_sig(sig, summary.unread_count as u64);
     mix_sig(sig, summary.mention_count as u64);
     mix_sig_bool(sig, summary.muted);
@@ -9315,6 +10264,15 @@ fn mix_sig_conversation_summary(
             );
         }
         None => mix_sig(sig, 0),
+    }
+}
+
+/// Conversation id behind a conversation route, as keyed in `sidebar_previews`.
+fn route_conversation_key(route: &Route) -> Option<&str> {
+    match route {
+        Route::Channel { channel_id, .. } => Some(channel_id.0.as_str()),
+        Route::DirectMessage { dm_id, .. } => Some(dm_id.0.as_str()),
+        _ => None,
     }
 }
 
@@ -9370,6 +10328,22 @@ fn sidebar_sections_state_signature(
     sig
 }
 
+fn composer_placeholder(summary: &ConversationSummary) -> String {
+    let title = summary.title.trim();
+    if title.is_empty() {
+        return "Write a message".to_string();
+    }
+    match summary.kind {
+        ConversationKind::Channel => match summary.simple_team_label() {
+            Some(team) => format!("Message {team}"),
+            None => format!("Message #{title}"),
+        },
+        ConversationKind::DirectMessage | ConversationKind::GroupDirectMessage => {
+            format!("Message {title}")
+        }
+    }
+}
+
 fn first_dm_username(title: &str) -> Option<&str> {
     title
         .split(',')
@@ -9380,6 +10354,7 @@ fn first_dm_username(title: &str) -> Option<&str> {
 fn dm_participant_avatars(
     summary: &crate::domain::conversation::ConversationSummary,
     profiles: &HashMap<UserId, crate::state::state::UserProfileState>,
+    presences: &HashMap<UserId, crate::domain::presence::Presence>,
 ) -> Vec<AvatarParticipant> {
     let mut usernames = summary
         .title
@@ -9394,13 +10369,15 @@ fn dm_participant_avatars(
         .into_iter()
         .take(2)
         .map(|username| {
-            let profile = profiles.get(&UserId::new(username.clone()));
+            let user_id = UserId::new(username.clone());
+            let profile = profiles.get(&user_id);
             AvatarParticipant {
                 display_name: profile
                     .map(|profile| profile.display_name.clone())
                     .filter(|name| !name.trim().is_empty())
                     .unwrap_or(username),
                 asset: profile.and_then(|profile| profile.avatar_asset.clone()),
+                presence: presences.get(&user_id).cloned(),
             }
         })
         .collect()
@@ -9435,6 +10412,7 @@ fn sidebar_avatar_inputs_signature(
     direct_messages: &[crate::domain::conversation::ConversationSummary],
     channels: &[crate::domain::conversation::ConversationSummary],
     user_profiles: &HashMap<UserId, crate::state::state::UserProfileState>,
+    user_presences: &HashMap<UserId, crate::domain::presence::Presence>,
 ) -> u64 {
     let mut sig = SIG_SEED;
     for row in sections.iter().flat_map(|section| section.rows.iter()) {
@@ -9467,6 +10445,10 @@ fn sidebar_avatar_inputs_signature(
                 if let Some(asset) = profile.avatar_asset.as_deref() {
                     mix_sig_str(&mut sig, asset);
                 }
+            }
+            if let Some(presence) = user_presences.get(&user_id) {
+                mix_sig_str(&mut sig, &format!("{:?}", presence.availability));
+                mix_sig_str(&mut sig, presence.status_text.as_deref().unwrap_or_default());
             }
         }
     }
@@ -9597,45 +10579,6 @@ fn timeline_reactions_signature(
         }
     }
 
-    sig
-}
-
-fn timeline_author_roles_signature(
-    conversation_id: Option<&ConversationId>,
-    conversation_team_ids: &HashMap<ConversationId, String>,
-    team_roles: &HashMap<String, HashMap<UserId, crate::state::event::TeamRoleKind>>,
-) -> u64 {
-    let mut sig = SIG_SEED;
-    let Some(conversation_id) = conversation_id else {
-        mix_sig(&mut sig, 0);
-        return sig;
-    };
-    mix_sig_str(&mut sig, &conversation_id.0);
-    let Some(team_id) = conversation_team_ids.get(conversation_id) else {
-        mix_sig(&mut sig, 0);
-        return sig;
-    };
-    mix_sig_str(&mut sig, team_id);
-    let Some(roles_by_user) = team_roles.get(team_id) else {
-        mix_sig(&mut sig, 0);
-        return sig;
-    };
-    let mut user_ids = roles_by_user.keys().collect::<Vec<_>>();
-    user_ids.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-    mix_sig(&mut sig, user_ids.len() as u64);
-    for user_id in user_ids {
-        mix_sig_str(&mut sig, &user_id.0);
-        let Some(role) = roles_by_user.get(user_id) else {
-            mix_sig(&mut sig, 0);
-            continue;
-        };
-        let role_value = match role {
-            crate::state::event::TeamRoleKind::Member => 1u64,
-            crate::state::event::TeamRoleKind::Admin => 2u64,
-            crate::state::event::TeamRoleKind::Owner => 3u64,
-        };
-        mix_sig(&mut sig, role_value);
-    }
     sig
 }
 
@@ -9974,6 +10917,8 @@ fn timeline_rows_input_signature(
         mix_sig(&mut sig, 0);
     }
     mix_sig_bool(&mut sig, loading_older);
+    // Day divider labels are relative ("Today"), so rebuild rows when the date changes.
+    mix_sig_str(&mut sig, &chrono::Local::now().date_naive().to_string());
     if let Some(current_user_id) = current_user_id {
         mix_sig_str(&mut sig, &current_user_id.0);
     } else {
@@ -10523,6 +11468,8 @@ fn timeline_interactions_blocked_by_overlay_state(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::{
         constrained_right_pane_width, latest_timeline_snapshot_message_id, shell_layout,
         timeline_interactions_blocked_by_overlay_state,
@@ -10579,6 +11526,7 @@ mod tests {
             mention_count: 0,
             muted: false,
             last_activity_ms: 0,
+            last_message: None,
         };
         let mut profiles = std::collections::HashMap::from([
             (
@@ -10598,17 +11546,33 @@ mod tests {
                 },
             ),
         ]);
-        let avatars = super::dm_participant_avatars(&summary, &profiles);
+        let avatars = super::dm_participant_avatars(&summary, &profiles, &HashMap::new());
         assert_eq!(avatars.len(), 2);
         assert_eq!(avatars[0].display_name, "Alice");
         assert_eq!(avatars[1].asset.as_deref(), Some("/cache/bob.png"));
-        let before =
-            super::sidebar_avatar_inputs_signature(&[], &[summary.clone()], &[], &profiles);
+        let dms = std::slice::from_ref(&summary);
+        let no_presence = HashMap::new();
+        let before = super::sidebar_avatar_inputs_signature(&[], dms, &[], &profiles, &no_presence);
         profiles.get_mut(&UserId::new("bob")).unwrap().avatar_asset =
             Some("/cache/bob-new.png".into());
+        let presences = HashMap::from([(
+            UserId::new("bob"),
+            crate::domain::presence::Presence {
+                availability: crate::domain::presence::Availability::Active,
+                status_text: None,
+            },
+        )]);
+        let after_avatar =
+            super::sidebar_avatar_inputs_signature(&[], dms, &[], &profiles, &no_presence);
+        assert_ne!(before, after_avatar);
         assert_ne!(
-            before,
-            super::sidebar_avatar_inputs_signature(&[], &[summary], &[], &profiles)
+            after_avatar,
+            super::sidebar_avatar_inputs_signature(&[], dms, &[], &profiles, &presences)
+        );
+        let avatars = super::dm_participant_avatars(&summary, &profiles, &presences);
+        assert_eq!(
+            avatars[1].presence.as_ref().map(|presence| &presence.availability),
+            Some(&crate::domain::presence::Availability::Active)
         );
     }
 
@@ -10631,10 +11595,11 @@ mod tests {
             mention_count: 0,
             muted: false,
             last_activity_ms: 0,
+            last_message: None,
         };
         let mut profiles = std::collections::HashMap::new();
         let missing =
-            super::sidebar_avatar_inputs_signature(&[], &[], &[summary.clone()], &profiles);
+            super::sidebar_avatar_inputs_signature(&[], &[], &[summary.clone()], &profiles, &HashMap::new());
         assert_eq!(super::simple_team_avatar_asset(&summary, &profiles), None);
         profiles.insert(
             UserId::new("team:annar"),
@@ -10654,7 +11619,7 @@ mod tests {
         );
         assert_ne!(
             missing,
-            super::sidebar_avatar_inputs_signature(&[], &[], &[summary.clone()], &profiles),
+            super::sidebar_avatar_inputs_signature(&[], &[], &[summary.clone()], &profiles, &HashMap::new()),
             "an asynchronously loaded team icon must invalidate the sidebar cache"
         );
         summary.group.as_mut().unwrap().team_type = ConversationTeamType::Complex;
@@ -10664,14 +11629,14 @@ mod tests {
             "ordinary channel rows keep their hash icon"
         );
         let before =
-            super::sidebar_avatar_inputs_signature(&[], &[], &[summary.clone()], &profiles);
+            super::sidebar_avatar_inputs_signature(&[], &[], &[summary.clone()], &profiles, &HashMap::new());
         profiles
             .get_mut(&UserId::new("team:annar"))
             .unwrap()
             .avatar_asset = Some("/cache/annar-updated.png".into());
         assert_ne!(
             before,
-            super::sidebar_avatar_inputs_signature(&[], &[], &[summary], &profiles),
+            super::sidebar_avatar_inputs_signature(&[], &[], &[summary], &profiles, &HashMap::new()),
             "complex team header icons must also refresh when their image changes"
         );
     }

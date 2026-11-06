@@ -71,7 +71,7 @@ fn plan(
     let mut y = px(0.);
     let width = wrap_width.max(px(1.));
 
-    for (word_start, word) in text.split_word_bound_indices() {
+    for (word_start, word) in break_units(text) {
         if word == "\n" || word == "\r\n" {
             result.line_starts.push(word_start + word.len());
             x = px(0.);
@@ -79,6 +79,8 @@ fn plan(
             continue;
         }
         let word_end = word_start + word.len();
+        // Trailing spaces hang past the edge instead of forcing a wrap.
+        let visible_end = word_start + word.trim_end_matches(is_space).len();
         let pieces = styled
             .iter()
             .filter_map(|(range, run, font_size)| {
@@ -89,11 +91,17 @@ fn plan(
                 })
             })
             .collect::<Vec<_>>();
-        let total = pieces
+        let visible = pieces
             .iter()
-            .map(|(_, _, _, advances)| advances.last().map_or(px(0.), |(_, x)| *x))
+            .map(|(_, _, _, advances)| {
+                advances
+                    .iter()
+                    .take_while(|(end, _)| *end <= visible_end)
+                    .last()
+                    .map_or(px(0.), |(_, x)| *x)
+            })
             .fold(px(0.), |sum, value| sum + value);
-        if x > px(0.) && x + total > width {
+        if x > px(0.) && x + visible > width {
             result.line_starts.push(word_start);
             x = px(0.);
             y += line_height;
@@ -103,6 +111,21 @@ fn plan(
             let mut first = 0;
             let mut consumed = px(0.);
             while first < advances.len() {
+                if start >= visible_end {
+                    // Only trailing whitespace is left: let it hang, clipped to the edge.
+                    let (end, advance) = advances[advances.len() - 1];
+                    let measured = (advance - consumed).min((width - x).max(px(0.)));
+                    result.spans.push(Span {
+                        range: start..end,
+                        run,
+                        font_size,
+                        origin: point(x, y),
+                        width: measured,
+                    });
+                    x += measured;
+                    result.width = result.width.max(x);
+                    break;
+                }
                 // Shape the piece once. Break by cumulative grapheme advances rather
                 // than repeatedly shaping the remaining suffix on every line.
                 let fitting = advances[first..]
@@ -122,7 +145,7 @@ fn plan(
                 start = end;
                 first = last + 1;
                 consumed = advance;
-                if start < range.end {
+                if start < range.end && start < visible_end {
                     result.line_starts.push(start);
                     x = px(0.);
                     y += line_height;
@@ -131,6 +154,101 @@ fn plan(
         }
     }
     result
+}
+
+/// Splits text into runs that must stay on one line: a word with its trailing
+/// spaces and any punctuation glued to it ("please!", "(maybe)", "\"Skip\"?").
+/// Newlines come out as their own units.
+fn break_units(text: &str) -> Vec<(usize, &str)> {
+    let mut units: Vec<(usize, usize)> = Vec::new();
+    let mut previous: Option<&str> = None;
+    for (start, token) in text.split_word_bound_indices() {
+        let is_newline = token == "\n" || token == "\r\n";
+        let joins = !is_newline
+            && previous.is_some_and(|previous| {
+                previous != "\n" && previous != "\r\n" && !break_allowed_between(previous, token)
+            });
+        match units.last_mut() {
+            Some((_, end)) if joins => *end = start + token.len(),
+            _ => units.push((start, start + token.len())),
+        }
+        previous = Some(token);
+    }
+    units
+        .into_iter()
+        .map(|(start, end)| (start, &text[start..end]))
+        .collect()
+}
+
+/// Line-break opportunity between two adjacent word-boundary tokens.
+fn break_allowed_between(previous: &str, next: &str) -> bool {
+    let (Some(before), Some(after)) = (previous.chars().last(), next.chars().next()) else {
+        return true;
+    };
+    if is_space(after) || is_closing_punctuation(after) {
+        return false;
+    }
+    if is_space(before) {
+        return true;
+    }
+    if is_ambiguous_quote(after) || is_opening_punctuation(before) || is_ambiguous_quote(before) {
+        return false;
+    }
+    // Paths and "and/or" may break after the slash; scripts written without
+    // spaces break between characters.
+    before == '/' || is_ideographic(before) || is_ideographic(after)
+}
+
+/// Breakable spaces. Not U+2003, which stands in for inline custom emoji, and
+/// not no-break spaces.
+fn is_space(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\u{3000}')
+}
+
+const CLOSING_PUNCTUATION: &[char] = &[
+    '!', '?', '.', ',', ';', ':', ')', ']', '}', '%', '”', '’', '»', '›', '…', '‼', '⁇', '、',
+    '。', '，', '．', '！', '？', '：', '；', '）', '］', '｝', '」', '』', '】', '〉', '》', '〕',
+];
+
+const OPENING_PUNCTUATION: &[char] = &[
+    '(', '[', '{', '“', '‘', '«', '‹', '（', '［', '｛', '「', '『', '【', '〈', '《', '〔', '¿',
+    '¡',
+];
+
+fn is_closing_punctuation(ch: char) -> bool {
+    CLOSING_PUNCTUATION.contains(&ch)
+}
+
+fn is_opening_punctuation(ch: char) -> bool {
+    OPENING_PUNCTUATION.contains(&ch)
+}
+
+/// Straight quotes open or close depending on their neighbours.
+fn is_ambiguous_quote(ch: char) -> bool {
+    matches!(ch, '"' | '\'')
+}
+
+fn is_ideographic(ch: char) -> bool {
+    matches!(ch,
+        '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}'
+        | '\u{ac00}'..='\u{d7af}' | '\u{f900}'..='\u{faff}' | '\u{20000}'..='\u{2fa1f}')
+}
+
+/// Whether GPUI's paragraph wrapper could put punctuation on a line of its own:
+/// it treats "!", "?", ")" and similar as break opportunities even when glued to
+/// the previous word. Such paragraphs use the word-based layout instead.
+pub(super) fn has_glued_closing_punctuation(text: &str) -> bool {
+    let mut previous = '\n';
+    text.chars().any(|ch| {
+        // GPUI keeps these attached to the word before them already.
+        let glued = if ch == '"' {
+            !previous.is_whitespace()
+        } else {
+            is_closing_punctuation(ch) && !matches!(ch, '.' | ',' | ':' | '%') && previous != '\n'
+        };
+        previous = ch;
+        glued
+    })
 }
 
 impl MixedLayout {
@@ -468,5 +586,70 @@ mod tests {
             assert!(span.origin.x + span.width <= px(80.));
         }
         assert!(result.line_starts.len() > 1);
+    }
+
+    fn lines(text: &str, width: f32) -> Vec<String> {
+        let result = plan(
+            text,
+            &runs(&[text.len()]),
+            &[],
+            px(14.),
+            px(22.),
+            px(width),
+            |range, _, size| fixed_advances(text, range, size),
+        );
+        let mut starts = result.line_starts.clone();
+        starts.push(text.len());
+        starts
+            .windows(2)
+            .map(|line| text[line[0]..line[1]].trim_end().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn closing_punctuation_stays_with_its_word() {
+        // fixed_advances: 7px per grapheme at 14px. "before Thursday, please!" is 24
+        // graphemes; at 165px "please" fits on the first line but "please!" does not.
+        assert_eq!(
+            lines("before Thursday, please!", 165.),
+            ["before Thursday,", "please!"]
+        );
+        assert_eq!(
+            lines("Copy review, please !", 140.),
+            ["Copy review,", "please !"]
+        );
+        assert_eq!(
+            lines("instead of \"Skip\"?", 120.),
+            ["instead of", "\"Skip\"?"]
+        );
+        assert_eq!(lines("see (the docs)", 95.), ["see (the", "docs)"]);
+    }
+
+    #[test]
+    fn break_units_glue_punctuation_and_trailing_spaces() {
+        let units = |text| {
+            break_units(text)
+                .into_iter()
+                .map(|(_, unit)| unit)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(units("Love it. Maybe!"), ["Love ", "it. ", "Maybe!"]);
+        assert_eq!(units("a \"quote\" here"), ["a ", "\"quote\" ", "here"]);
+        assert_eq!(units("x-ray and/or"), ["x-ray ", "and/", "or"]);
+        assert_eq!(units("one\ntwo"), ["one", "\n", "two"]);
+        assert_eq!(units("日本語。"), ["日", "本", "語。"]);
+    }
+
+    #[test]
+    fn only_paragraphs_gpui_would_strand_need_the_word_layout() {
+        assert!(has_glued_closing_punctuation("please!"));
+        assert!(has_glued_closing_punctuation("really ?"));
+        assert!(has_glued_closing_punctuation("(see docs)"));
+        assert!(has_glued_closing_punctuation("say \"hi\""));
+        assert!(!has_glued_closing_punctuation(
+            "Plain sentence, with a period."
+        ));
+        assert!(!has_glued_closing_punctuation("it's 100% done: \"ok"));
+        assert!(!has_glued_closing_punctuation("!important"));
     }
 }

@@ -28,6 +28,15 @@ pub enum Route {
 }
 
 impl Route {
+    /// Id of the conversation a chat route opens.
+    pub fn conversation_key(&self) -> Option<&str> {
+        match self {
+            Self::Channel { channel_id, .. } => Some(channel_id.0.as_str()),
+            Self::DirectMessage { dm_id, .. } => Some(dm_id.0.as_str()),
+            _ => None,
+        }
+    }
+
     pub fn label(&self) -> String {
         match self {
             Self::WorkspaceHome { .. } => "workspace-home".to_string(),

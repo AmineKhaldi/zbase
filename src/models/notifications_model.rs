@@ -13,7 +13,7 @@ pub enum ToastAction {
 impl ToastAction {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::OpenPreferences => "Open preferences",
+            Self::OpenPreferences => "Open Settings",
             Self::FocusComposer => "Jump to composer",
             Self::OpenThread => "Open thread",
             Self::FocusThreadReply => "Reply in thread",

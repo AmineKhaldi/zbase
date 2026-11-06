@@ -61,6 +61,11 @@ pub enum UiAction {
     SendMessage {
         key: DraftKey,
     },
+    /// Removes a message that failed to send. It never reached Keybase, so
+    /// this is local only; messages in any other state are left alone.
+    DiscardFailedMessage {
+        message_id: MessageId,
+    },
     EditMessage {
         conversation_id: ConversationId,
         message_id: MessageId,

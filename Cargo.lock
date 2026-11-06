@@ -6664,6 +6664,7 @@ dependencies = [
  "ffmpeg-next",
  "gpui",
  "image",
+ "objc",
  "reqwest",
  "rmp-serde",
  "rmpv",

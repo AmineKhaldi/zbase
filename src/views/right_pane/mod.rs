@@ -1,5 +1,7 @@
 mod details;
+mod members;
 use details::render_details_panel;
+use members::render_members_panel;
 
 use crate::util::emoji_aliases::standard_emoji_for_alias;
 use crate::{
@@ -29,8 +31,8 @@ use crate::{
         attachment_display_label, attachment_header_row, attachment_image_source,
         attachment_lightbox_source, attachment_local_path,
         avatar::{Avatar, default_avatar_background},
-        badge, border, chevron_down_icon, close_icon, crown_icon, danger, danger_soft, emoji_icon,
-        format_duration_ms, glass_surface_strong,
+        badge, border, chevron_down_icon, close_icon, danger, danger_soft,
+        format_duration_ms,
         inline_markdown::{InlineMarkdownConfig, apply_inline_markdown, remap_source_byte_range},
         input::TextField,
         is_dark_theme, mention_colors_for_user, mono_font_family, mono_font_size,
@@ -41,9 +43,9 @@ use crate::{
             InlineAttachment, LinkRange, SelectableText, StyledRange, resolve_selectable_text,
             resolve_selectable_text_inline, resolve_selectable_text_with_attachments,
         },
-        subtle_surface, text_primary, text_secondary,
+        shell_border, text_primary, text_secondary,
         timeline::TimelineList,
-        tint, warning,
+        tint,
     },
 };
 use gpui::prelude::FluentBuilder;
@@ -89,6 +91,10 @@ impl RightPaneHost {
         code_highlight_cache: &mut crate::views::code_highlight::CodeHighlightCache,
         selectable_texts: &mut HashMap<String, Entity<SelectableText>>,
         reply_input: &Entity<TextField>,
+        reply_state: crate::views::composer::ComposerFieldState,
+        members_filter_input: &Entity<TextField>,
+        members_filter_focused: bool,
+        search_contexts: &[crate::views::search::SearchResultContext],
         thread_scroll: &ScrollHandle,
         profile_scroll: &ScrollHandle,
         profile_social_scroll: &ScrollHandle,
@@ -101,10 +107,12 @@ impl RightPaneHost {
             RightPaneMode::Thread => ThreadPane.render(
                 thread,
                 timeline,
+                conversation_location(conversation),
                 video_render_cache,
                 code_highlight_cache,
                 selectable_texts,
                 reply_input,
+                reply_state,
                 thread_scroll,
                 unseen_reply_count,
                 cx,
@@ -112,10 +120,15 @@ impl RightPaneHost {
             RightPaneMode::Details => {
                 render_details_panel(conversation, timeline, capabilities, cx)
             }
-            RightPaneMode::Members => render_members_panel(conversation, cx),
+            RightPaneMode::Members => render_members_panel(
+                conversation,
+                members_filter_input,
+                members_filter_focused,
+                cx,
+            ),
             RightPaneMode::Files => render_files_panel(timeline, cx),
             RightPaneMode::Search => {
-                render_search_panel(conversation, search, video_render_cache, cx)
+                render_search_panel(conversation, search, search_contexts, cx)
             }
             RightPaneMode::Profile(_) => crate::views::profile::render_profile_panel(
                 profile_panel,
@@ -138,7 +151,10 @@ impl RightPaneHost {
                     .w(px(RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX))
                     .flex_shrink_0()
                     .h_full()
-                    .bg(glass_surface_strong())
+                    .bg(crate::views::right_pane_surface())
+                    // 1px hairline between the conversation and the pane.
+                    .border_l_1()
+                    .border_color(rgb(border()))
                     .cursor(CursorStyle::ResizeColumn)
                     .id("thread-pane-resize-handle")
                     .on_drag(RightPaneResizeDrag, |_, _, _, cx| {
@@ -166,7 +182,7 @@ impl RightPaneHost {
                 div()
                     .flex_1()
                     .h_full()
-                    .bg(glass_surface_strong())
+                    .bg(crate::views::right_pane_surface())
                     .text_color(rgb(text_primary()))
                     .overflow_hidden()
                     .child(content),
@@ -180,19 +196,27 @@ impl ThreadPane {
         &self,
         thread: &ThreadPaneModel,
         timeline: &TimelineModel,
+        location: Option<String>,
         video_render_cache: &HashMap<String, Arc<RenderImage>>,
         code_highlight_cache: &mut crate::views::code_highlight::CodeHighlightCache,
         selectable_texts: &mut HashMap<String, Entity<SelectableText>>,
         reply_input: &Entity<TextField>,
+        reply_state: crate::views::composer::ComposerFieldState,
         thread_scroll: &ScrollHandle,
         unseen_reply_count: usize,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         let thread_rows = build_thread_message_rows(thread, timeline);
+        let thread_is_empty = thread_rows.is_empty();
+        let reply_count = thread_rows
+            .iter()
+            .filter(|row| thread.root_message_id.as_ref() != Some(&row.message.id))
+            .count();
         let thread_content_width = (thread.width_px - RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX).max(0.0);
         // Keep media within the usable message-content column in the thread pane:
-        // row padding (32) + avatar/gap (44) + scrollbar gutter/right padding (32) + guard (8).
-        let thread_media_max_width = (thread_content_width - 116.0).clamp(72.0, 280.0);
+        // row padding (32) + avatar/gap (44) + guard (8). Text runs to the pane's
+        // 16px inset, like the reply composer below it.
+        let thread_media_max_width = (thread_content_width - 84.0).clamp(72.0, 280.0);
 
         div()
             .size_full()
@@ -216,59 +240,60 @@ impl ThreadPane {
                     this.open_thread_file_upload_with_paths(file_paths, cx);
                 }
             }))
-            .child(
-                div()
-                    .px_4()
-                    .py_4()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(text_primary()))
-                            .child("Thread"),
-                    )
-                    .child(
-                        div()
-                            .id("thread-pane-close")
-                            .w(px(22.))
-                            .h(px(22.))
-                            .rounded_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .hover(|s| s.bg(subtle_surface()))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.close_right_pane(window, cx);
-                            }))
-                            .child(close_icon(text_secondary())),
-                    ),
-            )
+            .child(pane_header("Thread", location, "thread-pane-close", cx))
             .child(
                 div()
                     .flex_1()
                     .min_h(px(0.))
-                    .id("thread-pane-scroll")
-                    .overflow_y_scroll()
-                    .scrollbar_width(px(8.))
-                    .track_scroll(thread_scroll)
-                    .on_scroll_wheel(cx.listener(AppWindow::thread_scrolled))
-                    .pr_8()
-                    .child(div().mt_4().pb_4().flex().flex_col().gap_1().children(
-                        thread_rows.into_iter().map(|row| {
-                            let timeline_row = TimelineRow::Message(row);
-                            TimelineList::render_thread_row(
-                                timeline,
-                                &timeline_row,
-                                thread_media_max_width,
-                                video_render_cache,
-                                code_highlight_cache,
-                                selectable_texts,
-                                cx,
-                            )
-                        }),
-                    )),
+                    .relative()
+                    .child(
+                        div()
+                            .size_full()
+                            .id("thread-pane-scroll")
+                            .overflow_y_scroll()
+                            .track_scroll(thread_scroll)
+                            .on_scroll_wheel(cx.listener(AppWindow::thread_scrolled))
+                            .child(div().pt_3().pb_4().flex().flex_col().gap_1().children(
+                                thread_rows.into_iter().flat_map(|row| {
+                                    let is_root =
+                                        thread.root_message_id.as_ref() == Some(&row.message.id);
+                                    let timeline_row = TimelineRow::Message(row);
+                                    let rendered = TimelineList::render_thread_row(
+                                        timeline,
+                                        &timeline_row,
+                                        thread_media_max_width,
+                                        video_render_cache,
+                                        code_highlight_cache,
+                                        selectable_texts,
+                                        cx,
+                                    );
+                                    // Set the root apart from its replies, or say there
+                                    // are none yet.
+                                    let divider = is_root.then(|| {
+                                        if reply_count > 0 {
+                                            crate::views::timeline::thread_replies_divider(
+                                                reply_count,
+                                            )
+                                        } else {
+                                            thread_no_replies_note()
+                                        }
+                                    });
+                                    std::iter::once(rendered).chain(divider)
+                                }),
+                            ))
+                            .when(thread_is_empty, |scroll| {
+                                scroll.child(crate::views::empty_state(
+                                    "assets/icons/thread.svg",
+                                    if thread.loading {
+                                        "Loading thread…"
+                                    } else {
+                                        "This message isn't available"
+                                    },
+                                    None,
+                                ))
+                            }),
+                    )
+                    .child(crate::views::scroll_edge_fade(crate::views::right_pane_surface())),
             )
             .when(unseen_reply_count > 0, |container| {
                 container.child(
@@ -296,36 +321,24 @@ impl ThreadPane {
             })
             .child(
                 div()
-                    .mx_4()
-                    .mb_4()
+                    .px_4()
+                    .pt_1()
+                    .pb(px(crate::views::composer::COMPOSER_BOTTOM_INSET_PX))
                     .flex_shrink_0()
-                    .rounded_md()
-                    .bg(panel_alt_surface())
-                    .text_sm()
-                    .line_height(px(22.))
-                    .text_color(rgb(text_primary()))
-                    .relative()
-                    .id("thread-pane-input-surface")
-                    .on_click(cx.listener(AppWindow::focus_thread_input))
-                    .child(div().px_3().py_2().pr(px(36.)).child(reply_input.clone()))
-                    .child(
-                        div().absolute().bottom_1().right_1().child(
-                            div()
-                                .id("thread-emoji-inline")
-                                .w(px(24.))
-                                .h(px(24.))
-                                .rounded_md()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor(gpui::CursorStyle::PointingHand)
-                                .hover(|s| s.bg(rgb(0x00000010)))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.toggle_emoji_picker(cx);
-                                }))
-                                .child(emoji_icon(text_secondary())),
-                        ),
-                    ),
+                    .flex()
+                    .flex_col()
+                    .child(crate::views::composer::composer_field(
+                        crate::views::composer::ComposerTarget::Thread,
+                        reply_input,
+                        reply_state,
+                        if is_dark_theme() {
+                            rgb(crate::views::field_bg()).into()
+                        } else {
+                            rgb(crate::views::main_bg()).into()
+                        },
+                        cx,
+                    ))
+                    .child(crate::views::composer::composer_hint(&reply_state)),
             )
             .into_any_element()
     }
@@ -1037,16 +1050,94 @@ fn media_frame_size(
     (width.max(100.0), height.max(80.0))
 }
 
-fn pane_header(title: &str, close_id: &'static str, cx: &mut Context<AppWindow>) -> AnyElement {
+/// Under a thread root that has no replies yet: a rule and a quiet prompt.
+fn thread_no_replies_note() -> AnyElement {
     div()
+        .px_4()
+        .pt_3()
+        .pb_2()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(text_secondary()))
+                        .child("No replies yet"),
+                )
+                .child(div().flex_1().h(px(1.)).bg(rgb(border()))),
+        )
+        .child(
+            div()
+                .text_size(px(13.))
+                .text_color(rgb(text_secondary()))
+                .child("Reply below. Replies also appear in the conversation, quoting this message."),
+        )
+        .into_any_element()
+}
+
+/// Where a thread lives, for the thread pane subtitle: "#general", "Alice Johnson".
+fn conversation_location(conversation: &ConversationModel) -> Option<String> {
+    let title = conversation.summary.title.trim();
+    if title.is_empty() {
+        return None;
+    }
+    Some(match conversation.summary.kind {
+        crate::domain::conversation::ConversationKind::Channel => format!("#{title}"),
+        _ => title.to_string(),
+    })
+}
+
+/// Header shared by every right-pane mode. 56px with a hairline, so it lines up
+/// with the conversation header beside it and content scrolls beneath it.
+pub(crate) fn pane_header(
+    title: &str,
+    subtitle: Option<String>,
+    close_id: &'static str,
+    cx: &mut Context<AppWindow>,
+) -> AnyElement {
+    div()
+        .h(px(56.))
+        .flex_shrink_0()
+        .px_4()
         .flex()
         .items_center()
         .justify_between()
+        .gap_3()
+        .border_b_1()
+        .border_color(shell_border())
         .child(
             div()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(text_primary()))
-                .child(title.to_string()),
+                .flex_1()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .text_size(px(15.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(text_primary()))
+                        .child(title.to_string()),
+                )
+                .when_some(subtitle, |block, subtitle| {
+                    block.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(rgb(text_secondary()))
+                            .whitespace_normal()
+                            .line_clamp(1)
+                            .text_ellipsis()
+                            .child(subtitle),
+                    )
+                }),
         )
         .child(
             div()
@@ -1054,25 +1145,81 @@ fn pane_header(title: &str, close_id: &'static str, cx: &mut Context<AppWindow>)
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.close_right_pane(window, cx);
                 }))
-                .w(px(22.))
-                .h(px(22.))
-                .rounded_full()
+                .size(px(28.))
+                .flex_shrink_0()
+                .rounded(px(6.))
                 .flex()
                 .items_center()
                 .justify_center()
-                .hover(|s| s.bg(subtle_surface()))
+                .cursor(CursorStyle::PointingHand)
+                .hover(|s| s.bg(tint(text_primary(), 0.07)))
+                .tooltip(crate::views::tooltip::TextTooltip::single_line(
+                    "Close".to_string(),
+                ))
                 .child(close_icon(text_secondary())),
         )
         .into_any_element()
 }
 
+/// A right-pane mode: the fixed header above a body that fills and scrolls.
+pub(crate) fn pane_with_header(header: AnyElement, body: AnyElement) -> AnyElement {
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .child(header)
+        .child(body)
+        .into_any_element()
+}
 
-fn member_name_color(affinity: Affinity) -> u32 {
-    match affinity {
-        Affinity::None => text_primary(),
-        Affinity::Positive => crate::views::affinity_positive(),
-        Affinity::Broken => crate::views::affinity_broken(),
+/// Avatar with presence (and a tooltip naming it) for a member row; `surface`
+/// is the row background.
+fn member_avatar(
+    id_prefix: &str,
+    member: &crate::domain::channel_details::ChannelMemberPreview,
+    size: f32,
+    surface: gpui::Hsla,
+) -> AnyElement {
+    Avatar::with_presence_tooltip(
+        SharedString::from(format!("{id_prefix}-presence-{}", member.user_id.0)),
+        Avatar::render(
+            &member.display_name,
+            member.avatar_asset.as_deref(),
+            size,
+            default_avatar_background(&member.display_name),
+            text_primary(),
+        ),
+        size,
+        member.availability.as_ref(),
+        surface,
+    )
+}
+
+/// Identity and role markers that follow a member's (neutral) name.
+fn member_markers(
+    member: &crate::domain::channel_details::ChannelMemberPreview,
+    id_prefix: &str,
+) -> Vec<AnyElement> {
+    let mut markers = Vec::new();
+    if let Some(marker) = crate::views::identity_marker(
+        SharedString::from(format!("{id_prefix}-identity-{}", member.user_id.0)),
+        member.affinity,
+        &member.display_name,
+        true,
+    ) {
+        markers.push(marker);
     }
+    if member.is_team_admin_or_owner {
+        markers.push(crate::views::role_crown_badge(
+            SharedString::from(format!("{id_prefix}-role-{}", member.user_id.0)),
+            if member.is_team_owner {
+                "Team owner"
+            } else {
+                "Team admin"
+            },
+        ));
+    }
+    markers
 }
 
 fn truncate_with_ellipsis(value: &str, max_chars: usize) -> String {
@@ -1082,142 +1229,6 @@ fn truncate_with_ellipsis(value: &str, max_chars: usize) -> String {
     let mut truncated = value.chars().take(max_chars).collect::<String>();
     truncated.push('…');
     truncated
-}
-
-fn render_members_panel(
-    conversation: &ConversationModel,
-    cx: &mut Context<AppWindow>,
-) -> AnyElement {
-    let details = conversation.details.as_ref();
-    let members = details.map(|d| d.members.as_slice()).unwrap_or(&[]);
-    let (bots, people): (Vec<_>, Vec<_>) = members
-        .iter()
-        .cloned()
-        .partition(|member| member.user_id.0.to_ascii_lowercase().ends_with("bot"));
-
-    div()
-        .size_full()
-        .id("right-pane-members-scroll")
-        .overflow_y_scroll()
-        .scrollbar_width(px(8.))
-        .p_4()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .child(pane_header("Members", "members-pane-close", cx))
-        .when(members.is_empty(), |container| {
-            container.child(
-                div()
-                    .rounded_lg()
-                    .bg(panel_alt_surface())
-                    .p_4()
-                    .text_sm()
-                    .text_color(rgb(text_secondary()))
-                    .child("No member list available yet."),
-            )
-        })
-        .children(people.into_iter().enumerate().map(|(index, member)| {
-            let user_id = member.user_id.clone();
-            let label = member.display_name.clone();
-            div()
-                .id(("members-pane-row", index))
-                .rounded_lg()
-                .bg(panel_alt_surface())
-                .px_3()
-                .py_2()
-                .flex()
-                .items_center()
-                .gap_2()
-                .cursor(CursorStyle::PointingHand)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.open_user_profile_card(user_id.clone(), cx);
-                }))
-                .child(Avatar::render(
-                    &label,
-                    member.avatar_asset.as_deref(),
-                    24.,
-                    default_avatar_background(&label),
-                    text_primary(),
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .text_sm()
-                        .text_color(rgb(member_name_color(member.affinity)))
-                        .child(label),
-                )
-                .when(member.is_team_admin_or_owner, |row| {
-                    row.child(
-                        div()
-                            .relative()
-                            .top(px(-1.))
-                            .flex()
-                            .items_center()
-                            .text_color(rgb(warning()))
-                            .child(crown_icon(warning())),
-                    )
-                })
-                .into_any_element()
-        }))
-        .when(!bots.is_empty(), |container| {
-            container
-                .child(
-                    div()
-                        .pt_2()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(text_primary()))
-                        .child(format!("Bots ({})", bots.len())),
-                )
-                .children(bots.into_iter().enumerate().map(|(index, member)| {
-                    let user_id = member.user_id.clone();
-                    let label = member.display_name.clone();
-                    div()
-                        .id(("members-pane-bot-row", index))
-                        .rounded_lg()
-                        .bg(panel_alt_surface())
-                        .px_3()
-                        .py_2()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .cursor(CursorStyle::PointingHand)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.open_user_profile_card(user_id.clone(), cx);
-                        }))
-                        .child(Avatar::render(
-                            &label,
-                            member.avatar_asset.as_deref(),
-                            24.,
-                            default_avatar_background(&label),
-                            text_primary(),
-                        ))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .text_sm()
-                                .text_color(rgb(member_name_color(member.affinity)))
-                                .child(label),
-                        )
-                        .when(member.is_team_admin_or_owner, |row| {
-                            row.child(
-                                div()
-                                    .relative()
-                                    .top(px(-1.))
-                                    .flex()
-                                    .items_center()
-                                    .text_color(rgb(warning()))
-                                    .child(crown_icon(warning())),
-                            )
-                        })
-                        .into_any_element()
-                }))
-        })
-        .into_any_element()
 }
 
 fn render_files_panel(timeline: &TimelineModel, cx: &mut Context<AppWindow>) -> AnyElement {
@@ -1231,8 +1242,9 @@ fn render_files_panel(timeline: &TimelineModel, cx: &mut Context<AppWindow>) -> 
         .flatten()
         .collect::<Vec<_>>();
 
-    div()
-        .size_full()
+    let body = div()
+        .flex_1()
+        .min_h(px(0.))
         .id("right-pane-files-scroll")
         .overflow_y_scroll()
         .scrollbar_width(px(8.))
@@ -1240,17 +1252,12 @@ fn render_files_panel(timeline: &TimelineModel, cx: &mut Context<AppWindow>) -> 
         .flex()
         .flex_col()
         .gap_3()
-        .child(pane_header("Files", "files-pane-close", cx))
         .when(attachments.is_empty(), |container| {
-            container.child(
-                div()
-                    .rounded_lg()
-                    .bg(panel_alt_surface())
-                    .p_4()
-                    .text_sm()
-                    .text_color(rgb(text_secondary()))
-                    .child("No files yet in this conversation."),
-            )
+            container.child(crate::views::empty_state(
+                "assets/icons/files.svg",
+                "No files yet",
+                Some("Files and images shared in this conversation appear here.".to_string()),
+            ))
         })
         .children(
             attachments
@@ -1271,13 +1278,14 @@ fn render_files_panel(timeline: &TimelineModel, cx: &mut Context<AppWindow>) -> 
                         .into_any_element()
                 }),
         )
-        .into_any_element()
+        .into_any_element();
+    pane_with_header(pane_header("Files", None, "files-pane-close", cx), body)
 }
 
 fn render_search_panel(
     conversation: &ConversationModel,
     search: &SearchModel,
-    _video_render_cache: &HashMap<String, Arc<RenderImage>>,
+    contexts: &[crate::views::search::SearchResultContext],
     cx: &mut Context<AppWindow>,
 ) -> AnyElement {
     let scoped_results = search
@@ -1291,45 +1299,44 @@ fn render_search_panel(
         })
         .collect::<Vec<_>>();
 
-    div()
-        .size_full()
+    let body = div()
+        .flex_1()
+        .min_h(px(0.))
         .id("right-pane-search-scroll")
         .overflow_y_scroll()
         .scrollbar_width(px(8.))
-        .p_4()
+        .px(px(8.))
+        .py(px(8.))
         .flex()
         .flex_col()
-        .gap_3()
-        .child(pane_header("Search", "search-pane-close", cx))
-        .child(
-            div()
-                .text_sm()
-                .text_color(rgb(text_secondary()))
-                .child(format!("Scoped to {}", conversation.summary.title)),
-        )
-        .children(scoped_results.into_iter().map(|(result_index, result)| {
-            div()
-                .id(("search-pane-result", result_index))
-                .rounded_lg()
-                .bg(panel_alt_surface())
-                .px_3()
-                .py_2()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_search_result_at(result_index, window, cx);
-                }))
-                .child(result.snippet.clone())
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(text_secondary()))
-                        .child(message_timestamp_label(result.message.timestamp_ms)),
-                )
-                .into_any_element()
+        .gap(px(2.))
+        .when(scoped_results.is_empty(), |list| {
+            list.child(crate::views::empty_state(
+                "assets/icons/search.svg",
+                if search.is_loading {
+                    "Searching…"
+                } else {
+                    "No matches here"
+                },
+                (!search.is_loading)
+                    .then(|| "Search results from this conversation appear here.".to_string()),
+            ))
+        })
+        .children(scoped_results.into_iter().map(|(index, result)| {
+            crate::views::search::search_result_row(
+                index,
+                result,
+                contexts.get(index),
+                search.highlighted_index == Some(index),
+                None,
+                cx,
+            )
         }))
-        .into_any_element()
+        .into_any_element();
+    pane_with_header(
+        pane_header("Search", conversation_location(conversation), "search-pane-close", cx),
+        body,
+    )
 }
 
 fn find_message(
@@ -2089,6 +2096,7 @@ fn render_styled_fragment_text(
             italic: false,
             monospace: false,
             strikethrough: false,
+            meta: false,
         });
     }
     let selectable = if compact_inline {
@@ -2148,6 +2156,7 @@ fn render_linked_styled_fragment_text(
             italic: false,
             monospace: false,
             strikethrough: false,
+            meta: false,
         });
     }
     let selectable = if compact_inline {
@@ -2197,6 +2206,7 @@ fn push_styled_span(
             italic: false,
             monospace: false,
             strikethrough: false,
+            meta: false,
         });
     }
 }

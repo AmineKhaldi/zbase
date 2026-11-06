@@ -38,6 +38,9 @@ pub struct StyledRange {
     pub italic: bool,
     pub monospace: bool,
     pub strikethrough: bool,
+    /// Annotation such as "(edited)": drawn small in the body font and left out
+    /// of copied text.
+    pub meta: bool,
 }
 
 impl StyledRange {
@@ -50,6 +53,7 @@ impl StyledRange {
             italic: false,
             monospace: true,
             strikethrough: false,
+            meta: false,
         }
     }
 }
@@ -193,6 +197,24 @@ impl SelectableText {
         self.last_bounds = None;
     }
 
+    /// Ranges to draw at the small inline size when this paragraph needs the
+    /// word-based layout: for inline code or "(edited)", or so closing punctuation
+    /// never wraps onto a line of its own (GPUI's wrapper breaks before "!" or ")").
+    /// `None` keeps GPUI's paragraph layout.
+    fn mixed_layout_ranges(&self) -> Option<Vec<Range<usize>>> {
+        if !MixedLayout::supports(&self.content) {
+            return None;
+        }
+        let small = self
+            .styled_ranges
+            .iter()
+            .filter(|range| range.monospace || range.meta)
+            .map(|range| range.byte_range.clone())
+            .collect::<Vec<_>>();
+        (!small.is_empty() || mixed_layout::has_glued_closing_punctuation(&self.content))
+            .then_some(small)
+    }
+
     fn cursor_offset(&self) -> usize {
         if self.selection_reversed {
             self.selected_range.start
@@ -320,40 +342,12 @@ impl SelectableText {
     }
 
     fn selected_text_for_copy(&self) -> String {
-        if self.selected_range.is_empty() {
-            return String::new();
-        }
-
-        if self.inline_attachments.is_empty() {
-            return self.content[self.selected_range.clone()].to_string();
-        }
-
-        let selected = self.selected_range.clone();
-        let mut attachments = self
-            .inline_attachments
-            .iter()
-            .filter(|attachment| ranges_overlap(&attachment.byte_range, &selected))
-            .collect::<Vec<_>>();
-        attachments.sort_by_key(|attachment| attachment.byte_range.start);
-
-        let mut out = String::new();
-        let mut cursor = selected.start;
-        for attachment in attachments {
-            let start = attachment.byte_range.start.max(selected.start);
-            let end = attachment.byte_range.end.min(selected.end);
-            if start >= end {
-                continue;
-            }
-            if cursor < start {
-                out.push_str(&self.content[cursor..start]);
-            }
-            out.push_str(&attachment.fallback_text);
-            cursor = cursor.max(end);
-        }
-        if cursor < selected.end {
-            out.push_str(&self.content[cursor..selected.end]);
-        }
-        out
+        text_for_copy(
+            &self.content,
+            self.selected_range.clone(),
+            &self.inline_attachments,
+            &self.styled_ranges,
+        )
     }
 
     pub fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
@@ -815,12 +809,7 @@ impl Element for SelectableTextElement {
             .last_layout
             .as_ref()
             .and_then(|layout| layout.mixed.clone());
-        let code_ranges = view
-            .styled_ranges
-            .iter()
-            .filter(|range| range.monospace && MixedLayout::supports(&view.content))
-            .map(|range| range.byte_range.clone())
-            .collect::<Vec<_>>();
+        let mixed_ranges = view.mixed_layout_ranges();
 
         let mut style = Style::default();
         if fill_width {
@@ -834,7 +823,7 @@ impl Element for SelectableTextElement {
                     _ => None,
                 });
 
-                if !code_ranges.is_empty() {
+                if let Some(code_ranges) = &mixed_ranges {
                     let width = wrap_width.unwrap_or(Pixels::MAX);
                     if let Some(cached) = &cached_mixed
                         && cached.matches(font_size, line_height, width, &runs)
@@ -844,7 +833,7 @@ impl Element for SelectableTextElement {
                     return MixedLayout::shape(
                         &content,
                         &runs,
-                        &code_ranges,
+                        code_ranges,
                         font_size,
                         line_height,
                         wrap_width.unwrap_or(Pixels::MAX),
@@ -891,13 +880,7 @@ impl Element for SelectableTextElement {
         let style = window.text_style();
         let font_size = style.font_size.to_pixels(window.rem_size());
         let runs = view.build_text_runs(style.color, style.font());
-        let code_ranges = view
-            .styled_ranges
-            .iter()
-            .filter(|range| range.monospace && MixedLayout::supports(&view.content))
-            .map(|range| range.byte_range.clone())
-            .collect::<Vec<_>>();
-        let mixed = (!code_ranges.is_empty()).then(|| {
+        let mixed = view.mixed_layout_ranges().map(|code_ranges| {
             let width = bounds.size.width.max(px(1.));
             if let Some(cached) = view
                 .last_layout
@@ -1555,9 +1538,88 @@ fn resource_from_attachment_source(source: &str) -> Resource {
     Resource::Embedded(trimmed.to_string().into())
 }
 
+/// Inline images copy as their fallback text; annotations such as "(edited)" are
+/// not part of the message and copy as nothing.
+fn text_for_copy(
+    content: &str,
+    selected: Range<usize>,
+    inline_attachments: &[InlineAttachment],
+    styled_ranges: &[StyledRange],
+) -> String {
+    if selected.is_empty() {
+        return String::new();
+    }
+    let mut replacements = inline_attachments
+        .iter()
+        .map(|attachment| {
+            (
+                attachment.byte_range.clone(),
+                attachment.fallback_text.as_str(),
+            )
+        })
+        .chain(
+            styled_ranges
+                .iter()
+                .filter(|range| range.meta)
+                .map(|range| (range.byte_range.clone(), "")),
+        )
+        .filter(|(range, _)| ranges_overlap(range, &selected))
+        .collect::<Vec<_>>();
+    if replacements.is_empty() {
+        return content[selected].to_string();
+    }
+    replacements.sort_by_key(|(range, _)| range.start);
+
+    let mut out = String::new();
+    let mut cursor = selected.start;
+    for (range, replacement) in replacements {
+        let start = range.start.max(selected.start);
+        let end = range.end.min(selected.end);
+        if start >= end || start < cursor {
+            continue;
+        }
+        out.push_str(&content[cursor..start]);
+        out.push_str(replacement);
+        cursor = end;
+    }
+    if cursor < selected.end {
+        out.push_str(&content[cursor..selected.end]);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copied_text_drops_annotations_and_expands_inline_images() {
+        let content = "hi \u{FFFC} there (edited)";
+        let image = content.find('\u{FFFC}').unwrap();
+        let edited = content.find(" (edited)").unwrap();
+        let attachments = [InlineAttachment {
+            byte_range: image..image + '\u{FFFC}'.len_utf8(),
+            source: String::new(),
+            fallback_text: ":wave:".into(),
+            size_px: 16,
+        }];
+        let styled = [StyledRange {
+            byte_range: edited..content.len(),
+            color: None,
+            background_color: None,
+            bold: false,
+            italic: false,
+            monospace: false,
+            strikethrough: false,
+            meta: true,
+        }];
+        assert_eq!(
+            text_for_copy(content, 0..content.len(), &attachments, &styled),
+            "hi :wave: there"
+        );
+        assert_eq!(text_for_copy(content, 0..2, &attachments, &styled), "hi");
+        assert_eq!(text_for_copy(content, 0..0, &attachments, &styled), "");
+    }
 
     #[test]
     fn deferred_text_layout_uses_captured_colors_after_parent_theme_ends() {
@@ -1594,7 +1656,7 @@ mod tests {
                 Some(rgb(captured.link).into())
             );
         }
-        assert_eq!(dark.link, 0x3663ea);
+        assert_eq!(dark.link, 0x6a9dff);
         assert_eq!(dark.selection, 0x4c8eff4d);
     }
 
@@ -1647,6 +1709,7 @@ mod tests {
                     italic: false,
                     monospace: false,
                     strikethrough: false,
+                    meta: false,
                 },
                 StyledRange {
                     byte_range: 0..3,
@@ -1656,6 +1719,7 @@ mod tests {
                     italic: true,
                     monospace: false,
                     strikethrough: false,
+                    meta: false,
                 },
                 StyledRange {
                     byte_range: 0..3,
@@ -1665,6 +1729,7 @@ mod tests {
                     italic: false,
                     monospace: false,
                     strikethrough: true,
+                    meta: false,
                 },
             ],
             rgb(0x223344).into(),
@@ -1694,6 +1759,7 @@ mod tests {
                 italic: false,
                 monospace: false,
                 strikethrough: false,
+                meta: false,
             }],
             rgb(0x223344).into(),
             gpui::font(".SystemUIFont"),
@@ -1722,6 +1788,7 @@ mod tests {
                 italic: false,
                 monospace: false,
                 strikethrough: false,
+                meta: false,
             }],
             rgb(0x223344).into(),
             gpui::font(".SystemUIFont"),
@@ -1748,6 +1815,7 @@ mod tests {
                     italic: false,
                     monospace: false,
                     strikethrough: false,
+                    meta: false,
                 },
                 StyledRange {
                     byte_range: 0..3,
@@ -1757,6 +1825,7 @@ mod tests {
                     italic: false,
                     monospace: false,
                     strikethrough: false,
+                    meta: false,
                 },
             ],
             rgb(0x223344).into(),

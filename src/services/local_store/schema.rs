@@ -7,6 +7,7 @@ use crate::{
             ConversationGroup, ConversationKind, ConversationSummary, ConversationTeamType,
         },
         ids::{ConversationId, MessageId, UserId, WorkspaceId},
+        message_preview::{MessagePreview, PreviewBody},
         message::{
             BroadcastKind, ChatEvent, EditMeta, LinkPreview, MessageFragment, MessageRecord,
             MessageSendState,
@@ -39,6 +40,73 @@ pub struct CachedConversationSummary {
     // Older builds persisted startup ordering as if it were server activity.
     #[serde(default)]
     pub canonical_activity: bool,
+    #[serde(default)]
+    pub last_message: Option<CachedMessagePreview>,
+}
+
+/// `MessagePreview` on disk. `kind` is "text", "attachment", "event", "deleted"
+/// or "snippet"; `text` holds the body text, caption or event phrase.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CachedMessagePreview {
+    pub message_id: Option<String>,
+    pub author_id: Option<String>,
+    pub timestamp_ms: i64,
+    pub kind: String,
+    pub text: String,
+    #[serde(default)]
+    pub attachment_name: String,
+    #[serde(default)]
+    pub attachment_kind: String,
+}
+
+impl CachedMessagePreview {
+    pub fn from_domain(preview: &MessagePreview) -> Self {
+        let (kind, text, attachment_name, attachment_kind) = match &preview.body {
+            PreviewBody::Text(text) => ("text", text.clone(), String::new(), ""),
+            PreviewBody::Attachment {
+                kind,
+                name,
+                caption,
+            } => (
+                "attachment",
+                caption.clone().unwrap_or_default(),
+                name.clone(),
+                attachment_kind_label(kind),
+            ),
+            PreviewBody::Event(text) => ("event", text.clone(), String::new(), ""),
+            PreviewBody::Deleted => ("deleted", String::new(), String::new(), ""),
+            PreviewBody::Snippet(text) => ("snippet", text.clone(), String::new(), ""),
+        };
+        Self {
+            message_id: preview.message_id.as_ref().map(|id| id.0.clone()),
+            author_id: preview.author_id.as_ref().map(|id| id.0.clone()),
+            timestamp_ms: preview.timestamp_ms,
+            kind: kind.to_string(),
+            text,
+            attachment_name,
+            attachment_kind: attachment_kind.to_string(),
+        }
+    }
+
+    pub fn to_domain(&self) -> MessagePreview {
+        let body = match self.kind.as_str() {
+            "attachment" => PreviewBody::Attachment {
+                kind: parse_attachment_kind(&self.attachment_kind),
+                name: self.attachment_name.clone(),
+                caption: (!self.text.is_empty()).then(|| self.text.clone()),
+            },
+            "event" => PreviewBody::Event(self.text.clone()),
+            "deleted" => PreviewBody::Deleted,
+            "snippet" => PreviewBody::Snippet(self.text.clone()),
+            _ => PreviewBody::Text(self.text.clone()),
+        };
+        MessagePreview {
+            message_id: self.message_id.clone().map(MessageId::new),
+            author_id: self.author_id.clone().map(UserId::new),
+            timestamp_ms: self.timestamp_ms,
+            body,
+        }
+    }
 }
 
 impl CachedConversationSummary {
@@ -62,6 +130,10 @@ impl CachedConversationSummary {
             muted: summary.muted,
             last_activity_time,
             canonical_activity: true,
+            last_message: summary
+                .last_message
+                .as_ref()
+                .map(CachedMessagePreview::from_domain),
         }
     }
 
@@ -88,6 +160,10 @@ impl CachedConversationSummary {
             } else {
                 0
             },
+            last_message: self
+                .last_message
+                .as_ref()
+                .map(CachedMessagePreview::to_domain),
         }
     }
 }
@@ -849,6 +925,7 @@ mod tests {
                 mention_count: 0,
                 muted: false,
                 last_activity_ms: 100,
+                last_message: None,
             };
             let bytes =
                 rmp_serde::to_vec(&CachedConversationSummary::from_domain(&summary, 100)).unwrap();

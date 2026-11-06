@@ -27,6 +27,7 @@ use crate::{
             BroadcastKind, ChatEvent, EditMeta, EmojiSourceRef, LinkPreview, MessageFragment,
             MessageReaction, MessageRecord, MessageSendState,
         },
+        message_preview::{MessagePreview, PreviewBody},
         pins::{PinnedItem, PinnedPreview, PinnedState, PinnedTarget},
         presence::{Availability, Presence},
         profile::{
@@ -1467,6 +1468,7 @@ impl ChatBackend for KeybaseBackend {
                 query,
                 workspace_id,
                 conversation_id,
+                filters,
                 ..
             } => {
                 const QUICK_SWITCHER_REMOTE_MESSAGE_LIMIT: usize = 36;
@@ -1491,6 +1493,11 @@ impl ChatBackend for KeybaseBackend {
                     self.search_index
                         .search_workspace(WORKSPACE_ID, &query, search_limit)?
                 };
+                let self_username = if filters.is_empty() {
+                    None
+                } else {
+                    self.local_store.load_account_display_name()
+                };
                 let mut results = Vec::new();
                 let mut conversation_cache: HashMap<ConversationId, Option<ConversationSummary>> =
                     HashMap::new();
@@ -1513,6 +1520,12 @@ impl ChatBackend for KeybaseBackend {
                             fetched
                         };
                     if let (Some(message), Some(conversation)) = (message, conversation) {
+                        if !filters
+                            .iter()
+                            .all(|filter| filter.matches(&message, self_username.as_deref()))
+                        {
+                            continue;
+                        }
                         results.push(SearchResult {
                             conversation_id: hit.conversation_id.clone(),
                             route: search_result_route(&conversation),
@@ -1628,6 +1641,7 @@ impl ChatBackend for KeybaseBackend {
                                         mention_count: 0,
                                         muted: false,
                                         last_activity_ms: 0,
+                                        last_message: None,
                                     },
                                     provider_ref,
                                 )
@@ -2141,6 +2155,22 @@ async fn run_listener_session(
         channel_membership::handle_notify(&event, &sender, &local_store);
         maybe_handle_new_conversation_notify(&event, &sender, &local_store);
         maybe_handle_team_type_notify(&event, &sender, &local_store);
+        if let Some(progress) = parse_attachment_upload_progress(&event)
+            && let Some(client_message_id) = pending_outbox_sends.lock().ok().and_then(|pending| {
+                pending
+                    .get(&progress.outbox_id)
+                    .map(|meta| meta.client_message_id.clone())
+            })
+            && sender
+                .send(BackendEvent::AttachmentUploadProgress {
+                    client_message_id,
+                    sent_bytes: progress.sent_bytes,
+                    total_bytes: progress.total_bytes,
+                })
+                .is_err()
+        {
+            break;
+        }
         let mut should_refresh_inbox = notify_should_refresh_inbox(&event);
         let mut emitted_unread_for_conversation: Option<ConversationId> = None;
         if let Some(read_update) = parse_read_marker_update_from_notify(&event) {
@@ -10570,6 +10600,37 @@ fn find_sender_username(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+struct AttachmentUploadProgressNotify {
+    outbox_id: String,
+    sent_bytes: u64,
+    total_bytes: u64,
+}
+
+/// `ChatAttachmentUploadProgress {outboxID, bytesComplete, bytesTotal}` for an
+/// attachment this client is sending.
+fn parse_attachment_upload_progress(
+    event: &KeybaseNotifyEvent,
+) -> Option<AttachmentUploadProgressNotify> {
+    if event.method_name() != "chat.1.NotifyChat.ChatAttachmentUploadProgress" {
+        return None;
+    }
+    let raw_params = match event {
+        KeybaseNotifyEvent::Known { raw_params, .. }
+        | KeybaseNotifyEvent::Unknown { raw_params, .. } => raw_params,
+    };
+    let bytes = |keys: &[&str]| {
+        find_value_for_keys(raw_params, keys, 0)
+            .and_then(as_i64)
+            .and_then(|raw| u64::try_from(raw).ok())
+    };
+    Some(AttachmentUploadProgressNotify {
+        outbox_id: find_value_for_keys(raw_params, &["outboxID", "outboxId", "outbox_id"], 0)
+            .and_then(outbox_id_to_string)?,
+        sent_bytes: bytes(&["bytesComplete", "bytes_complete"])?,
+        total_bytes: bytes(&["bytesTotal", "bytes_total"])?,
+    })
+}
+
 fn extract_outbox_id_from_notify(event: &KeybaseNotifyEvent) -> Option<String> {
     if event.method_name() != "chat.1.NotifyChat.NewChatActivity" {
         return None;
@@ -12414,6 +12475,7 @@ fn parse_inbox_conversations(
             None
         };
 
+        let last_message = parse_inbox_last_message(&conversation, &conversation_id);
         let summary = ConversationSummary {
             id: conversation_id,
             title,
@@ -12424,6 +12486,7 @@ fn parse_inbox_conversations(
             mention_count,
             muted: status == CONVERSATION_STATUS_MUTED,
             last_activity_ms: activity_time,
+            last_message,
         };
         let pinned_state = extract_conversation_pinned_state(info);
 
@@ -12441,6 +12504,84 @@ fn parse_inbox_conversations(
     }
 
     result
+}
+
+/// Message types Keybase itself uses for inbox snippets.
+const SNIPPET_MESSAGE_TYPES: [i64; 9] = [
+    MESSAGE_TYPE_TEXT,
+    MESSAGE_TYPE_ATTACHMENT,
+    MESSAGE_TYPE_SYSTEM,
+    MESSAGE_TYPE_DELETE_HISTORY,
+    MESSAGE_TYPE_SEND_PAYMENT,
+    MESSAGE_TYPE_REQUEST_PAYMENT,
+    MESSAGE_TYPE_FLIP,
+    MESSAGE_TYPE_HEADLINE,
+    MESSAGE_TYPE_PIN,
+];
+
+/// Preview of a `ConversationLocal`'s newest message. Its `maxMessages` hold the
+/// latest message of each type; the newest snippet-worthy one wins, and an edit
+/// of that very message replaces its text.
+fn parse_inbox_last_message(
+    conversation: &Value,
+    conversation_id: &ConversationId,
+) -> Option<MessagePreview> {
+    let items = map_get_any(conversation, &["maxMessages", "maxMsgs"]).and_then(as_array)?;
+    let mut newest: Option<MessagePreview> = None;
+    let mut edits = Vec::new();
+    for item in items {
+        let Some(valid) = extract_valid_message(item) else {
+            continue;
+        };
+        let message_type = map_get_any(valid, &["messageBody", "b"])
+            .and_then(message_type_from_message_body);
+        let Some(message_type) = message_type else {
+            continue;
+        };
+        if message_type == MESSAGE_TYPE_EDIT {
+            edits.push(valid);
+            continue;
+        }
+        if !SNIPPET_MESSAGE_TYPES.contains(&message_type) {
+            continue;
+        }
+        let preview = parse_thread_message(valid, conversation_id, Some(message_type))
+            .filter(|message| !is_placeholder_message(message))
+            .and_then(|message| MessagePreview::from_message(&message));
+        newest = MessagePreview::newest(newest, preview);
+    }
+    let newest = newest?;
+    for valid in edits {
+        let edited = parse_thread_message(valid, conversation_id, Some(MESSAGE_TYPE_EDIT))
+            .and_then(|message| MessagePreview::from_message(&message))
+            .filter(|edit| edit.message_id == newest.message_id);
+        if let Some(edited) = edited {
+            return Some(MessagePreview {
+                timestamp_ms: newest.timestamp_ms,
+                ..edited
+            });
+        }
+    }
+    Some(newest)
+}
+
+/// Keybase's preformatted snippet on an `InboxUIItem` (inbox notifications),
+/// for conversations whose newest message has not been seen any other way.
+fn parse_inbox_ui_snippet(value: &Value, activity_time: i64) -> Option<MessagePreview> {
+    let snippet = map_get_any(value, &["snippet"])
+        .and_then(as_str)
+        .map(str::trim)
+        .filter(|snippet| !snippet.is_empty())?;
+    let message_id = map_get_any(value, &["maxVisibleMsgID", "maxMsgID"])
+        .and_then(as_i64)
+        .filter(|id| *id > 0)
+        .map(|id| MessageId::new(id.to_string()));
+    Some(MessagePreview {
+        message_id,
+        author_id: None,
+        timestamp_ms: activity_time,
+        body: PreviewBody::Snippet(snippet.to_string()),
+    })
 }
 
 fn parse_team_type(value: &Value) -> ConversationTeamType {
@@ -12518,6 +12659,7 @@ fn parse_inbox_ui_item(
         mention_count: 0,
         muted: status == CONVERSATION_STATUS_MUTED,
         last_activity_ms: activity_time,
+        last_message: parse_inbox_ui_snippet(value, activity_time),
     };
 
     Some(BootstrapConversation {
@@ -16110,6 +16252,28 @@ fn send_internal(sender: &Sender<BackendEvent>, method: &str, payload: Value) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn attachment_upload_progress_notifications_name_the_outbox_send() {
+        let event = KeybaseNotifyEvent::from_method(
+            "chat.1.NotifyChat.ChatAttachmentUploadProgress",
+            Value::Map(vec![
+                ("convID".into(), Value::Binary(vec![1, 2])),
+                ("outboxID".into(), Value::Binary(vec![0xab, 0xcd])),
+                ("bytesComplete".into(), 0.into()),
+                ("bytesTotal".into(), 4096.into()),
+            ]),
+        );
+        let progress = parse_attachment_upload_progress(&event).unwrap();
+        assert_eq!(progress.outbox_id, "abcd");
+        assert_eq!((progress.sent_bytes, progress.total_bytes), (0, 4096));
+
+        let other = KeybaseNotifyEvent::from_method(
+            "chat.1.NotifyChat.ChatAttachmentDownloadProgress",
+            Value::Map(vec![("outboxID".into(), Value::Binary(vec![0xab]))]),
+        );
+        assert!(parse_attachment_upload_progress(&other).is_none());
+    }
     use super::*;
 
     pub(super) fn temp_emoji_asset_dir(label: &str) -> PathBuf {
@@ -19195,6 +19359,7 @@ mod tests {
                 mention_count: 1,
                 muted: false,
                 last_activity_ms: 100,
+                last_message: None,
             };
             store.persist_conversation(&summary, 100).unwrap();
         }
@@ -19359,6 +19524,165 @@ mod tests {
         assert_eq!(
             snapshot.read_upto.as_ref().map(|id| id.0.as_str()),
             Some("99")
+        );
+    }
+
+    fn unboxed_message(id: i64, sender: &str, ctime: i64, body: Vec<(Value, Value)>) -> Value {
+        Value::Map(vec![(
+            Value::from("valid"),
+            Value::Map(vec![
+                (
+                    Value::from("serverHeader"),
+                    Value::Map(vec![
+                        (Value::from("messageID"), Value::from(id)),
+                        (Value::from("ctime"), Value::from(ctime)),
+                    ]),
+                ),
+                (Value::from("senderUsername"), Value::from(sender)),
+                (Value::from("messageBody"), Value::Map(body)),
+            ]),
+        )])
+    }
+
+    fn inbox_with_max_messages(max_messages: Vec<Value>) -> Value {
+        Value::Map(vec![(
+            Value::from("conversations"),
+            Value::Array(vec![Value::Map(vec![
+                (
+                    Value::from("info"),
+                    Value::Map(vec![
+                        (Value::from("id"), Value::Binary(vec![0x10, 0x40])),
+                        (Value::from("tlfName"), Value::from("alice,bob")),
+                        (Value::from("topicName"), Value::from("")),
+                        (
+                            Value::from("membersType"),
+                            Value::from(IMPTEAM_MEMBERS_TYPE),
+                        ),
+                    ]),
+                ),
+                (
+                    Value::from("readerInfo"),
+                    Value::Map(vec![(
+                        Value::from("status"),
+                        Value::from(CONVERSATION_MEMBER_STATUS_ACTIVE),
+                    )]),
+                ),
+                (Value::from("maxMessages"), Value::Array(max_messages)),
+            ])]),
+        )])
+    }
+
+    fn text_body(text: &str) -> Vec<(Value, Value)> {
+        vec![
+            (Value::from("messageType"), Value::from(MESSAGE_TYPE_TEXT)),
+            (
+                Value::from("text"),
+                Value::Map(vec![(Value::from("body"), Value::from(text))]),
+            ),
+        ]
+    }
+
+    #[test]
+    fn parse_inbox_conversations_previews_the_newest_snippet_worthy_max_message() {
+        let attachment = vec![
+            (Value::from("messageType"), Value::from(MESSAGE_TYPE_ATTACHMENT)),
+            (
+                Value::from("attachment"),
+                Value::Map(vec![(
+                    Value::from("object"),
+                    Value::Map(vec![(Value::from("filename"), Value::from("report.pdf"))]),
+                )]),
+            ),
+        ];
+        let edit = vec![
+            (Value::from("messageType"), Value::from(MESSAGE_TYPE_EDIT)),
+            (
+                Value::from("edit"),
+                Value::Map(vec![
+                    (Value::from("messageID"), Value::from(41)),
+                    (Value::from("body"), Value::from("hello :wave: (fixed)")),
+                ]),
+            ),
+        ];
+        let reaction = vec![
+            (Value::from("messageType"), Value::from(MESSAGE_TYPE_REACTION)),
+            (
+                Value::from("reaction"),
+                Value::Map(vec![
+                    (Value::from("messageID"), Value::from(41)),
+                    (Value::from("body"), Value::from(":+1:")),
+                ]),
+            ),
+        ];
+        let join = vec![(Value::from("messageType"), Value::from(MESSAGE_TYPE_JOIN))];
+        // Edits come first here: the result must not depend on the order.
+        let inbox = inbox_with_max_messages(vec![
+            unboxed_message(46, "bob", 1_700_000_006_000, edit),
+            unboxed_message(40, "alice", 1_700_000_000_000, attachment),
+            unboxed_message(41, "bob", 1_700_000_001_000, text_body("hello :wave:")),
+            unboxed_message(45, "alice", 1_700_000_005_000, reaction),
+            unboxed_message(47, "carol", 1_700_000_007_000, join),
+        ]);
+        let parsed = parse_inbox_conversations(&inbox, Some("alice"), false);
+        let preview = parsed[0].summary.last_message.clone().expect("preview");
+        assert_eq!(preview.message_id, Some(MessageId::new("41")));
+        assert_eq!(preview.author_id, Some(UserId::new("bob")));
+        assert_eq!(preview.timestamp_ms, 1_700_000_001_000);
+        assert_eq!(
+            preview.body,
+            PreviewBody::Text("hello :wave: (fixed)".to_string())
+        );
+
+        // Only the attachment: its file name, not Keybase's stand-in body.
+        let attachment_only = inbox_with_max_messages(vec![unboxed_message(
+            40,
+            "alice",
+            1_700_000_000_000,
+            vec![
+                (Value::from("messageType"), Value::from(MESSAGE_TYPE_ATTACHMENT)),
+                (
+                    Value::from("attachment"),
+                    Value::Map(vec![(
+                        Value::from("object"),
+                        Value::Map(vec![(Value::from("filename"), Value::from("report.pdf"))]),
+                    )]),
+                ),
+            ],
+        )]);
+        let parsed = parse_inbox_conversations(&attachment_only, Some("alice"), false);
+        assert!(matches!(
+            parsed[0].summary.last_message.as_ref().map(|preview| &preview.body),
+            Some(PreviewBody::Attachment { name, caption: None, .. }) if name == "report.pdf"
+        ));
+        // No max messages: no preview, and nothing made up.
+        let empty = inbox_with_max_messages(Vec::new());
+        assert_eq!(
+            parse_inbox_conversations(&empty, Some("alice"), false)[0]
+                .summary
+                .last_message,
+            None
+        );
+    }
+
+    #[test]
+    fn parse_inbox_ui_item_keeps_keybase_snippet_as_a_fallback_preview() {
+        let item = Value::Map(vec![
+            (Value::from("convID"), Value::from("1050")),
+            (Value::from("name"), Value::from("alice,bob")),
+            (Value::from("membersType"), Value::from(IMPTEAM_MEMBERS_TYPE)),
+            (Value::from("time"), Value::from(1_700_000_009_000i64)),
+            (Value::from("snippet"), Value::from("  see you there  ")),
+            (Value::from("maxVisibleMsgID"), Value::from(52)),
+        ]);
+        let parsed = parse_inbox_ui_item(&item, Some("alice")).expect("conversation");
+        assert_eq!(
+            parsed.summary.last_message,
+            Some(MessagePreview {
+                message_id: Some(MessageId::new("52")),
+                author_id: None,
+                timestamp_ms: 1_700_000_009_000,
+                body: PreviewBody::Snippet("see you there".to_string()),
+            })
         );
     }
 

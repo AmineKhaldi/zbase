@@ -2,6 +2,7 @@
 use super::{
     quick_switcher_route_for_summary,
     sidebar_model::{SidebarRow, SidebarSection},
+    sidebar_preview::SidebarPreview,
 };
 use crate::domain::{
     conversation::{ConversationKind, ConversationSummary},
@@ -45,11 +46,39 @@ fn short_team_names(channels: &[ConversationSummary]) -> HashMap<String, String>
         .collect()
 }
 
+impl RecentSidebarRow {
+    /// Team name to print after a channel: only when another listed channel has
+    /// the same name. Otherwise the team mark in front of the row identifies it.
+    pub fn team_label<'a>(&'a self, ambiguous: &HashSet<String>) -> Option<&'a str> {
+        (self.is_channel
+            && !self.secondary.is_empty()
+            && ambiguous.contains(&self.row.label.to_lowercase()))
+        .then_some(self.secondary.as_str())
+    }
+}
+
+/// Lowercased channel names shared by more than one of `rows` (the rows on screen,
+/// after filtering), e.g. `general` when two teams each list a #general.
+pub fn ambiguous_channel_labels<'a>(
+    rows: impl IntoIterator<Item = &'a RecentSidebarRow>,
+) -> HashSet<String> {
+    let mut seen = HashSet::new();
+    let mut ambiguous = HashSet::new();
+    for recent in rows.into_iter().filter(|recent| recent.is_channel) {
+        let label = recent.row.label.to_lowercase();
+        if !seen.insert(label.clone()) {
+            ambiguous.insert(label);
+        }
+    }
+    ambiguous
+}
+
 pub fn build_recent_rows(
     channels: &[ConversationSummary],
     direct_messages: &[ConversationSummary],
     sections: &[SidebarSection],
     workspace_id: &WorkspaceId,
+    previews: &HashMap<String, SidebarPreview>,
 ) -> Vec<RecentSidebarRow> {
     let labels = sections
         .iter()
@@ -101,6 +130,8 @@ pub fn build_recent_rows(
                     unread_count: summary.unread_count,
                     mention_count: summary.mention_count,
                     route,
+                    preview: previews.get(&summary.id.0).cloned(),
+                    muted: summary.muted,
                 },
                 secondary,
                 is_channel,
@@ -132,6 +163,7 @@ mod tests {
             mention_count: 0,
             muted: false,
             last_activity_ms: time,
+            last_message: None,
         }
     }
 
@@ -144,7 +176,7 @@ mod tests {
         channels[0].muted = true;
         channels[1].unread_count = 3;
         let workspace = WorkspaceId::new("ws");
-        let rows = build_recent_rows(&channels, &[channels[0].clone()], &[], &workspace);
+        let rows = build_recent_rows(&channels, &[channels[0].clone()], &[], &workspace, &HashMap::new());
         assert_eq!(rows.len(), 2);
         assert_eq!(
             rows[0].row.route,
@@ -153,14 +185,54 @@ mod tests {
         assert_eq!(rows[0].secondary, "ips");
         assert_eq!(rows[1].secondary, "ent_wallet");
         channels[1].unread_count = 0;
-        assert_eq!(build_recent_rows(&channels, &[], &[], &workspace).len(), 2);
+        assert_eq!(build_recent_rows(&channels, &[], &[], &workspace, &HashMap::new()).len(), 2);
         channels[0].last_activity_ms = 30;
         assert_eq!(
-            build_recent_rows(&channels, &[], &[], &workspace)[0]
+            build_recent_rows(&channels, &[], &[], &workspace, &HashMap::new())[0]
                 .row
                 .route,
             rows[1].row.route
         );
+    }
+
+    #[test]
+    fn team_label_shows_only_for_channel_names_listed_twice() {
+        let mut general_a = channel("a", "alpha", 10);
+        general_a.title = "general".into();
+        let mut general_b = channel("b", "beta", 20);
+        general_b.title = "General".into();
+        let mut random = channel("c", "alpha", 30);
+        random.title = "random".into();
+        let mut dm = channel("d", "unused", 40);
+        dm.kind = ConversationKind::DirectMessage;
+        dm.title = "general".into();
+        dm.group = None;
+        let rows = build_recent_rows(
+            &[general_a, general_b, random],
+            &[dm],
+            &[],
+            &WorkspaceId::new("ws"),
+            &HashMap::new(),
+        );
+        let ambiguous = ambiguous_channel_labels(&rows);
+        let labels = rows
+            .iter()
+            .map(|recent| (recent.row.label.as_str(), recent.team_label(&ambiguous)))
+            .collect::<Vec<_>>();
+        // A DM named like a channel never counts; case doesn't hide a clash.
+        assert_eq!(
+            labels,
+            [
+                ("general", None),
+                ("random", None),
+                ("General", Some("beta")),
+                ("general", Some("alpha")),
+            ]
+        );
+        // Filtering down to one #general makes it unique again.
+        let visible = rows.iter().filter(|recent| recent.secondary != "beta");
+        let ambiguous = ambiguous_channel_labels(visible);
+        assert!(rows.iter().all(|recent| recent.team_label(&ambiguous).is_none()));
     }
 
     #[test]
@@ -178,7 +250,7 @@ mod tests {
         assert_eq!(names["friends_of_chia"], "friends_of_chia");
         let tied = vec![channel("b", "same", 1), channel("a", "same", 1)];
         assert_eq!(
-            build_recent_rows(&tied, &[], &[], &WorkspaceId::new("ws"))[0]
+            build_recent_rows(&tied, &[], &[], &WorkspaceId::new("ws"), &HashMap::new())[0]
                 .row
                 .route,
             quick_switcher_route_for_summary(&tied[1], &WorkspaceId::new("ws"))
@@ -220,6 +292,7 @@ mod tests {
             &[],
             &[],
             &models.app.active_workspace_id,
+            &HashMap::new(),
         );
         models.set_sidebar_mode(SidebarMode::Recent);
         let routes = models.visible_sidebar_routes();
@@ -244,7 +317,7 @@ mod tests {
         dm.kind = ConversationKind::DirectMessage;
         dm.title = "alice".into();
         dm.group = None;
-        let rows = build_recent_rows(&[simple, normal], &[dm], &[], &WorkspaceId::new("ws"));
+        let rows = build_recent_rows(&[simple, normal], &[dm], &[], &WorkspaceId::new("ws"), &HashMap::new());
         assert_eq!(
             rows.iter()
                 .map(|recent| recent.row.label.as_str())

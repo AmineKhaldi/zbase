@@ -1,10 +1,7 @@
 pub use crate::domain::message_formatting::CodeLanguage;
 use crate::{
     app::theme::ThemeVariant,
-    views::{
-        accent, mention, selectable_text::StyledRange, success, text_primary, text_secondary,
-        warning,
-    },
+    views::{selectable_text::StyledRange, text_primary},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -310,6 +307,7 @@ pub fn highlight(code: &str, lang: CodeLanguage, theme: ThemeVariant) -> Vec<Sty
                             italic: style.italic,
                             monospace: false,
                             strikethrough: false,
+                            meta: false,
                         },
                     );
                 }
@@ -386,24 +384,18 @@ struct Style {
 fn style_for_highlight(name: &str, theme: ThemeVariant) -> Option<Style> {
     // Collapse dotted names (e.g. "type.builtin" -> "type") for palette mapping.
     let base = name.split('.').next().unwrap_or(name);
-    let (color, bold, italic) = match (theme, base) {
-        // Dark mode: prioritize legibility over subtlety.
-        (ThemeVariant::Dark, "keyword") => (text_primary(), true, false),
-
-        // Shared mapping (light + dark).
-        (_, "comment") => (text_secondary(), false, true),
-        (_, "string") => (success(), false, false),
-        (_, "number") => (warning(), false, false),
-        (_, "boolean") => (warning(), true, false),
-        (_, "constant") => (warning(), true, false),
-        (_, "keyword") => (accent(), true, false),
-        (_, "type") => (mention(), true, false),
-        (_, "function") => (accent(), false, false),
-        (_, "property") => (text_primary(), false, false),
-        (_, "variable") => (text_primary(), false, false),
-        (_, "label") => (accent(), false, false),
-        (_, "operator" | "punctuation" | "escape" | "attribute" | "embedded") => {
-            (text_secondary(), false, false)
+    let colors = crate::views::with_theme(theme, crate::views::syntax_colors);
+    let (color, bold, italic) = match base {
+        "comment" => (colors.comment, false, true),
+        "string" => (colors.string, false, false),
+        "number" => (colors.number, false, false),
+        "boolean" | "constant" => (colors.number, true, false),
+        "keyword" => (colors.keyword, true, false),
+        "type" => (colors.type_name, true, false),
+        "function" | "label" => (colors.function, false, false),
+        "property" | "variable" => (text_primary(), false, false),
+        "operator" | "punctuation" | "escape" | "attribute" | "embedded" => {
+            (colors.punctuation, false, false)
         }
         _ => return None,
     };

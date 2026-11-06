@@ -4,7 +4,7 @@ use crate::{
     views::{
         MAIN_PANEL_MIN_WIDTH_PX, app_window::AppWindow, calls::CallWindow, content_surface,
         conversation::ConversationView, home::WorkspaceHomeView, inbox::InboxView,
-        input::TextField, preferences::PreferencesView, search::SearchView, text_primary,
+        input::TextField, search::SearchView, text_primary,
     },
 };
 use gpui::prelude::FluentBuilder;
@@ -24,8 +24,11 @@ impl MainPanelHost {
         fixed_width: Option<f32>,
         video_render_cache: &HashMap<String, Arc<RenderImage>>,
         search_input: &Entity<TextField>,
+        search_contexts: &[crate::views::search::SearchResultContext],
+        search_focused: bool,
         find_in_chat_input: &Entity<TextField>,
         composer_input: &Entity<TextField>,
+        composer_state: crate::views::composer::ComposerFieldState,
         timeline_list_state: &ListState,
         timeline_unseen_count: usize,
         show_timeline_jump_to_bottom: bool,
@@ -42,16 +45,26 @@ impl MainPanelHost {
                 find_in_chat_input,
                 &models.composer,
                 composer_input,
+                composer_state,
+                &models.navigation.right_pane,
                 timeline_list_state,
                 timeline_unseen_count,
                 show_timeline_jump_to_bottom,
+                &models.settings,
+                &models.app.connectivity,
                 cx,
             ),
-            Route::Search { .. } => {
-                SearchView.render(&models.search, video_render_cache, search_input, cx)
-            }
+            Route::Search { .. } => SearchView.render(
+                models,
+                search_contexts,
+                search_focused,
+                video_render_cache,
+                search_input,
+                cx,
+            ),
             Route::Activity { .. } => InboxView.render(&models.notifications, cx),
-            Route::Preferences => PreferencesView.render(&models.settings, cx),
+            // Settings open in their own window; this route never stays current.
+            Route::Preferences => crate::views::page_header("Settings", None, None),
             Route::ActiveCall { .. } => CallWindow.render(&models.call),
         };
 

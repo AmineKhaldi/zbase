@@ -143,6 +143,7 @@ mod tests {
                 mention_count: 0,
                 muted: false,
                 last_activity_ms: 1,
+                last_message: None,
             };
             let message = super::super::tests::sample_message(&id, 1);
             let payload = BootstrapPayload {

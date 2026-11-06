@@ -6,7 +6,10 @@ use crate::{
         },
         conversation::ConversationSummary,
     },
-    models::AppModels,
+    models::{
+        AppModels,
+        settings_model::{SettingsModel, SidebarStyle},
+    },
     services::{
         backends::{keybase::KeybaseBackend, router::BackendRouter},
         local_store::LocalStore,
@@ -17,7 +20,10 @@ use crate::{
         AccountState, AppStore, ConnectionState, ConversationBinding, MessageBinding, UiState,
         WorkspaceBinding,
     },
-    views::{WINDOW_MIN_HEIGHT_PX, WINDOW_MIN_WIDTH_PX, app_window::AppWindow, input::TextField},
+    views::{
+        WINDOW_MIN_HEIGHT_PX, WINDOW_MIN_WIDTH_PX, app_window::AppWindow, input::TextField,
+        sidebar_width_for_style,
+    },
 };
 use gpui::{
     App, AppContext, Bounds, Focusable, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
@@ -29,18 +35,40 @@ use std::sync::Arc;
 const WINDOW_DEFAULT_HEIGHT_PX: f32 = 880.;
 
 const ENV_BENCH_USE_DEMO: &str = "ZBASE_BENCH_USE_DEMO";
+
+/// Saved settings, with the demo build's per-run overrides applied.
+fn load_settings() -> SettingsModel {
+    #[allow(unused_mut)]
+    let mut settings = SettingsStore::load_from_disk().unwrap_or_default();
+    #[cfg(any(test, feature = "demo-fixtures"))]
+    if env_flag(ENV_BENCH_USE_DEMO) {
+        // Demo settings live in ZBASE_DATA_DIR, so this never reaches the user's file.
+        if let Some(theme_mode) = crate::app::demo::theme_override() {
+            settings.theme_mode = theme_mode;
+        }
+        if let Some(style) = crate::app::demo::sidebar_style_override() {
+            settings.sidebar_style = style;
+        }
+    }
+    settings
+}
 const ENV_BENCH_SKIP_BACKEND: &str = "ZBASE_BENCH_SKIP_BACKEND";
 
 pub fn open_main_window(cx: &mut App) {
+    let settings = load_settings();
+    // A first window leaves the conversation its full minimum width beside a
+    // wider Previews sidebar.
+    let default_width = WINDOW_MIN_WIDTH_PX + sidebar_width_for_style(settings.sidebar_style)
+        - sidebar_width_for_style(SidebarStyle::Compact);
     let default = Bounds::centered(
         None,
-        size(px(WINDOW_MIN_WIDTH_PX), px(WINDOW_DEFAULT_HEIGHT_PX)),
+        size(px(default_width), px(WINDOW_DEFAULT_HEIGHT_PX)),
         cx,
     );
     let preferred = WindowPreferences::load().unwrap_or(WindowPreferences {
         x: default.origin.x.into(),
         y: default.origin.y.into(),
-        width: WINDOW_MIN_WIDTH_PX,
+        width: default_width,
         height: WINDOW_DEFAULT_HEIGHT_PX,
     });
     let mut displays = cx.displays();
@@ -72,16 +100,12 @@ pub fn open_main_window(cx: &mut App) {
             appears_transparent: cfg!(target_os = "macos"),
             traffic_light_position: cfg!(target_os = "macos").then_some(point(px(18.), px(18.))),
         }),
-        window_background: if cfg!(target_os = "macos") {
-            WindowBackgroundAppearance::Blurred
-        } else {
-            WindowBackgroundAppearance::Opaque
-        },
+        // Opaque: no surface lets the desktop show through.
+        window_background: WindowBackgroundAppearance::Opaque,
         ..Default::default()
     };
 
     cx.open_window(options, |window, cx| {
-        let settings = SettingsStore::load_from_disk().unwrap_or_default();
         let models = if env_flag(ENV_BENCH_USE_DEMO) {
             #[cfg(any(test, feature = "demo-fixtures"))]
             {
@@ -168,6 +192,10 @@ pub fn open_main_window(cx: &mut App) {
                 )
             });
 
+            let members_filter_input = cx.new(|cx| {
+                TextField::new(cx.focus_handle(), "Filter members", String::new())
+            });
+
             let mut root = AppWindow::new(
                 models,
                 app_store,
@@ -183,6 +211,7 @@ pub fn open_main_window(cx: &mut App) {
                 composer_input,
                 thread_input,
                 sidebar_filter_input,
+                members_filter_input,
             );
             root.init(window, cx);
             root
@@ -251,64 +280,33 @@ fn build_app_store(models: &AppModels) -> AppStore {
         });
     }
 
-    if env_flag("ZBASE_BENCH_USE_DEMO") && env_flag(ENV_BENCH_SKIP_BACKEND) {
-        let mut state = store.snapshot().clone();
-        state.app.boot_phase = crate::state::state::BootPhase::Ready;
-        state.workspace.active_workspace_id = Some(models.app.active_workspace_id.clone());
-        state.workspace.workspace_name = models.workspace.workspace_name.clone();
-        state.workspace.channels = models.workspace.channels.clone();
-        state.workspace.direct_messages = models.workspace.direct_messages.clone();
-        state.sidebar.sections = models
-            .sidebar
-            .sections
-            .iter()
-            .map(|section| crate::state::state::UiSidebarSectionState {
-                id: Some(section.id.clone()),
-                title: section.title.clone(),
-                collapsed: section.collapsed,
-                rows: section
-                    .rows
-                    .iter()
-                    .map(|row| crate::state::state::UiSidebarRowState {
-                        label: row.label.clone(),
-                        unread_count: row.unread_count,
-                        mention_count: row.mention_count,
-                        route: Some(row.route.clone()),
-                    })
-                    .collect(),
-            })
-            .collect();
-        state.sidebar.highlighted_route = models.sidebar.highlighted_route.clone();
-        state.timeline.conversation_id = Some(models.timeline.conversation_id.clone());
-        state.timeline.typing_text = models.timeline.typing_text.clone();
-        state.timeline.messages = models
-            .timeline
-            .rows
-            .iter()
-            .filter_map(|row| match row {
-                crate::models::timeline_model::TimelineRow::Message(row) => {
-                    Some(row.message.clone())
-                }
-                _ => None,
-            })
-            .collect();
-        store = AppStore::new(state);
+    #[cfg(any(test, feature = "demo-fixtures"))]
+    if env_flag(ENV_BENCH_USE_DEMO) && env_flag(ENV_BENCH_SKIP_BACKEND) {
+        crate::app::demo::seed_store(&mut store, models, &account_id);
     }
 
     store
 }
 
 fn build_backend_router(models: &AppModels, local_store: Arc<LocalStore>) -> BackendRouter {
-    if env_flag(ENV_BENCH_SKIP_BACKEND) {
-        tracing::warn!("bench.backend.skip enabled at router setup");
-        return BackendRouter::default();
-    }
-
     let mut router = BackendRouter::default();
     let account_id = AccountId::new("account_demo_keybase");
     let backend_id = BackendId::new("keybase");
 
-    router.register_backend(Box::new(KeybaseBackend::new(local_store)));
+    #[cfg(any(test, feature = "demo-fixtures"))]
+    let demo_backend = env_flag(ENV_BENCH_USE_DEMO) && env_flag(ENV_BENCH_SKIP_BACKEND);
+    #[cfg(not(any(test, feature = "demo-fixtures")))]
+    let demo_backend = false;
+    if demo_backend {
+        #[cfg(any(test, feature = "demo-fixtures"))]
+        router.register_backend(Box::new(crate::services::backends::demo::DemoBackend::new()));
+        drop(local_store);
+    } else if env_flag(ENV_BENCH_SKIP_BACKEND) {
+        tracing::warn!("bench.backend.skip enabled at router setup");
+        return router;
+    } else {
+        router.register_backend(Box::new(KeybaseBackend::new(local_store)));
+    }
     router.register_account(account_id.clone(), backend_id.clone());
 
     for ws_id in &models.app.open_workspaces {
