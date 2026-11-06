@@ -774,7 +774,7 @@ fn typing_indicator(label: String, reduced_motion: bool) -> AnyElement {
                 .h(px(28.))
                 .px_3()
                 .rounded_full()
-                .bg(glass_surface_dark().opacity(0.96))
+                .bg(glass_surface_dark().opacity(0.65))
                 .border_1()
                 .border_color(shell_border())
                 .flex()
