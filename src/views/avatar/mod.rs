@@ -75,6 +75,7 @@ impl Avatar {
         )
     }
 
+    /// Preserve a pair of peer faces; use a count only for larger groups.
     pub fn render_sidebar_participants_on(
         participants: &[AvatarParticipant],
         fallback_name: &str,
@@ -123,7 +124,7 @@ impl Avatar {
                 crate::views::text_primary(),
             );
         }
-        if matches!(group_style, GroupAvatarStyle::Count) {
+        if participants.len() > 2 && matches!(group_style, GroupAvatarStyle::Count) {
             return Self::render_group_count(participants, size);
         }
         let avatars = participants
