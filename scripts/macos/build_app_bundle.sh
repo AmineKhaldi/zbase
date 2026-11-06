@@ -14,12 +14,12 @@ TARGET_DIR="$(cargo metadata --format-version 1 --no-deps --manifest-path "${ROO
 if [[ "${PROFILE}" == "release" ]]; then
   BIN_PATH="${TARGET_DIR}/release/zbase"
   if [[ "${SKIP_BUILD}" != "1" ]]; then
-    cargo build --release --locked --bin zbase --features gpui/runtime_shaders --manifest-path "${ROOT_DIR}/Cargo.toml"
+    cargo build --release --locked --bin zbase --features gpui/runtime_shaders --timings --manifest-path "${ROOT_DIR}/Cargo.toml"
   fi
 else
   BIN_PATH="${TARGET_DIR}/debug/zbase"
   if [[ "${SKIP_BUILD}" != "1" ]]; then
-    cargo build --locked --bin zbase --features gpui/runtime_shaders --manifest-path "${ROOT_DIR}/Cargo.toml"
+    cargo build --locked --bin zbase --features gpui/runtime_shaders --timings --manifest-path "${ROOT_DIR}/Cargo.toml"
   fi
 fi
 

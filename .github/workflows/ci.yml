@@ -53,12 +53,15 @@ jobs:
         with:
           persist-credentials: false
       - name: Install build tools
+        id: toolchain
         run: |
           test "$(uname -m)" = arm64
           brew install cmake pkgconf meson ninja
           rustup toolchain install stable --profile minimal --component clippy
           rustup default stable
-      - uses: actions/cache@v6
+          echo "rust-key=$(rustc -vV | shasum -a 256 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        id: media-cache
         with:
           path: |
             dist/macos-deps/prefix
@@ -69,24 +72,37 @@ jobs:
           scripts/macos/build_media_deps.sh
           echo "PKG_CONFIG_PATH=$DEPS_DIR/prefix/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_LIBDIR=$DEPS_DIR/prefix/lib/pkgconfig" >> "$GITHUB_ENV"
-      - uses: actions/cache@v6
+      # Save expensive native dependencies before subsequent checks can fail.
+      - uses: actions/cache/save@v6
+        if: steps.media-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            dist/macos-deps/prefix
+            dist/macos-deps/downloads
+          key: ${{ steps.media-cache.outputs.cache-primary-key }}
+      - uses: actions/cache/restore@v6
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ci-rust-macos15-arm64-${{ hashFiles('Cargo.lock', 'scripts/macos/build_media_deps.sh') }}-${{ github.sha }}
+          key: ci-rust-macos15-arm64-${{ steps.toolchain.outputs.rust-key }}-${{ hashFiles('Cargo.lock', 'scripts/macos/build_media_deps.sh') }}-${{ github.sha }}
           restore-keys: |
-            ci-rust-macos15-arm64-${{ hashFiles('Cargo.lock', 'scripts/macos/build_media_deps.sh') }}-
+            ci-rust-macos15-arm64-${{ steps.toolchain.outputs.rust-key }}-${{ hashFiles('Cargo.lock', 'scripts/macos/build_media_deps.sh') }}-
       - name: Clippy
-        run: cargo clippy --locked --all-targets --features gpui/runtime_shaders
+        id: clippy
+        run: cargo clippy --locked --all-targets --features gpui/runtime_shaders --timings
       - name: Rust tests
-        run: cargo test --locked --all-targets --features gpui/runtime_shaders
+        run: cargo test --locked --all-targets --features gpui/runtime_shaders --timings
       - name: Packaging integration tests
         run: python3 -m unittest discover -s scripts/macos -p test_bundle_dylibs.py -v
       - name: Build and verify self-contained app
+        if: github.event_name != 'pull_request'
         run: |
-          scripts/macos/build_app_bundle.sh release
+          # Reuse the debug dependencies from Clippy/tests for the development app.
+          # The Release workflow still builds and signs the optimized app.
+          scripts/macos/build_app_bundle.sh debug
           python3 scripts/macos/bundle_dylibs.py dist/macos/zBase.app --prefix "$DEPS_DIR/prefix"
           plutil -lint dist/macos/zBase.app/Contents/Info.plist
           for library in dist/macos/zBase.app/Contents/Frameworks/*.dylib; do
@@ -94,11 +110,30 @@ jobs:
           done
           codesign --force --sign - dist/macos/zBase.app
           codesign --verify --deep --strict --verbose=2 dist/macos/zBase.app
+      # Preserve compiled dependencies even if a later check or signing fails.
+      - uses: actions/cache/save@v6
+        if: ${{ !cancelled() && steps.clippy.outcome == 'success' && steps.rust-cache.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Archive development app
+        if: github.event_name != 'pull_request'
         run: ditto -c -k --sequesterRsrc --keepParent dist/macos/zBase.app dist/macos/zBase-development.zip
       - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'
         with:
           name: macos-development-app
           path: dist/macos/zBase-development.zip
           if-no-files-found: error
+          retention-days: 7
+      - name: Upload Cargo timing reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-cargo-timings
+          path: target/cargo-timings/
+          if-no-files-found: ignore
           retention-days: 7

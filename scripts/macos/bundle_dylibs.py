@@ -44,12 +44,6 @@ def resolve(dep, owner, executable):
     raise RuntimeError(f"Unresolved dependency {dep} in {owner}")
 
 
-def unsigned(path):
-    # install_name_tool changes invalidate existing ad-hoc signatures.
-    if subprocess.run(["codesign", "--display", str(path)], capture_output=True).returncode == 0:
-        subprocess.run(["codesign", "--remove-signature", str(path)], check=True)
-
-
 def verify(app, arch):
     executable = app / "Contents/MacOS/zbase"
     with (app / "Contents/Info.plist").open("rb") as file:
@@ -92,12 +86,14 @@ def bundle(app, prefix):
                 queue.append((resolved, destination))
             relative = f"@loader_path/../Frameworks/{name}" if target == executable else f"@loader_path/{name}"
             rewrites.extend(["-change", dep, relative])
-        unsigned(target)
         for rpath in rpaths(target):
             rewrites.extend(["-delete_rpath", rpath])
         if target != executable:
             rewrites.extend(["-id", f"@rpath/{target.name}"])
         if rewrites:
+            # Keep existing signatures while editing. Removing them first can leave
+            # __LINKEDIT padding that older install_name_tool versions reject.
+            # Rewrites invalidate signatures; package_release.sh replaces them.
             subprocess.run(["install_name_tool", *rewrites, str(target)], check=True)
     licenses = app / "Contents/Resources/Licenses/Media"
     shutil.copytree(prefix / "share/zbase-licenses", licenses, dirs_exist_ok=True)

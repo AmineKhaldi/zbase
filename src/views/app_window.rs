@@ -10528,11 +10528,19 @@ mod tests {
         ] {
             for viewport in [1100.0, 1200.0, 1440.0] {
                 let width = constrained_right_pane_width(520.0, 240.0, viewport);
-                assert!(shell_layout(&mode, width, 240.0, viewport).show_right_pane);
-                assert!(
-                    !shell_layout(&mode, width, 240.0, viewport - 1.0).show_right_pane
-                        || width == 520.0
-                );
+                let layout = shell_layout(&mode, width, 240.0, viewport);
+                assert!(layout.show_right_pane);
+                assert!(!layout.overlay_right_pane);
+                assert!(layout.min_shell_width <= viewport);
+                if width < 520.0 {
+                    assert_eq!(layout.min_shell_width, viewport);
+                }
+
+                // Compact panes remain visible as overlays when the inline
+                // layout runs out of space, including one pixel past the edge.
+                let narrower = shell_layout(&mode, width, 240.0, layout.min_shell_width - 1.0);
+                assert!(narrower.show_right_pane);
+                assert!(narrower.overlay_right_pane);
             }
         }
     }
