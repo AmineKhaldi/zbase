@@ -6214,14 +6214,17 @@ fn normalize_message_records(messages: &mut Vec<MessageRecord>) {
         return;
     }
     let mut latest_by_id = HashMap::with_capacity(messages.len());
-    for message in std::mem::take(messages) {
+    for mut message in std::mem::take(messages) {
         match latest_by_id.entry(message.id.clone()) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(message);
             }
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 if should_replace_duplicate_record(entry.get(), &message) {
+                    crate::domain::message::keep_original_attachments(&mut message, entry.get());
                     entry.insert(message);
+                } else {
+                    crate::domain::message::keep_original_attachments(entry.get_mut(), &message);
                 }
             }
         }
@@ -16304,6 +16307,34 @@ mod tests {
             thread_reply_count: 0,
             send_state: MessageSendState::Sent,
             edited: None,
+        }
+    }
+
+    #[test]
+    fn page_normalization_keeps_the_attachment_under_a_caption_edit() {
+        // The server's original snapshot names its superseding edit without a
+        // timestamp, so the edit record on the same page ranks newer.
+        let mut original = make_test_message("1");
+        original.attachments.push(test_image_attachment(None, None));
+        original.edited = Some(EditMeta {
+            edit_id: MessageId::new("2"),
+            edited_at_ms: None,
+        });
+        let mut edit = make_test_message("1");
+        edit.fragments = vec![MessageFragment::Text("new caption".into())];
+        edit.edited = Some(EditMeta {
+            edit_id: MessageId::new("2"),
+            edited_at_ms: Some(2),
+        });
+
+        for mut page in [
+            vec![original.clone(), edit.clone()],
+            vec![edit.clone(), original.clone()],
+        ] {
+            normalize_message_records(&mut page);
+            assert_eq!(page.len(), 1);
+            assert_eq!(page[0].attachments, original.attachments);
+            assert_eq!(page[0].edited.as_ref().unwrap().edited_at_ms, Some(2));
         }
     }
 

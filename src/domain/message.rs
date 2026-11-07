@@ -191,11 +191,22 @@ fn merge_attachment_paths(
     }
 }
 
+/// A Keybase edit of an attachment carries only the new caption, and an edit
+/// cannot remove the attachment, so the edit keeps the original's attachments.
+pub fn keep_original_attachments(edit: &mut MessageRecord, original: &MessageRecord) {
+    if edit.edited.is_some() && edit.attachments.is_empty() {
+        edit.attachments = original.attachments.clone();
+    }
+}
+
 pub fn merge_message_version(existing: &MessageRecord, incoming: &MessageRecord) -> MessageRecord {
     if message_revision(incoming) < message_revision(existing) {
-        return existing.clone();
+        let mut kept = existing.clone();
+        keep_original_attachments(&mut kept, incoming);
+        return kept;
     }
     let mut merged = incoming.clone();
+    keep_original_attachments(&mut merged, existing);
     if incoming.edited.is_some() {
         // An edit operation has its own timestamp and may omit the original
         // reply header. Keep the original message's position and thread identity.
