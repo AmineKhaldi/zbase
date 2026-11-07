@@ -17,7 +17,7 @@ Under Settings → Secrets and variables → Actions, configure:
 | Variable | `APPLE_API_ISSUER_ID` | Issuer ID for the team API key |
 | Secret | `TAP_TOKEN` | Token with contents-write permission on `cameroncooper/homebrew-tap` |
 
-The signing certificate must be Developer ID **Application**, not Apple Development or Developer ID Installer. The notary API key must have permission to submit notarization requests. Credentials are imported after compilation into a temporary keychain; an unconditional cleanup step removes the keychain and private key file. Artifacts contain no credential files.
+The signing certificate must be Developer ID **Application**, not Apple Development or Developer ID Installer. The notary API key must have permission to submit notarization requests. Before compilation, credentials are imported into a temporary keychain and added to the user keychain search list. The workflow validates the configured identity and team, then signs and verifies a disposable executable to check private-key access and timestamping; an unconditional cleanup step removes the keychain and private key file. Artifacts contain no credential files.
 
 ## Test before publishing
 
@@ -43,7 +43,9 @@ This process requires **immutable releases to be disabled**, since assets are at
 
 The optional CLI helper `scripts/release.sh VERSION` validates the committed version, pushes its tag, and creates a draft with generated notes. Edit and publish that draft in GitHub to start the build. The script is not required for the browser-based process.
 
-If building or notarization fails, the public release remains available with its notes, but the new DMG is not attached. Use **Re-run failed jobs** on that release's workflow run to retry; do not create a replacement release or move its tag. Asset upload retries replace matching generated asset names and preserve your release metadata and other assets. If only the Homebrew step fails, rerunning the attachment job is safe. Manual workflow runs do not attach assets, so use the original release-triggered run when retrying attachment.
+If building or notarization fails, the public release remains available with its notes, but the new DMG is not attached. For transient failures or corrected Actions secrets/variables, use **Re-run failed jobs** on that release's workflow run to retry; do not create a replacement release or move its tag. Asset upload retries replace matching generated asset names and preserve your release metadata and other assets. If only the Homebrew step fails, rerunning the attachment job is safe. Manual workflow runs do not attach assets, so use the original release-triggered run when retrying attachment.
+
+Reruns use the workflow and scripts from the original tag. If a fix changes those files, validate it with a manual Release run on the fixed branch, then publish a new version containing the fix. Rerunning an older tag cannot pick up changes from `main`.
 
 ## Packaging and media libraries
 
