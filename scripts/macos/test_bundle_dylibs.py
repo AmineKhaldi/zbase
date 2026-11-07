@@ -1,5 +1,6 @@
 """macOS integration checks for portable dependency packaging and rejection paths."""
 import platform
+import os
 import plistlib
 import subprocess
 import tempfile
@@ -36,6 +37,39 @@ class BundleTests(unittest.TestCase):
         source_file.write_text(source)
         subprocess.run(["clang", "-mmacosx-version-min=15.0", str(source_file), "-o", str(destination), *args], check=True)
 
+    def run_bundled_app(self):
+        # Exercise the bundle's rewritten load commands, not a framework or
+        # library injected by the runner (Rust tests need such an override).
+        # Like release packaging, re-sign after install_name_tool has rewritten
+        # the executable; otherwise execution depends on local signature caches.
+        executable = self.app / "Contents/MacOS/zbase"
+        output("codesign", "--force", "--sign", "-", executable)
+        output("codesign", "--verify", "--strict", executable)
+        environment = {name: value for name, value in os.environ.items() if not name.startswith("DYLD_")}
+        subprocess.run([str(self.app / "Contents/MacOS/zbase")], env=environment, check=True)
+
+    def test_embedded_sparkle_is_preserved_and_rewritten_without_copying_from_media_prefix(self):
+        sparkle = self.app / "Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"
+        sparkle.parent.mkdir(parents=True)
+        self.compile("int sparkle_answer(void) { return 42; }", sparkle, "-dynamiclib", "-install_name", "@rpath/Sparkle.framework/Versions/B/Sparkle")
+        self.compile("int sparkle_answer(void); int main(void) { return sparkle_answer() == 42 ? 0 : 1; }", self.app / "Contents/MacOS/zbase", str(sparkle), "-Wl,-rpath,@executable_path/../Frameworks")
+        original = sparkle.read_bytes()
+        bundle(self.app, self.prefix)
+        verify(self.app, platform.machine())
+        self.assertEqual(sparkle.read_bytes(), original)
+        self.run_bundled_app()
+
+    @unittest.skipUnless(os.environ.get("SPARKLE_DIR"), "Requires the pinned Sparkle framework")
+    def test_real_universal_sparkle_framework_and_helpers_are_portable(self):
+        source = Path(os.environ["SPARKLE_DIR"]) / "Sparkle.framework"
+        destination = self.app / "Contents/Frameworks/Sparkle.framework"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["ditto", str(source), str(destination)], check=True)
+        self.compile('extern void *objc_getClass(const char *); int main(void) { return objc_getClass("SPUUpdater") ? 0 : 1; }', self.app / "Contents/MacOS/zbase", str(destination / "Sparkle"), "-framework", "Foundation", "-Wl,-rpath,@executable_path/../Frameworks")
+        bundle(self.app, self.prefix)
+        verify(self.app, platform.machine())
+        self.run_bundled_app()
+
     def test_recursive_bundle_runs_after_original_libraries_disappear(self):
         # Exercise signed inputs explicitly, independent of linker defaults.
         # Their signatures must be replaceable after dependency and rpath edits.
@@ -52,7 +86,7 @@ class BundleTests(unittest.TestCase):
         output("codesign", "--force", "--sign", "-", self.app / "Contents/MacOS/zbase")
         for binary in [self.app / "Contents/MacOS/zbase", *(self.app / "Contents/Frameworks").glob("*.dylib")]:
             output("codesign", "--verify", "--strict", binary)
-        subprocess.run([str(self.app / "Contents/MacOS/zbase")], check=True)
+        self.run_bundled_app()
 
     def test_rejects_dependency_outside_explicit_prefix(self):
         allowed = self.root / "different-prefix"
