@@ -521,7 +521,10 @@ impl LocalStore {
         let encoded = encode(&cached)?;
         let existing_bytes = self
             .db
-            .get_cf(&messages_cf, message_key(&message.conversation_id, &message.id))
+            .get_cf(
+                &messages_cf,
+                message_key(&message.conversation_id, &message.id),
+            )
             .map_err(io::Error::other)?;
         if existing_bytes.as_deref() == Some(encoded.as_slice()) {
             return Ok(false);
@@ -2271,12 +2274,18 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            store.get_conversation(&with_preview).unwrap().unwrap().last_message,
+            store
+                .get_conversation(&with_preview)
+                .unwrap()
+                .unwrap()
+                .last_message,
             Some(saved.clone())
         );
         // An older cached message never replaces the inbox's preview, and a
         // conversation without one previews its newest cached message.
-        store.persist_message(&sample_structured_message(&with_preview, 4)).unwrap();
+        store
+            .persist_message(&sample_structured_message(&with_preview, 4))
+            .unwrap();
         store.persist_message(&sample_message(&without, 7)).unwrap();
         store.persist_message(&sample_message(&without, 9)).unwrap();
         let seed = store.load_bootstrap_seed(10, 0).unwrap().unwrap();
@@ -2289,7 +2298,9 @@ mod tests {
         assert_eq!(preview(&with_preview), Some(saved));
         let fallback = preview(&without).expect("fallback preview");
         assert_eq!(fallback.message_id, Some(MessageId::new("9")));
-        assert!(matches!(fallback.body, PreviewBody::Attachment { ref name, .. } if name == "file-9.txt"));
+        assert!(
+            matches!(fallback.body, PreviewBody::Attachment { ref name, .. } if name == "file-9.txt")
+        );
         // Summaries written before previews existed (same fields, minus the
         // last) still decode.
         #[derive(serde::Serialize)]
@@ -2515,7 +2526,9 @@ mod tests {
         let thumbnail = AttachmentSource::LocalPath("/cache/thumbnail.png".into());
         message.attachments[0].source = Some(thumbnail.clone());
         message.attachments[0].preview = Some(AttachmentPreview {
-            source: thumbnail, width: Some(32), height: Some(32),
+            source: thumbnail,
+            width: Some(32),
+            height: Some(32),
         });
         store.persist_message(&message).unwrap();
         let mut downloaded = message.attachments.clone();
@@ -2527,7 +2540,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(patched.attachments, downloaded);
-        downloaded[0].source = Some(AttachmentSource::LocalPath("/cache/repaired-full.png".into()));
+        downloaded[0].source = Some(AttachmentSource::LocalPath(
+            "/cache/repaired-full.png".into(),
+        ));
         let repaired = store
             .patch_attachment_paths(&message.conversation_id, &message.id, &downloaded)
             .unwrap()
@@ -2728,7 +2743,13 @@ mod tests {
         let store = LocalStore::open_at(path.clone()).unwrap();
         let assets = path.join("test-attachments");
         std::fs::create_dir_all(&assets).unwrap();
-        for name in ["first", "second", "first-preview", "second-preview", "new-first"] {
+        for name in [
+            "first",
+            "second",
+            "first-preview",
+            "second-preview",
+            "new-first",
+        ] {
             std::fs::write(assets.join(name), b"attachment").unwrap();
         }
         let mut original = sample_message(&ConversationId::new("conversation"), 1);
@@ -2736,9 +2757,16 @@ mod tests {
         second.name = "second.txt".into();
         original.attachments.push(second);
         for (attachment, name) in original.attachments.iter_mut().zip(["first", "second"]) {
-            attachment.source = Some(AttachmentSource::LocalPath(assets.join(name).to_string_lossy().into_owned()));
+            attachment.source = Some(AttachmentSource::LocalPath(
+                assets.join(name).to_string_lossy().into_owned(),
+            ));
             attachment.preview = Some(AttachmentPreview {
-                source: AttachmentSource::LocalPath(assets.join(format!("{name}-preview")).to_string_lossy().into_owned()),
+                source: AttachmentSource::LocalPath(
+                    assets
+                        .join(format!("{name}-preview"))
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
                 width: None,
                 height: None,
             });
@@ -2759,8 +2787,9 @@ mod tests {
         );
         incoming.attachments[0].name = "replacement.txt".into();
         incoming.attachments[0].size_bytes = 42;
-        incoming.attachments[1].source =
-            Some(AttachmentSource::LocalPath(assets.join("new-first").to_string_lossy().into_owned()));
+        incoming.attachments[1].source = Some(AttachmentSource::LocalPath(
+            assets.join("new-first").to_string_lossy().into_owned(),
+        ));
         let replaced = store.upsert_message(&incoming).unwrap().unwrap();
         assert!(replaced.attachments[0].source.is_none());
         assert!(replaced.attachments[0].preview.is_none());

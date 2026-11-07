@@ -111,7 +111,10 @@ impl Avatar {
             return Self::with_presence(
                 avatar,
                 size,
-                participant.presence.as_ref().map(|presence| &presence.availability),
+                participant
+                    .presence
+                    .as_ref()
+                    .map(|presence| &presence.availability),
                 surface,
             );
         }
@@ -175,7 +178,11 @@ impl Avatar {
     /// A channel: a neutral tile with `#`, so channels of one team differ from
     /// its team mark. `team` adds the team's square as a badge where a DM's
     /// presence dot sits, ringed in `surface`; omit it under the team's header.
-    pub fn render_channel(team: Option<(&str, Option<&str>)>, size: f32, surface: Hsla) -> AnyElement {
+    pub fn render_channel(
+        team: Option<(&str, Option<&str>)>,
+        size: f32,
+        surface: Hsla,
+    ) -> AnyElement {
         let tile = div()
             .flex_shrink_0()
             .w(px(size))
@@ -229,7 +236,9 @@ impl Avatar {
                     .w(px(size + ring * 2.))
                     .h(px(size + ring * 2.))
                     .when(circular, |ring| ring.rounded_full())
-                    .when(!circular, |frame| frame.rounded(px(square_radius(size) + ring)))
+                    .when(!circular, |frame| {
+                        frame.rounded(px(square_radius(size) + ring))
+                    })
                     .border(px(ring))
                     .border_color(if is_dark_theme() {
                         crate::views::tint(0xffffff, 0.2)
@@ -393,7 +402,9 @@ impl Avatar {
             .flex()
             .items_center()
             .justify_center()
-            .text_size(px((size * if circular { 0.42 } else { 0.55 }).clamp(7., 15.)))
+            .text_size(px(
+                (size * if circular { 0.42 } else { 0.55 }).clamp(7., 15.)
+            ))
             .font_weight(FontWeight::SEMIBOLD)
             .line_height(px(size))
             .child(initials)
@@ -508,7 +519,11 @@ fn presence_dot_outer_size(avatar_size: f32) -> f32 {
 /// `avatar_size`. Every state has its own shape so it survives without color:
 /// Active is solid, Away carries clock hands, Do not disturb a minus bar, and
 /// Offline is a hollow ring.
-pub fn presence_dot(availability: &Availability, avatar_size: f32, surface: Hsla) -> Option<AnyElement> {
+pub fn presence_dot(
+    availability: &Availability,
+    avatar_size: f32,
+    surface: Hsla,
+) -> Option<AnyElement> {
     let color = presence_color(availability)?;
     let inner = presence_dot_inner_size(avatar_size);
     let outer = presence_dot_outer_size(avatar_size);

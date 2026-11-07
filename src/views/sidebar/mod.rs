@@ -18,11 +18,11 @@ use crate::{
         chevron_down_icon, chevron_right_icon, hash_icon, icon_asset, is_dark_theme,
         popup_menu::{PopupMenuEntry, popup_menu},
         sidebar_bg, sidebar_hover_bg, sidebar_selected_bg, sidebar_selected_fg,
-        sidebar_selected_secondary, subtle_surface, success_soft, text_primary,
-        text_secondary, tint,
+        sidebar_selected_secondary, subtle_surface, success_soft, text_primary, text_secondary,
+        tint,
         tooltip::shortcut_label,
-        warning,
         truncated_line::{Segment, TruncatedLine},
+        warning,
     },
 };
 use gpui::prelude::FluentBuilder;
@@ -107,7 +107,9 @@ pub(super) enum RowLook {
     Compact,
     /// `compact_time`: the sidebar is narrower than Previews' preferred width,
     /// so times shorten ("10:30", "Thu") before names truncate.
-    Previews { compact_time: bool },
+    Previews {
+        compact_time: bool,
+    },
 }
 
 impl RowLook {
@@ -144,7 +146,12 @@ impl RowColors {
         }
         let background = hovered.then(|| rgb(sidebar_hover_bg()).into());
         Self {
-            primary: rgb(if muted { text_secondary() } else { text_primary() }).into(),
+            primary: rgb(if muted {
+                text_secondary()
+            } else {
+                text_primary()
+            })
+            .into(),
             secondary: rgb(text_secondary()).into(),
             background,
             surface: background.unwrap_or_else(|| rgb(sidebar_bg()).into()),
@@ -311,9 +318,10 @@ impl CompactRow<'_> {
                     .child(TruncatedLine::new(title)),
             )
             // The open conversation is being read, wherever it is listed.
-            .when_some(activity.indicator(selection != RowSelection::None), |row, indicator| {
-                row.child(indicator)
-            })
+            .when_some(
+                activity.indicator(selection != RowSelection::None),
+                |row, indicator| row.child(indicator),
+            )
             .into_any_element()
     }
 }
@@ -364,7 +372,11 @@ impl ToolbarButton {
         // Behind other windows the toggled fill fades, like native toolbar items.
         let on_fill = tint(
             text_primary(),
-            if crate::views::window_is_active() { 0.11 } else { 0.06 },
+            if crate::views::window_is_active() {
+                0.11
+            } else {
+                0.06
+            },
         );
         let icon_color = match (enabled, on) {
             (false, _) => tint(text_secondary(), 0.45),
@@ -426,7 +438,12 @@ pub trait SidebarHost: Sized + 'static {
     /// Opens the signed-in user's own profile.
     fn sidebar_open_own_profile(&mut self, window: &mut Window, cx: &mut Context<Self>);
     /// Opens `menu`, or closes it when it is already open.
-    fn sidebar_toggle_menu(&mut self, menu: SidebarMenu, window: &mut Window, cx: &mut Context<Self>);
+    fn sidebar_toggle_menu(
+        &mut self,
+        menu: SidebarMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    );
     /// Closes any open sidebar menu; `dismissed` when a press outside closed it.
     fn sidebar_close_menu(&mut self, dismissed: bool, cx: &mut Context<Self>);
     fn sidebar_show_hover_tooltip(
@@ -445,7 +462,12 @@ pub trait SidebarHost: Sized + 'static {
         cx: &mut Context<Self>,
     );
     fn sidebar_navigate_to(&mut self, route: Route, window: &mut Window, cx: &mut Context<Self>);
-    fn sidebar_navigate_history(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>);
+    fn sidebar_navigate_history(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    );
     fn sidebar_set_hovered_row(&mut self, label: Option<String>, cx: &mut Context<Self>);
     fn sidebar_hovered_row(&self) -> Option<&str>;
 }
@@ -462,6 +484,10 @@ pub(super) struct RowContext<'a> {
 }
 
 impl Sidebar {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     pub fn render<H: SidebarHost>(
         &self,
         sidebar: &SidebarModel,
@@ -501,11 +527,12 @@ impl Sidebar {
             .text_color(rgb(text_primary()))
             .child(Self::render_title_bar_row(sidebar.width_px, chrome, cx))
             .when(sidebar.mode == SidebarMode::Recent, |root| {
-                root.child(
-                    div()
-                        .pt(px(FIRST_SECTION_GAP_PX))
-                        .child(Self::order_header("Recent", sidebar.mode, order_menu_open, cx)),
-                )
+                root.child(div().pt(px(FIRST_SECTION_GAP_PX)).child(Self::order_header(
+                    "Recent",
+                    sidebar.mode,
+                    order_menu_open,
+                    cx,
+                )))
                 .child(recent::render(
                     sidebar,
                     conversation_avatars,
@@ -690,7 +717,11 @@ impl Sidebar {
             .shortcut(shortcut_label(keys))
         })
         .collect();
-        let label_color = if open { text_primary() } else { text_secondary() };
+        let label_color = if open {
+            text_primary()
+        } else {
+            text_secondary()
+        };
         div()
             .h(px(SECTION_HEADER_PX))
             .px_1()
@@ -848,27 +879,30 @@ impl Sidebar {
                                             .font_weight(FontWeight::MEDIUM)
                                             .child(current_user_display_name.to_string()),
                                     )
-                                    .when_some(connection_status, |name, (status, tint, tooltip)| {
-                                        name.child(
-                                            div()
-                                                .id("sidebar-connection-status")
-                                                .flex()
-                                                .items_center()
-                                                .gap(px(4.))
-                                                .text_size(px(11.))
-                                                .line_height(px(14.))
-                                                .text_color(rgb(text_secondary()))
-                                                .tooltip(SidebarTooltip::single_line(
-                                                    tooltip.to_string(),
-                                                ))
-                                                .child(icon_asset(
-                                                    "assets/icons/cloud-off.svg",
-                                                    12.,
-                                                    tint,
-                                                ))
-                                                .child(status),
-                                        )
-                                    }),
+                                    .when_some(
+                                        connection_status,
+                                        |name, (status, tint, tooltip)| {
+                                            name.child(
+                                                div()
+                                                    .id("sidebar-connection-status")
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(4.))
+                                                    .text_size(px(11.))
+                                                    .line_height(px(14.))
+                                                    .text_color(rgb(text_secondary()))
+                                                    .tooltip(SidebarTooltip::single_line(
+                                                        tooltip.to_string(),
+                                                    ))
+                                                    .child(icon_asset(
+                                                        "assets/icons/cloud-off.svg",
+                                                        12.,
+                                                        tint,
+                                                    ))
+                                                    .child(status),
+                                            )
+                                        },
+                                    ),
                             ),
                     ),
             )
@@ -1098,7 +1132,10 @@ impl Sidebar {
             RowLook::Previews { compact_time } => {
                 // Under its team's header a channel needs no team badge.
                 let (lead, circular) = if channel_under_team {
-                    (Avatar::render_channel(None, PREVIEW_AVATAR_PX, colors.surface), false)
+                    (
+                        Avatar::render_channel(None, PREVIEW_AVATAR_PX, colors.surface),
+                        false,
+                    )
                 } else {
                     (
                         Self::leading_element(

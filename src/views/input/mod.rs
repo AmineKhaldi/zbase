@@ -774,10 +774,8 @@ impl TextField {
             let up_offset = self.selection_index_for_position(event.position);
             // For double/triple click selection, mouse-down may have already established a full
             // word/line range. Avoid shrinking it on mouse-up when releasing within that range.
-            if self.selected_range.is_empty() {
-                self.select_to(up_offset, cx);
-            } else if !(self.selected_range.start <= up_offset
-                && up_offset <= self.selected_range.end)
+            if self.selected_range.is_empty()
+                || !(self.selected_range.start <= up_offset && up_offset <= self.selected_range.end)
             {
                 self.select_to(up_offset, cx);
             }
@@ -786,7 +784,12 @@ impl TextField {
         }
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.is_selecting {
             if event.pressed_button != Some(MouseButton::Left) {
                 self.stop_selection_drag();
@@ -1502,7 +1505,8 @@ impl Element for TextLineElement {
         });
         let input = self.input.downgrade();
         window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-            if phase == gpui::DispatchPhase::Capture && event.button == MouseButton::Left
+            if phase == gpui::DispatchPhase::Capture
+                && event.button == MouseButton::Left
                 && let Some(input) = input.upgrade()
                 && input.read(cx).is_selecting
             {
@@ -1974,6 +1978,71 @@ fn delete_to_previous_word_start(content: &str, offset: usize) -> usize {
     line_start + previous_word_start(line_slice, line_slice.len())
 }
 
+fn line_range_at_offset(content: &str, offset: usize) -> Range<usize> {
+    if content.is_empty() {
+        return 0..0;
+    }
+
+    let cursor = offset.min(content.len());
+    let start = content[..cursor].rfind('\n').map_or(0, |index| index + 1);
+    let end = content[cursor..]
+        .find('\n')
+        .map_or(content.len(), |index| cursor + index);
+    start..end
+}
+
+struct VisualLineSegment {
+    global_start: usize,
+    global_end: usize,
+    top: Pixels,
+    width: Pixels,
+}
+
+fn visual_segments(
+    line: &WrappedLine,
+    global_line_start: usize,
+    line_height: Pixels,
+) -> Vec<VisualLineSegment> {
+    let mut segments = Vec::new();
+    let mut segment_start = 0;
+    let mut top = px(0.);
+    let mut boundaries = line
+        .wrap_boundaries()
+        .iter()
+        .map(|boundary| {
+            let run = &line.runs()[boundary.run_ix];
+            run.glyphs[boundary.glyph_ix].index
+        })
+        .collect::<Vec<_>>();
+    boundaries.push(line.len());
+
+    for boundary in boundaries {
+        let width = line
+            .position_for_index(boundary, line_height)
+            .map(|position| position.x)
+            .unwrap_or(px(0.));
+        segments.push(VisualLineSegment {
+            global_start: global_line_start + segment_start,
+            global_end: global_line_start + boundary,
+            top,
+            width,
+        });
+        segment_start = boundary;
+        top += line_height;
+    }
+
+    if segments.is_empty() {
+        segments.push(VisualLineSegment {
+            global_start: global_line_start,
+            global_end: global_line_start,
+            top: px(0.),
+            width: px(0.),
+        });
+    }
+
+    segments
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2060,69 +2129,4 @@ mod tests {
     fn delete_to_previous_word_start_deletes_newline_from_line_start() {
         assert_eq!(delete_to_previous_word_start("hello\nworld", 6), 5);
     }
-}
-
-fn line_range_at_offset(content: &str, offset: usize) -> Range<usize> {
-    if content.is_empty() {
-        return 0..0;
-    }
-
-    let cursor = offset.min(content.len());
-    let start = content[..cursor].rfind('\n').map_or(0, |index| index + 1);
-    let end = content[cursor..]
-        .find('\n')
-        .map_or(content.len(), |index| cursor + index);
-    start..end
-}
-
-struct VisualLineSegment {
-    global_start: usize,
-    global_end: usize,
-    top: Pixels,
-    width: Pixels,
-}
-
-fn visual_segments(
-    line: &WrappedLine,
-    global_line_start: usize,
-    line_height: Pixels,
-) -> Vec<VisualLineSegment> {
-    let mut segments = Vec::new();
-    let mut segment_start = 0;
-    let mut top = px(0.);
-    let mut boundaries = line
-        .wrap_boundaries()
-        .iter()
-        .map(|boundary| {
-            let run = &line.runs()[boundary.run_ix];
-            run.glyphs[boundary.glyph_ix].index
-        })
-        .collect::<Vec<_>>();
-    boundaries.push(line.len());
-
-    for boundary in boundaries {
-        let width = line
-            .position_for_index(boundary, line_height)
-            .map(|position| position.x)
-            .unwrap_or(px(0.));
-        segments.push(VisualLineSegment {
-            global_start: global_line_start + segment_start,
-            global_end: global_line_start + boundary,
-            top,
-            width,
-        });
-        segment_start = boundary;
-        top += line_height;
-    }
-
-    if segments.is_empty() {
-        segments.push(VisualLineSegment {
-            global_start: global_line_start,
-            global_end: global_line_start,
-            top: px(0.),
-            width: px(0.),
-        });
-    }
-
-    segments
 }

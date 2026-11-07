@@ -78,9 +78,11 @@ impl TeamGroup<'_> {
             .tooltip(SidebarTooltip::builder(self.team.display_name.clone()))
             .cursor_pointer()
             .hover(|style| style.bg(subtle_surface()))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.sidebar_toggle_section(toggle_id.clone(), cx)
-            }))
+            .on_click(
+                cx.listener(move |this, _, _, cx| {
+                    this.sidebar_toggle_section(toggle_id.clone(), cx)
+                }),
+            )
             .on_drag(DraggedSection(drag_id), move |_, _, _, cx| {
                 cx.new(|_| DragPreview {
                     title: drag_title.clone(),

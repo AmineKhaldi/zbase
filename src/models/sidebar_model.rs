@@ -97,7 +97,12 @@ impl SidebarModel {
             .iter()
             .filter(|section| !section.is_unread() && !section.collapsed)
             .find(listed)
-            .or_else(|| self.sections.iter().filter(|section| section.is_unread()).find(listed))
+            .or_else(|| {
+                self.sections
+                    .iter()
+                    .filter(|section| section.is_unread())
+                    .find(listed)
+            })
             .map(|section| &section.id)
     }
 
@@ -265,7 +270,11 @@ mod tests {
             recent_rows: Vec::new(),
             sections: vec![
                 section("unread", vec![general.clone()], false),
-                section("group_lighthouse", vec![general.clone(), row("random", Some("lighthouse"))], false),
+                section(
+                    "group_lighthouse",
+                    vec![general.clone(), row("random", Some("lighthouse"))],
+                    false,
+                ),
             ],
             filter: String::new(),
             highlighted_route: None,

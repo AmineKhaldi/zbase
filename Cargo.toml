@@ -14,6 +14,10 @@ default = []
 demo-fixtures = []
 macos-updater = []
 
+# Keep compiler and Clippy warnings fatal for local builds and CI alike.
+[lints.rust]
+warnings = "deny"
+
 [dependencies]
 gpui = { version = "0.2.2", default-features = false, features = ["font-kit"] }
 unicode-segmentation = "1.12.0"

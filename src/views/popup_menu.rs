@@ -68,9 +68,15 @@ pub fn popup_menu(
     entries: Vec<PopupMenuEntry>,
     on_dismiss: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let has_checks = entries
-        .iter()
-        .any(|entry| matches!(entry, PopupMenuEntry::Item { checked: Some(_), .. }));
+    let has_checks = entries.iter().any(|entry| {
+        matches!(
+            entry,
+            PopupMenuEntry::Item {
+                checked: Some(_),
+                ..
+            }
+        )
+    });
     div()
         .id(id)
         .occlude()
@@ -86,68 +92,70 @@ pub fn popup_menu(
         .text_size(px(13.))
         .text_color(rgb(text_primary()))
         .on_mouse_down_out(on_dismiss)
-        .children(entries.into_iter().enumerate().map(|(index, entry)| match entry {
-            PopupMenuEntry::Separator => div()
-                .mx(px(10.))
-                .my(px(5.))
-                .h(px(1.))
-                .bg(menu_border())
-                .into_any_element(),
-            PopupMenuEntry::Item {
-                label,
-                checked,
-                shortcut,
-                on_click,
-            } => {
-                let group = SharedString::from(format!("{id}-item-{index}"));
-                div()
-                    .id(SharedString::from(format!("{id}-item-{index}")))
-                    .group(group.clone())
-                    .h(px(ITEM_HEIGHT_PX))
-                    .pl(px(if has_checks { 4. } else { 10. }))
-                    .pr(px(10.))
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .whitespace_nowrap()
-                    .hover(|style| style.bg(rgb(accent_strong())).text_color(rgb(0xffffff)))
-                    .on_click(on_click)
-                    .when(has_checks, |item| {
-                        item.child(
-                            div()
-                                .w(px(CHECK_COLUMN_PX))
-                                .flex_shrink_0()
-                                .flex()
-                                .justify_center()
-                                .when(checked == Some(true), |column| {
-                                    column.child(
-                                        svg()
-                                            .path("assets/icons/check.svg")
-                                            .size(px(12.))
-                                            .text_color(rgb(text_primary()))
-                                            .group_hover(group.clone(), |style| {
-                                                style.text_color(rgb(0xffffff))
-                                            }),
-                                    )
-                                }),
-                        )
-                    })
-                    .child(div().flex_1().child(label))
-                    .when_some(shortcut, |item, shortcut| {
-                        item.child(
-                            div()
-                                .pl(px(24.))
-                                .text_color(rgb(text_secondary()))
-                                .font_weight(FontWeight::NORMAL)
-                                .group_hover(group, |style| {
-                                    style.text_color(tint(0xffffff, 0.85))
-                                })
-                                .child(shortcut),
-                        )
-                    })
-                    .into_any_element()
+        .children(entries.into_iter().enumerate().map(|(index, entry)| {
+            match entry {
+                PopupMenuEntry::Separator => div()
+                    .mx(px(10.))
+                    .my(px(5.))
+                    .h(px(1.))
+                    .bg(menu_border())
+                    .into_any_element(),
+                PopupMenuEntry::Item {
+                    label,
+                    checked,
+                    shortcut,
+                    on_click,
+                } => {
+                    let group = SharedString::from(format!("{id}-item-{index}"));
+                    div()
+                        .id(SharedString::from(format!("{id}-item-{index}")))
+                        .group(group.clone())
+                        .h(px(ITEM_HEIGHT_PX))
+                        .pl(px(if has_checks { 4. } else { 10. }))
+                        .pr(px(10.))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .whitespace_nowrap()
+                        .hover(|style| style.bg(rgb(accent_strong())).text_color(rgb(0xffffff)))
+                        .on_click(on_click)
+                        .when(has_checks, |item| {
+                            item.child(
+                                div()
+                                    .w(px(CHECK_COLUMN_PX))
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .justify_center()
+                                    .when(checked == Some(true), |column| {
+                                        column.child(
+                                            svg()
+                                                .path("assets/icons/check.svg")
+                                                .size(px(12.))
+                                                .text_color(rgb(text_primary()))
+                                                .group_hover(group.clone(), |style| {
+                                                    style.text_color(rgb(0xffffff))
+                                                }),
+                                        )
+                                    }),
+                            )
+                        })
+                        .child(div().flex_1().child(label))
+                        .when_some(shortcut, |item, shortcut| {
+                            item.child(
+                                div()
+                                    .pl(px(24.))
+                                    .text_color(rgb(text_secondary()))
+                                    .font_weight(FontWeight::NORMAL)
+                                    .group_hover(group, |style| {
+                                        style.text_color(tint(0xffffff, 0.85))
+                                    })
+                                    .child(shortcut),
+                            )
+                        })
+                        .into_any_element()
+                }
             }
         }))
         .into_any_element()

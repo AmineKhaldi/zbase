@@ -4,21 +4,20 @@ use mixed_layout::MixedLayout;
 use crate::{
     app::commands,
     views::{
-        link,
         app_window::AppWindow,
         input::{
             Copy, Down, End, Home, Left, Right, SelectAll, SelectDown, SelectLeft, SelectRight,
             SelectUp, Up,
         },
-        selection,
+        link, selection,
     },
 };
 use gpui::{
     App, AvailableSpace, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, Entity,
     FocusHandle, Focusable, FontStyle, FontWeight, GlobalElementId, Hsla, InteractiveElement,
     IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
-    Pixels, Point, Resource, StrikethroughStyle, Style, Subscription, TextRun, UnderlineStyle, Window,
-    WrappedLine, div, fill, point, prelude::*, px, relative, rgb, rgba, size,
+    Pixels, Point, Resource, StrikethroughStyle, Style, Subscription, TextRun, UnderlineStyle,
+    Window, WrappedLine, div, fill, point, prelude::*, px, relative, rgb, rgba, size,
 };
 use std::{collections::HashMap, ops::Range};
 use unicode_segmentation::UnicodeSegmentation;
@@ -408,7 +407,7 @@ impl SelectableText {
         if !self.link_ranges.is_empty() {
             let in_bounds = self
                 .last_bounds
-                .map_or(false, |b| b.contains(&event.position));
+                .is_some_and(|b| b.contains(&event.position));
             let over_link = if in_bounds {
                 let index = self.index_for_mouse_position(event.position);
                 self.link_at_index(index).is_some()
@@ -430,10 +429,8 @@ impl SelectableText {
             let up_offset = self.index_for_mouse_position(event.position);
             // For double/triple click selection, mouse-down may have already established a full
             // word/line range. Avoid shrinking it on mouse-up when releasing within that range.
-            if self.selected_range.is_empty() {
-                self.select_to(up_offset, cx);
-            } else if !(self.selected_range.start <= up_offset
-                && up_offset <= self.selected_range.end)
+            if self.selected_range.is_empty()
+                || !(self.selected_range.start <= up_offset && up_offset <= self.selected_range.end)
             {
                 self.select_to(up_offset, cx);
             }
@@ -466,7 +463,7 @@ impl SelectableText {
         if self.link_ranges.is_empty() {
             return false;
         }
-        let in_bounds = self.last_bounds.map_or(false, |b| b.contains(&position));
+        let in_bounds = self.last_bounds.is_some_and(|b| b.contains(&position));
         if !in_bounds {
             return false;
         }
@@ -902,17 +899,21 @@ impl Element for SelectableTextElement {
                 window,
             )
         });
-        let lines = if mixed.is_some() { Vec::new() } else { window
-            .text_system()
-            .shape_text(
-                view.content.clone().into(),
-                font_size,
-                &runs,
-                Some(bounds.size.width.max(px(1.0))),
-                None,
-            )
-            .map(|lines| lines.into_vec())
-            .unwrap_or_default() };
+        let lines = if mixed.is_some() {
+            Vec::new()
+        } else {
+            window
+                .text_system()
+                .shape_text(
+                    view.content.clone().into(),
+                    font_size,
+                    &runs,
+                    Some(bounds.size.width.max(px(1.0))),
+                    None,
+                )
+                .map(|lines| lines.into_vec())
+                .unwrap_or_default()
+        };
 
         let layout = TextLayoutSnapshot {
             mixed,
@@ -1047,10 +1048,8 @@ impl Element for SelectableTextElement {
 impl Render for SelectableText {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.blur_subscription.is_none() {
-            self.blur_subscription = Some(cx.on_blur(
-                &self.focus_handle,
-                window,
-                |this, window, cx| {
+            self.blur_subscription =
+                Some(cx.on_blur(&self.focus_handle, window, |this, window, cx| {
                     // Cached paragraphs outlive their visible selection. A hidden
                     // selection must not suppress quick reactions in other messages.
                     if this.has_selection() || this.is_selecting {
@@ -1060,8 +1059,7 @@ impl Render for SelectableText {
                         cx.notify();
                         window.refresh();
                     }
-                },
-            ));
+                }));
         }
         div()
             .when(self.fill_width, |container| {
@@ -1182,6 +1180,10 @@ pub fn resolve_selectable_text_inline_with_attachments(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep the explicit inputs of this existing view API."
+)]
 fn resolve_selectable_text_with_options(
     registry: &mut HashMap<String, Entity<SelectableText>>,
     key: impl Into<String>,
@@ -1687,7 +1689,7 @@ mod tests {
         let parsed = apply_inline_markdown(
             source,
             &[],
-            &[code.clone()],
+            std::slice::from_ref(&code),
             InlineMarkdownConfig::default(),
         );
         assert_eq!(parsed.text, "note λvalue");

@@ -31,14 +31,11 @@ use crate::{
         attachment_display_label, attachment_header_row, attachment_image_source,
         attachment_lightbox_source, attachment_local_path,
         avatar::{Avatar, default_avatar_background},
-        badge, border, chevron_down_icon, close_icon, danger, danger_soft,
-        format_duration_ms,
+        badge, border, chevron_down_icon, close_icon, danger, danger_soft, format_duration_ms,
         inline_markdown::{InlineMarkdownConfig, apply_inline_markdown, remap_source_byte_range},
         input::TextField,
-        is_dark_theme, mention_colors_for_user, mono_font_family, mono_font_size,
-        panel_alt_bg,
-        panel_alt_surface,
-        play_icon,
+        is_dark_theme, mention_colors_for_user, mono_font_family, mono_font_size, panel_alt_bg,
+        panel_alt_surface, play_icon,
         selectable_text::{
             InlineAttachment, LinkRange, SelectableText, StyledRange, resolve_selectable_text,
             resolve_selectable_text_inline, resolve_selectable_text_with_attachments,
@@ -79,6 +76,10 @@ impl Render for RightPaneResizeDragPreview {
 pub struct ThreadPane;
 
 impl RightPaneHost {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     pub fn render(
         &self,
         navigation: &NavigationModel,
@@ -127,9 +128,7 @@ impl RightPaneHost {
                 cx,
             ),
             RightPaneMode::Files => render_files_panel(timeline, cx),
-            RightPaneMode::Search => {
-                render_search_panel(conversation, search, search_contexts, cx)
-            }
+            RightPaneMode::Search => render_search_panel(conversation, search, search_contexts, cx),
             RightPaneMode::Profile(_) => crate::views::profile::render_profile_panel(
                 profile_panel,
                 profile_scroll,
@@ -192,6 +191,10 @@ impl RightPaneHost {
 }
 
 impl ThreadPane {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     pub fn render(
         &self,
         thread: &ThreadPaneModel,
@@ -293,7 +296,9 @@ impl ThreadPane {
                                 ))
                             }),
                     )
-                    .child(crate::views::scroll_edge_fade(crate::views::right_pane_surface())),
+                    .child(crate::views::scroll_edge_fade(
+                        crate::views::right_pane_surface(),
+                    )),
             )
             .when(unseen_reply_count > 0, |container| {
                 container.child(
@@ -381,6 +386,10 @@ fn plain_text_from_fragments(fragments: &[MessageFragment]) -> String {
     text
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep the explicit inputs of this existing view API."
+)]
 fn render_parent_message(
     author_name: String,
     avatar_asset: Option<String>,
@@ -1079,7 +1088,9 @@ fn thread_no_replies_note() -> AnyElement {
             div()
                 .text_size(px(13.))
                 .text_color(rgb(text_secondary()))
-                .child("Reply below. Replies also appear in the conversation, quoting this message."),
+                .child(
+                    "Reply below. Replies also appear in the conversation, quoting this message.",
+                ),
         )
         .into_any_element()
 }
@@ -1334,7 +1345,12 @@ fn render_search_panel(
         }))
         .into_any_element();
     pane_with_header(
-        pane_header("Search", conversation_location(conversation), "search-pane-close", cx),
+        pane_header(
+            "Search",
+            conversation_location(conversation),
+            "search-pane-close",
+            cx,
+        ),
         body,
     )
 }
@@ -1355,6 +1371,10 @@ fn find_message(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep the explicit inputs of this existing view API."
+)]
 fn render_inline_fragments(
     _message_key: &str,
     render_key: String,
@@ -1534,6 +1554,10 @@ fn render_inline_fragments(
         .into_any_element()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep the explicit inputs of this existing view API."
+)]
 fn render_inline_fragments_with_asset_emojis(
     message_key: &str,
     fragments: &[MessageFragment],
@@ -1750,6 +1774,10 @@ fn render_inline_fragments_with_asset_emojis(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep the explicit inputs of this existing view API."
+)]
 fn render_fragment(
     message_key: &str,
     index: usize,
@@ -2076,6 +2104,10 @@ fn render_send_state(send_state: &MessageSendState) -> AnyElement {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep the explicit inputs of this existing view API."
+)]
 fn render_styled_fragment_text(
     message_key: &str,
     index: usize,
@@ -2127,6 +2159,10 @@ fn render_styled_fragment_text(
         .into_any_element()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep the explicit inputs of this existing view API."
+)]
 fn render_linked_styled_fragment_text(
     message_key: &str,
     index: usize,

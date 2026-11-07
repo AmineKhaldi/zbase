@@ -1,14 +1,14 @@
 //! Attachment availability is checked only at the media hydration boundary.
+use super::{
+    KeybaseRpcClient, benchmark_read_only, download_attachment_to_cache,
+    extract_video_thumbnail_to_file, is_unrenderable_keybase_asset_url,
+};
 use crate::domain::{
     attachment::{AttachmentKind, AttachmentPreview, AttachmentSource},
     ids::MessageId,
     message::MessageRecord,
 };
 use std::path::Path;
-use super::{
-    benchmark_read_only, download_attachment_to_cache, extract_video_thumbnail_to_file,
-    is_unrenderable_keybase_asset_url, KeybaseRpcClient,
-};
 
 pub(super) fn message_needs_image_attachment_hydration(message: &MessageRecord) -> bool {
     let (source, preview) = image_attachment_hydration_flags(message);
@@ -162,11 +162,9 @@ pub(super) async fn hydrate_attachment_paths_for_messages(
                     .as_ref()
                     .is_some_and(|s| attachment.preview.as_ref().is_some_and(|p| s == &p.source));
                 let source_renderable = !source_is_same_as_preview && available.source;
-                if !source_renderable {
-                    if let Some(file_path) = full_file_path.clone() {
-                        attachment.source = Some(AttachmentSource::LocalPath(file_path));
-                        attachment_updated = true;
-                    }
+                if !source_renderable && let Some(file_path) = full_file_path.clone() {
+                    attachment.source = Some(AttachmentSource::LocalPath(file_path));
+                    attachment_updated = true;
                 }
             } else if attachment.kind == AttachmentKind::Video && needs_video_hydration {
                 let already_has_local_source = available.source;

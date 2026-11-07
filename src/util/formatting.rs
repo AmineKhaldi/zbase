@@ -91,7 +91,11 @@ pub fn compact_date_label(timestamp_ms: Option<i64>) -> String {
         return "Now".to_string();
     };
     let dt = dt.with_timezone(&Local);
-    compact_date_label_for(dt.date_naive(), Local::now().date_naive(), &message_time_label(timestamp_ms))
+    compact_date_label_for(
+        dt.date_naive(),
+        Local::now().date_naive(),
+        &message_time_label(timestamp_ms),
+    )
 }
 
 fn compact_date_label_for(day: NaiveDate, today: NaiveDate, time: &str) -> String {
@@ -201,8 +205,14 @@ mod tests {
     fn compact_date_labels_shorten_with_age() {
         let today = date(2026, 11, 6);
         assert_eq!(compact_date_label_for(today, today, "10:15 AM"), "10:15 AM");
-        assert_eq!(compact_date_label_for(date(2026, 11, 5), today, "x"), "Yesterday");
-        assert_eq!(compact_date_label_for(date(2026, 11, 3), today, "x"), "Nov 3");
+        assert_eq!(
+            compact_date_label_for(date(2026, 11, 5), today, "x"),
+            "Yesterday"
+        );
+        assert_eq!(
+            compact_date_label_for(date(2026, 11, 3), today, "x"),
+            "Nov 3"
+        );
         assert_eq!(
             compact_date_label_for(date(2025, 12, 31), today, "x"),
             "Dec 31, 2025"

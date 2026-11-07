@@ -163,10 +163,7 @@ fn try_start_service() -> bool {
     };
 
     info!(target: "zbase.service", label = %label, "starting keybase via launchctl");
-    match Command::new("launchctl")
-        .args(["start", &label])
-        .output()
-    {
+    match Command::new("launchctl").args(["start", &label]).output() {
         Ok(output) if output.status.success() => true,
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);

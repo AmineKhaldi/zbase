@@ -184,13 +184,18 @@ To prepare a release, run **Actions → Prepare release** on `main` with the nex
 ### Checks before opening a PR
 
 ```sh
-cargo clippy --locked --all-targets --features gpui/runtime_shaders
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --features gpui/runtime_shaders -- -D warnings
+scripts/macos/prepare_sparkle.sh
+SPARKLE_DIR="$PWD/dist/sparkle" cargo clippy --locked --all-targets --all-features --features gpui/runtime_shaders -- -D warnings
 cargo test --locked --all-targets --features gpui/runtime_shaders
 python3 -m unittest discover -s scripts -p 'test_*.py' -v
 python3 -m unittest discover -s scripts/macos -p test_bundle_dylibs.py -v
 ```
 
-GitHub Actions runs workflow/script linting, Clippy, Rust tests, and macOS packaging fixture tests on PRs and pushes to `main`. PRs skip app bundle creation, archiving, and upload. Pushes to `main` and manual CI runs additionally build a debug app using the dependencies compiled for checks and tests, then verify its minimum OS, architecture, bundled library dependencies, and ad-hoc signatures. The `macos-development-app` artifact from those runs contains an unoptimized development build for inspection; it is not Developer ID signed or notarized. The `macos-cargo-timings` artifact contains Cargo's build timing reports, including on PRs.
+Compiler and Clippy warnings are denied for this package through `Cargo.toml`, including local builds and release tests. CI checks Clippy with both default features and all app features (including demo fixtures); the existing view APIs and inline enums have item-scoped Clippy exceptions with reasons. Cargo still reports upstream future-compatibility notices for GPUI’s transitive `block` and `proc-macro-error2` dependencies.
+
+GitHub Actions runs Rust formatting, workflow/script linting, Clippy, Rust tests, and macOS packaging fixture tests on PRs and pushes to `main`. PRs skip app bundle creation, archiving, and upload. Pushes to `main` and manual CI runs additionally build a debug app using the dependencies compiled for checks and tests, then verify its minimum OS, architecture, bundled library dependencies, and ad-hoc signatures. The `macos-development-app` artifact from those runs contains an unoptimized development build for inspection; it is not Developer ID signed or notarized. The `macos-cargo-timings` artifact contains Cargo's build timing reports, including on PRs.
 
 Media dependencies are cached as soon as their build succeeds. Rust build outputs are saved even if later validation fails, with compiler-specific cache keys. The separate Release workflow runs tests in release mode and builds the optimized app using the same profile, then signs and notarizes it with release credentials.
 

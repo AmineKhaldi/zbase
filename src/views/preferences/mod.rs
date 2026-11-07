@@ -8,9 +8,8 @@ use crate::{
         settings_model::{Density, SettingsModel, SidebarMode, SidebarStyle, ThemeMode},
     },
     views::{
-        accent, accent_strong, app_window::AppWindow, avatar::Avatar, field_border,
-        is_dark_theme, section_label, shell_border, success, text_primary, text_secondary, tint,
-        warning,
+        accent, accent_strong, app_window::AppWindow, avatar::Avatar, field_border, is_dark_theme,
+        section_label, shell_border, success, text_primary, text_secondary, tint, warning,
     },
 };
 use gpui::prelude::FluentBuilder;
@@ -148,9 +147,14 @@ impl PreferencesView {
         let side_panel_row = setting_row(
             "Side panel",
             "Open threads, members and profiles beside the conversation.",
-            toggle("preferences-side-panel", side_panel, app, move |this, cx| {
-                this.set_show_right_pane(!side_panel, cx);
-            }),
+            toggle(
+                "preferences-side-panel",
+                side_panel,
+                app,
+                move |this, cx| {
+                    this.set_show_right_pane(!side_panel, cx);
+                },
+            ),
         );
 
         let reduced_motion = settings.reduced_motion;

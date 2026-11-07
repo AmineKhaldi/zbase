@@ -1,3 +1,7 @@
+#[allow(
+    dead_code,
+    reason = "This integration test uses only the protocol inventory from the shared module."
+)]
 #[path = "../src/services/backends/keybase/notify_inventory.rs"]
 mod notify_inventory;
 

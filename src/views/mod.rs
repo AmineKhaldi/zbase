@@ -1,5 +1,3 @@
-mod pane_window;
-mod quick_react_placement;
 pub mod app_window;
 pub mod avatar;
 pub mod calls;
@@ -12,9 +10,11 @@ pub mod inline_markdown;
 pub mod input;
 pub mod main_panel;
 pub mod overlays;
+mod pane_window;
 pub mod popup_menu;
 pub mod preferences;
 pub mod profile;
+mod quick_react_placement;
 pub mod right_pane;
 pub mod search;
 pub mod selectable_text;
@@ -766,7 +766,11 @@ pub fn upload_status_label(sent_bytes: u64, total_bytes: u64) -> String {
         _ => 1.,
     };
     let sent_value = sent_bytes as f64 / divisor;
-    let decimals = if unit == "B" || !number.contains('.') { 0 } else { 1 };
+    let decimals = if unit == "B" || !number.contains('.') {
+        0
+    } else {
+        1
+    };
     format!("Uploading · {sent_value:.decimals$} / {total} · {percent}%")
 }
 
@@ -784,10 +788,10 @@ pub fn attachment_is_animated_gif(attachment: &AttachmentSummary) -> bool {
     if name_lower.ends_with(".gif") {
         return true;
     }
-    if let Some(ref mime) = attachment.mime_type {
-        if mime.eq_ignore_ascii_case("image/gif") {
-            return true;
-        }
+    if let Some(ref mime) = attachment.mime_type
+        && mime.eq_ignore_ascii_case("image/gif")
+    {
+        return true;
     }
     false
 }
@@ -1415,7 +1419,11 @@ pub fn search_match_bg() -> u32 {
 
 /// Text on [`search_match_bg`].
 pub fn search_match_fg() -> u32 {
-    if is_dark_theme() { 0xffd666 } else { text_primary() }
+    if is_dark_theme() {
+        0xffd666
+    } else {
+        text_primary()
+    }
 }
 
 /// Title row of a main-pane page such as Search: 56px with a hairline, matching
@@ -1475,7 +1483,11 @@ pub fn back_button(id: impl Into<gpui::ElementId>) -> gpui::Stateful<gpui::Div> 
             "Back".to_string(),
             tooltip::shortcut_label("⌘["),
         ))
-        .child(icon_asset("assets/icons/chevron-left.svg", 16., text_secondary()))
+        .child(icon_asset(
+            "assets/icons/chevron-left.svg",
+            16.,
+            text_secondary(),
+        ))
 }
 
 /// Group label above a list section ("Owners & admins", "Unread"), the same
@@ -1513,7 +1525,11 @@ pub fn keycap(label: impl Into<SharedString>) -> AnyElement {
 
 /// Centered placeholder for a surface with nothing to show: an icon in a soft
 /// circle, a one-line title and an optional explanation.
-pub fn empty_state(icon: &'static str, title: impl Into<SharedString>, body: Option<String>) -> gpui::Div {
+pub fn empty_state(
+    icon: &'static str,
+    title: impl Into<SharedString>,
+    body: Option<String>,
+) -> gpui::Div {
     div()
         .w_full()
         .py(px(32.))
@@ -1529,7 +1545,10 @@ pub fn empty_state(icon: &'static str, title: impl Into<SharedString>, body: Opt
                 .size(px(40.))
                 .mb(px(8.))
                 .rounded_full()
-                .bg(tint(text_primary(), if is_dark_theme() { 0.08 } else { 0.06 }))
+                .bg(tint(
+                    text_primary(),
+                    if is_dark_theme() { 0.08 } else { 0.06 },
+                ))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1662,10 +1681,22 @@ mod upload_label_tests {
             upload_status_label(17 * mb / 10, 4 * mb),
             "Uploading · 1.7 / 4.0 MB · 42%"
         );
-        assert_eq!(upload_status_label(0, 4 * mb), "Uploading · 0.0 / 4.0 MB · 0%");
-        assert_eq!(upload_status_label(5 * mb, 4 * mb), "Uploading · 4.0 / 4.0 MB · 100%");
-        assert_eq!(upload_status_label(256 * 1024, 20 * mb), "Uploading · 0 / 20 MB · 1%");
-        assert_eq!(upload_status_label(300, 900), "Uploading · 300 / 900 B · 33%");
+        assert_eq!(
+            upload_status_label(0, 4 * mb),
+            "Uploading · 0.0 / 4.0 MB · 0%"
+        );
+        assert_eq!(
+            upload_status_label(5 * mb, 4 * mb),
+            "Uploading · 4.0 / 4.0 MB · 100%"
+        );
+        assert_eq!(
+            upload_status_label(256 * 1024, 20 * mb),
+            "Uploading · 0 / 20 MB · 1%"
+        );
+        assert_eq!(
+            upload_status_label(300, 900),
+            "Uploading · 300 / 900 B · 33%"
+        );
     }
 
     #[test]
@@ -1797,7 +1828,10 @@ mod highlight_color_tests {
                         | (secondary.b * 255.).round() as u32;
                     assert!(contrast(secondary, sidebar_selected_bg()) >= 4.5);
                 });
-                assert_ne!(sidebar_selected_bg(), with_window_active(false, sidebar_selected_bg));
+                assert_ne!(
+                    sidebar_selected_bg(),
+                    with_window_active(false, sidebar_selected_bg)
+                );
             });
         }
     }
@@ -1811,6 +1845,9 @@ mod highlight_color_tests {
                 assert!(contrast(fill, sidebar) >= 2.0, "{name}: {fill:06x}");
             }
         }
-        assert_eq!(avatar::team_colors("Lighthouse"), avatar::team_colors("lighthouse"));
+        assert_eq!(
+            avatar::team_colors("Lighthouse"),
+            avatar::team_colors("lighthouse")
+        );
     }
 }

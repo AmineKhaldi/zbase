@@ -9,7 +9,9 @@ use crate::{
     models::{sidebar_model::SidebarRow, sidebar_preview::PreviewLive},
     util::formatting::{sidebar_time_label, sidebar_time_label_compact},
     views::{
-        accent, avatar::Avatar, danger,
+        accent,
+        avatar::Avatar,
+        danger,
         truncated_line::{Segment, TruncatedLine},
     },
 };
@@ -98,7 +100,12 @@ impl PreviewRow<'_> {
                 this.sidebar_hide_hover_tooltip(cx);
                 this.sidebar_navigate_to(route.clone(), window, cx);
             }))
-            .child(div().size(px(PREVIEW_AVATAR_PX)).flex_shrink_0().child(lead))
+            .child(
+                div()
+                    .size(px(PREVIEW_AVATAR_PX))
+                    .flex_shrink_0()
+                    .child(lead),
+            )
             .child(
                 div()
                     .flex_1()
