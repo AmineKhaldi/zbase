@@ -15933,19 +15933,7 @@ fn conversation_title(
         };
     }
 
-    let mut participants = tlf_name
-        .split(',')
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .collect::<Vec<_>>();
-    if let Some(self_user) = self_username {
-        participants.retain(|name| *name != self_user);
-    }
-    if participants.is_empty() {
-        tlf_name.to_string()
-    } else {
-        participants.join(", ")
-    }
+    crate::domain::conversation::dm_peer_title(tlf_name, self_username)
 }
 
 fn conversation_kind(tlf_name: &str, members_type: i64) -> ConversationKind {
@@ -16748,10 +16736,10 @@ mod tests {
                 Value::from("row"),
                 Value::Map(vec![
                     (Value::from("key"), Value::from("pgp")),
-                    (Value::from("value"), Value::from("CMMARSLENDER")),
+                    (Value::from("value"), Value::from("PEER_USER")),
                     (
                         Value::from("proofURL"),
-                        Value::from("https://keybase.io/cmmarslender/sigchain#proof"),
+                        Value::from("https://keybase.io/peer_user/sigchain#proof"),
                     ),
                     (
                         Value::from("proofResult"),
@@ -16777,10 +16765,10 @@ mod tests {
         let proofs = parse_identify3_proof_callbacks(&callbacks);
         assert_eq!(proofs.len(), 1);
         assert_eq!(proofs[0].service_name, "pgp");
-        assert_eq!(proofs[0].service_username, "CMMARSLENDER");
+        assert_eq!(proofs[0].service_username, "PEER_USER");
         assert_eq!(
             proofs[0].proof_url.as_deref(),
-            Some("https://keybase.io/cmmarslender/sigchain#proof")
+            Some("https://keybase.io/peer_user/sigchain#proof")
         );
         assert_eq!(
             proofs[0].icon_asset.as_deref(),
@@ -16841,7 +16829,7 @@ mod tests {
                 Value::Map(vec![(
                     Value::from("00003570c1fa47b06cf1ae045a9199388130854bcc009e41da07018784b933da"),
                     Value::Array(vec![Value::Map(vec![
-                        (Value::from("assertion"), Value::from("cmmarslender")),
+                        (Value::from("assertion"), Value::from("peer_user")),
                         (Value::from("lastActiveStatus"), Value::from("ACTIVE_1")),
                     ])]),
                 )]),
@@ -16850,7 +16838,7 @@ mod tests {
 
         let patches = parse_presence_updates_from_notify(&event);
         assert_eq!(patches.len(), 1);
-        assert_eq!(patches[0].user_id.0, "cmmarslender");
+        assert_eq!(patches[0].user_id.0, "peer_user");
         assert_eq!(patches[0].presence.availability, Availability::Active);
     }
 
@@ -16873,23 +16861,23 @@ mod tests {
     #[test]
     fn parse_last_active_status_for_user_reads_username_keyed_maps() {
         let direct = Value::Map(vec![
-            (Value::from("cameroncooper"), Value::from(0)),
-            (Value::from("cmmarslender"), Value::from("ACTIVE_1")),
+            (Value::from("aliceexample"), Value::from(0)),
+            (Value::from("peer_user"), Value::from("ACTIVE_1")),
         ]);
         assert_eq!(
-            parse_last_active_status_for_user(&direct, &UserId::new("cmmarslender")),
+            parse_last_active_status_for_user(&direct, &UserId::new("peer_user")),
             Some(Availability::Active)
         );
 
         let nested = Value::Map(vec![(
             Value::from("participants"),
             Value::Map(vec![(
-                Value::from("cmmarslender"),
+                Value::from("peer_user"),
                 Value::Map(vec![(Value::from("lastActiveStatus"), Value::from(2))]),
             )]),
         )]);
         assert_eq!(
-            parse_last_active_status_for_user(&nested, &UserId::new("cmmarslender")),
+            parse_last_active_status_for_user(&nested, &UserId::new("peer_user")),
             Some(Availability::Away)
         );
     }
@@ -16897,10 +16885,10 @@ mod tests {
     #[test]
     fn tlf_name_mentions_user_matches_dm_member_list() {
         assert!(tlf_name_mentions_user(
-            "cameroncooper,cmmarslender",
-            "cmmarslender"
+            "aliceexample,peer_user",
+            "peer_user"
         ));
-        assert!(!tlf_name_mentions_user("chia_network", "cmmarslender"));
+        assert!(!tlf_name_mentions_user("chia_network", "peer_user"));
     }
 
     #[test]
@@ -16969,22 +16957,22 @@ mod tests {
             Value::from("them"),
             Value::Map(vec![(
                 Value::from("profile"),
-                Value::Map(vec![(Value::from("fullName"), Value::from("Gene Hoffman"))]),
+                Value::Map(vec![(Value::from("fullName"), Value::from("Alex Example"))]),
             )]),
         )]);
 
-        let parsed = parse_user_display_name(&payload, "hoffmang9");
-        assert_eq!(parsed.as_deref(), Some("Gene Hoffman"));
+        let parsed = parse_user_display_name(&payload, "alexexample9");
+        assert_eq!(parsed.as_deref(), Some("Alex Example"));
     }
 
     #[test]
     fn parse_user_display_name_ignores_username_aliases() {
         let payload = Value::Map(vec![
-            (Value::from("username"), Value::from("hoffmang9")),
-            (Value::from("name"), Value::from("hoffmang9")),
+            (Value::from("username"), Value::from("alexexample9")),
+            (Value::from("name"), Value::from("alexexample9")),
         ]);
 
-        let parsed = parse_user_display_name(&payload, "hoffmang9");
+        let parsed = parse_user_display_name(&payload, "alexexample9");
         assert!(parsed.is_none());
     }
 
@@ -16992,11 +16980,11 @@ mod tests {
     fn parse_user_display_name_accepts_single_word_name() {
         let payload = Value::Map(vec![(
             Value::from("them"),
-            Value::Map(vec![(Value::from("name"), Value::from("Gene"))]),
+            Value::Map(vec![(Value::from("name"), Value::from("Alex"))]),
         )]);
 
-        let parsed = parse_user_display_name(&payload, "hoffmang9");
-        assert_eq!(parsed.as_deref(), Some("Gene"));
+        let parsed = parse_user_display_name(&payload, "alexexample9");
+        assert_eq!(parsed.as_deref(), Some("Alex"));
     }
 
     #[test]
@@ -17558,7 +17546,7 @@ mod tests {
                             Value::from("serverHeader"),
                             Value::Map(vec![(Value::from("messageID"), Value::from(26326))]),
                         ),
-                        (Value::from("senderUsername"), Value::from("bholmes22")),
+                        (Value::from("senderUsername"), Value::from("fixture_peer22")),
                         (
                             Value::from("messageBody"),
                             Value::Map(vec![
@@ -17588,7 +17576,7 @@ mod tests {
         assert_eq!(page.reaction_deltas.len(), 1);
         assert_eq!(page.reaction_deltas[0].target_message_id.0, "26325");
         assert_eq!(page.reaction_deltas[0].emoji, ":100:");
-        assert_eq!(page.reaction_deltas[0].actor_id.0, "bholmes22");
+        assert_eq!(page.reaction_deltas[0].actor_id.0, "fixture_peer22");
     }
 
     #[test]
@@ -17732,7 +17720,7 @@ mod tests {
                     ]),
                 ),
                 (Value::from("messageID"), Value::from(26326)),
-                (Value::from("senderUsername"), Value::from("bholmes22")),
+                (Value::from("senderUsername"), Value::from("fixture_peer22")),
                 (
                     Value::from("content"),
                     Value::Map(vec![
@@ -17756,7 +17744,7 @@ mod tests {
             Some("26326")
         );
         assert_eq!(delta.emoji, ":100:");
-        assert_eq!(delta.actor_id.0, "bholmes22");
+        assert_eq!(delta.actor_id.0, "fixture_peer22");
         assert!(delta.source_ref.is_none());
     }
 
@@ -17773,7 +17761,7 @@ mod tests {
                     ]),
                 ),
                 (Value::from("messageID"), Value::from(695)),
-                (Value::from("senderUsername"), Value::from("cmmarslender")),
+                (Value::from("senderUsername"), Value::from("peer_user")),
                 (
                     Value::from("content"),
                     Value::Map(vec![
@@ -17844,7 +17832,7 @@ mod tests {
                             Value::from("sender"),
                             Value::Map(vec![(
                                 Value::from("username"),
-                                Value::from("cameroncooper"),
+                                Value::from("aliceexample"),
                             )]),
                         ),
                         (
@@ -17872,7 +17860,7 @@ mod tests {
             Some("48")
         );
         assert_eq!(delta.emoji, "👍");
-        assert_eq!(delta.actor_id.0, "cameroncooper");
+        assert_eq!(delta.actor_id.0, "aliceexample");
     }
 
     #[test]
@@ -17947,7 +17935,7 @@ mod tests {
             raw_params: Value::Map(vec![
                 (Value::from("convID"), Value::Binary(vec![0xAA, 0xBB])),
                 (Value::from("messageID"), Value::from(26326)),
-                (Value::from("senderUsername"), Value::from("bholmes22")),
+                (Value::from("senderUsername"), Value::from("fixture_peer22")),
                 (
                     Value::from("content"),
                     Value::Map(vec![
@@ -18095,7 +18083,7 @@ mod tests {
                                         Value::from("valid"),
                                         Value::Map(vec![
                                             (Value::from("messageID"), Value::from(3670)),
-                                            (Value::from("senderUsername"), Value::from("jde5011")),
+                                            (Value::from("senderUsername"), Value::from("fixture_peer33")),
                                             (
                                                 Value::from("messageBody"),
                                                 Value::Map(vec![(
@@ -19223,17 +19211,17 @@ mod tests {
         for topic_type in [1i64, 2, 3, 4, 5] {
             let ui = Value::Map(vec![
                 ("convID".into(), "abcd".into()),
-                ("name".into(), "butterbot,cameroncooper".into()),
+                ("name".into(), "helperbot,aliceexample".into()),
                 ("membersType".into(), IMPTEAM_MEMBERS_TYPE.into()),
                 ("topicType".into(), topic_type.into()),
             ]);
             assert_eq!(
-                parse_inbox_ui_item(&ui, Some("cameroncooper")).is_some(),
+                parse_inbox_ui_item(&ui, Some("aliceexample")).is_some(),
                 topic_type == TOPIC_TYPE_CHAT
             );
             let info = Value::Map(vec![
                 ("id".into(), Value::Binary(vec![0xab, 0xcd])),
-                ("tlfName".into(), "butterbot,cameroncooper".into()),
+                ("tlfName".into(), "helperbot,aliceexample".into()),
                 ("membersType".into(), IMPTEAM_MEMBERS_TYPE.into()),
                 (
                     "triple".into(),
@@ -19245,7 +19233,7 @@ mod tests {
                 Value::Array(vec![Value::Map(vec![("info".into(), info)])]),
             )]);
             assert_eq!(
-                parse_inbox_conversations(&inbox, Some("cameroncooper"), false).len(),
+                parse_inbox_conversations(&inbox, Some("aliceexample"), false).len(),
                 usize::from(topic_type == TOPIC_TYPE_CHAT)
             );
         }

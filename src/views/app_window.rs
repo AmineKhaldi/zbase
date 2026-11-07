@@ -11592,13 +11592,13 @@ mod tests {
             ConversationGroup, ConversationKind, ConversationSummary, ConversationTeamType,
         };
         let mut summary = ConversationSummary {
-            id: ConversationId::new("annar-general"),
+            id: ConversationId::new("example_team-general"),
             title: "general".into(),
             kind: ConversationKind::Channel,
             topic: String::new(),
             group: Some(ConversationGroup {
-                id: "annar".into(),
-                display_name: "annar".into(),
+                id: "example_team".into(),
+                display_name: "example_team".into(),
                 team_type: ConversationTeamType::Simple,
             }),
             unread_count: 0,
@@ -11612,10 +11612,10 @@ mod tests {
             super::sidebar_avatar_inputs_signature(&[], &[], &[summary.clone()], &profiles, &HashMap::new());
         assert_eq!(super::simple_team_avatar_asset(&summary, &profiles), None);
         profiles.insert(
-            UserId::new("team:annar"),
+            UserId::new("team:example_team"),
             crate::state::state::UserProfileState {
-                display_name: "annar".into(),
-                avatar_asset: Some("/cache/annar.png".into()),
+                display_name: "example_team".into(),
+                avatar_asset: Some("/cache/example_team.png".into()),
                 updated_ms: 1,
             },
         );
@@ -11625,7 +11625,7 @@ mod tests {
         );
         assert_eq!(
             super::simple_team_avatar_asset(&summary, &profiles).as_deref(),
-            Some("/cache/annar.png")
+            Some("/cache/example_team.png")
         );
         assert_ne!(
             missing,
@@ -11641,9 +11641,9 @@ mod tests {
         let before =
             super::sidebar_avatar_inputs_signature(&[], &[], &[summary.clone()], &profiles, &HashMap::new());
         profiles
-            .get_mut(&UserId::new("team:annar"))
+            .get_mut(&UserId::new("team:example_team"))
             .unwrap()
-            .avatar_asset = Some("/cache/annar-updated.png".into());
+            .avatar_asset = Some("/cache/example_team-updated.png".into());
         assert_ne!(
             before,
             super::sidebar_avatar_inputs_signature(&[], &[], &[summary], &profiles, &HashMap::new()),

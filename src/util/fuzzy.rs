@@ -353,9 +353,9 @@ mod tests {
     fn multiword_matches_use_utf8_offsets_and_skip_to_character_boundaries() {
         for (query, candidate, expected) in [
             (
-                "Alexander Mey",
-                "👤 Rémi, Alexander Mey",
-                vec!["Alexander", "Mey"],
+                "Charlie Example",
+                "👤 Rémi, Charlie Example",
+                vec!["Charlie", "Example"],
             ),
             ("alpha é", "alpha préé é", vec!["alpha", "é"]),
         ] {
@@ -381,8 +381,8 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_matches_gech_for_group_dm_names() {
-        let result = fuzzy_match("gech", "Gene Hoffman, Chris Foudy").expect("expected match");
+    fn fuzzy_matches_albl_for_group_dm_names() {
+        let result = fuzzy_match("albl", "Alex Example, Blake Sample").expect("expected match");
         assert!(!result.ranges.is_empty());
     }
 
@@ -422,23 +422,23 @@ mod tests {
     }
 
     #[test]
-    fn word_match_gene_hoffman_finds_dm() {
+    fn word_match_alex_example_finds_dm() {
         let result =
-            fuzzy_match("gene hoffman", "Gene Hoffman, Chris Foudy").expect("expected match");
+            fuzzy_match("alex example", "Alex Example, Blake Sample").expect("expected match");
         assert!(!result.ranges.is_empty());
         assert!(result.score > 0, "multi-word match should score positively");
     }
 
     #[test]
-    fn word_match_gene_chr_finds_dm() {
-        let result = fuzzy_match("gene chr", "Gene Hoffman, Chris Foudy").expect("expected match");
+    fn word_match_alex_bla_finds_dm() {
+        let result = fuzzy_match("alex bla", "Alex Example, Blake Sample").expect("expected match");
         assert!(!result.ranges.is_empty());
     }
 
     #[test]
-    fn word_match_gene_chris_finds_dm() {
+    fn word_match_alex_blake_finds_dm() {
         let result =
-            fuzzy_match("gene chris", "Gene Hoffman, Chris Foudy").expect("expected match");
+            fuzzy_match("alex blake", "Alex Example, Blake Sample").expect("expected match");
         assert!(!result.ranges.is_empty());
     }
 
@@ -455,7 +455,7 @@ mod tests {
     #[test]
     fn word_match_prefers_boundary_alignment() {
         let result =
-            fuzzy_match("gene hoffman", "Gene Hoffman, Chris Foudy").expect("expected match");
+            fuzzy_match("alex example", "Alex Example, Blake Sample").expect("expected match");
         assert!(
             result.score > 20,
             "boundary-aligned word match should score highly"
@@ -469,8 +469,8 @@ mod tests {
     }
 
     #[test]
-    fn word_match_ge_ch_finds_dm() {
-        let result = fuzzy_match("ge ch", "Gene Hoffman, Chris Foudy").expect("expected match");
+    fn word_match_al_bl_finds_dm() {
+        let result = fuzzy_match("al bl", "Alex Example, Blake Sample").expect("expected match");
         assert!(!result.ranges.is_empty());
     }
 }

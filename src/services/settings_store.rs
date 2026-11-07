@@ -310,22 +310,22 @@ mod tests {
         let mut settings = SettingsModel::default();
         settings
             .quick_switcher_affinity
-            .insert("conv_geoff_a".to_string(), (3.25, 1_710_000_000_000));
+            .insert("conv_sample_a".to_string(), (3.25, 1_710_000_000_000));
         settings
             .quick_switcher_affinity
-            .insert("conv_geoff_b".to_string(), (0.5, 1_709_000_000_000));
+            .insert("conv_sample_b".to_string(), (0.5, 1_709_000_000_000));
 
         let serialized = serialize_settings(&settings);
-        assert!(serialized.contains("quick_switcher_affinity.conv_geoff_a=3.25,1710000000000"));
-        assert!(serialized.contains("quick_switcher_affinity.conv_geoff_b=0.5,1709000000000"));
+        assert!(serialized.contains("quick_switcher_affinity.conv_sample_a=3.25,1710000000000"));
+        assert!(serialized.contains("quick_switcher_affinity.conv_sample_b=0.5,1709000000000"));
 
         let parsed = parse_settings(&serialized);
         assert_eq!(
-            parsed.quick_switcher_affinity.get("conv_geoff_a"),
+            parsed.quick_switcher_affinity.get("conv_sample_a"),
             Some(&(3.25, 1_710_000_000_000))
         );
         assert_eq!(
-            parsed.quick_switcher_affinity.get("conv_geoff_b"),
+            parsed.quick_switcher_affinity.get("conv_sample_b"),
             Some(&(0.5, 1_709_000_000_000))
         );
     }

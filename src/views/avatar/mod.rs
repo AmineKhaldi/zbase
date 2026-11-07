@@ -637,10 +637,10 @@ mod presence_tests {
             asset: None,
             presence: None,
         };
-        let peers = vec![peer("Alexander Mey"), peer("Craig Corning, Jr.")];
+        let peers = vec![peer("Charlie Example"), peer("Dana Sample, Jr.")];
         assert_eq!(Avatar::peer_count_label(&peers), "2");
         let mut larger = peers.clone();
-        larger.push(peer("Gene Hoffman, Jr."));
+        larger.push(peer("Alex Example, Jr."));
         assert_eq!(Avatar::peer_count_label(&larger), "3");
         assert_eq!(Avatar::peer_count_label(&vec![peer("Guest"); 100]), "99+");
     }

@@ -3126,13 +3126,13 @@ mod tests {
     #[test]
     fn quick_switcher_dm_match_supports_name_reordering() {
         let mut profile_names = HashMap::new();
-        profile_names.insert("gene".to_string(), "Gene Hoffman".to_string());
-        profile_names.insert("butterbot".to_string(), "Butter Bot".to_string());
+        profile_names.insert("alex".to_string(), "Alex Example".to_string());
+        profile_names.insert("helperbot".to_string(), "Helper Bot".to_string());
 
         let matched = quick_switcher_match_for_dm(
-            "gebut",
-            "butterbot, gene",
-            "Butter Bot, Gene Hoffman",
+            "alhel",
+            "helperbot, alex",
+            "Helper Bot, Alex Example",
             &profile_names,
         );
         assert!(matched.is_some(), "expected reordered DM match");
@@ -3145,27 +3145,27 @@ mod tests {
         models.workspace.direct_messages = vec![
             dm_summary(
                 "conv_superset",
-                "butterbot, cameroncooper, chrisfoudy, hoffmang",
+                "helperbot, aliceexample, blakesample, alexexample",
                 ConversationKind::GroupDirectMessage,
             ),
             dm_summary(
                 "conv_subset",
-                "butterbot, cameroncooper, hoffmang",
+                "helperbot, aliceexample, alexexample",
                 ConversationKind::GroupDirectMessage,
             ),
         ];
         models.update_quick_switcher_profile_names(
             [
-                ("cameroncooper".to_string(), "Cameron Cooper".to_string()),
-                ("hoffmang".to_string(), "Gene Hoffman".to_string()),
-                ("chrisfoudy".to_string(), "Chris Foudy".to_string()),
-                ("butterbot".to_string(), "Butter Bot".to_string()),
+                ("aliceexample".to_string(), "Alice Example".to_string()),
+                ("alexexample".to_string(), "Alex Example".to_string()),
+                ("blakesample".to_string(), "Blake Sample".to_string()),
+                ("helperbot".to_string(), "Helper Bot".to_string()),
             ]
             .into_iter()
             .collect(),
         );
 
-        models.update_quick_switcher_query("butgen".to_string());
+        models.update_quick_switcher_query("helale".to_string());
         let ranked_ids = models
             .quick_switcher
             .results
@@ -3301,13 +3301,13 @@ mod tests {
     #[test]
     fn quick_switcher_affinity_boost_prioritizes_preferred_match() {
         let corpus =
-            quick_switcher_dm_corpus(&[("conv_geoff_a", "geoff a"), ("conv_geoff_b", "geoff b")]);
+            quick_switcher_dm_corpus(&[("conv_sample_a", "sample a"), ("conv_sample_b", "sample b")]);
         let now_ms = 1_710_000_000_000i64;
         let mut affinity = HashMap::new();
-        affinity.insert("conv_geoff_b".to_string(), (6.0, now_ms));
+        affinity.insert("conv_sample_b".to_string(), (6.0, now_ms));
 
         let local = compute_quick_switcher_local_results(
-            "geoff",
+            "sample",
             &corpus,
             None,
             &[],
@@ -3320,34 +3320,34 @@ mod tests {
                 .results
                 .first()
                 .map(|result| result.conversation_id.0.as_str()),
-            Some("conv_geoff_b")
+            Some("conv_sample_b")
         );
     }
 
     #[test]
     fn quick_switcher_affinity_decay_reduces_stale_bias() {
         let corpus =
-            quick_switcher_dm_corpus(&[("conv_geoff_a", "geoff a"), ("conv_geoff_b", "geoff b")]);
+            quick_switcher_dm_corpus(&[("conv_sample_a", "sample a"), ("conv_sample_b", "sample b")]);
         let now_ms = 1_710_000_000_000i64;
         let sixty_days_ms = 60 * 24 * 60 * 60 * 1000_i64;
         let mut affinity = HashMap::new();
-        affinity.insert("conv_geoff_a".to_string(), (30.0, now_ms - sixty_days_ms));
-        affinity.insert("conv_geoff_b".to_string(), (4.0, now_ms));
+        affinity.insert("conv_sample_a".to_string(), (30.0, now_ms - sixty_days_ms));
+        affinity.insert("conv_sample_b".to_string(), (4.0, now_ms));
 
-        let geoff_a_boost = quick_switcher_affinity_boost_for_conversation(
-            &ConversationId::new("conv_geoff_a"),
+        let sample_a_boost = quick_switcher_affinity_boost_for_conversation(
+            &ConversationId::new("conv_sample_a"),
             Some(&affinity),
             now_ms,
         );
-        let geoff_b_boost = quick_switcher_affinity_boost_for_conversation(
-            &ConversationId::new("conv_geoff_b"),
+        let sample_b_boost = quick_switcher_affinity_boost_for_conversation(
+            &ConversationId::new("conv_sample_b"),
             Some(&affinity),
             now_ms,
         );
-        assert!(geoff_b_boost > geoff_a_boost);
+        assert!(sample_b_boost > sample_a_boost);
 
         let local = compute_quick_switcher_local_results(
-            "geoff",
+            "sample",
             &corpus,
             None,
             &[],
@@ -3360,7 +3360,7 @@ mod tests {
                 .results
                 .first()
                 .map(|result| result.conversation_id.0.as_str()),
-            Some("conv_geoff_b")
+            Some("conv_sample_b")
         );
     }
 
@@ -3373,8 +3373,8 @@ mod tests {
         let mut models = AppModels::empty_with_settings(SettingsModel::default());
         let conversation_id = models.conversation.summary.id.clone();
         let member = ChannelMemberPreview {
-            user_id: UserId::new("cameroncooper"),
-            display_name: "cameroncooper".to_string(),
+            user_id: UserId::new("aliceexample"),
+            display_name: "aliceexample".to_string(),
             avatar_asset: None,
             affinity: Affinity::Positive,
             is_team_admin_or_owner: false,
@@ -3403,17 +3403,17 @@ mod tests {
             description: None,
             is_archived: false,
         });
-        models.upsert_quick_switcher_profile_name(&UserId::new("cameroncooper"), "Cameron Cooper");
+        models.upsert_quick_switcher_profile_name(&UserId::new("aliceexample"), "Alice Example");
 
-        let by_username = models.mention_autocomplete_candidates("camer", 8);
+        let by_username = models.mention_autocomplete_candidates("alice", 8);
         assert!(by_username.iter().any(|candidate| {
             matches!(
                 candidate,
-                AutocompleteCandidate::MentionUser { username, .. } if username == "cameroncooper"
+                AutocompleteCandidate::MentionUser { username, .. } if username == "aliceexample"
             )
         }));
 
-        let by_profile = models.mention_autocomplete_candidates("cooper", 8);
+        let by_profile = models.mention_autocomplete_candidates("example", 8);
         assert!(by_profile.iter().any(|candidate| {
             matches!(
                 candidate,
@@ -3421,7 +3421,7 @@ mod tests {
                     username,
                     display_name,
                     ..
-                } if username == "cameroncooper" && display_name == "Cameron Cooper"
+                } if username == "aliceexample" && display_name == "Alice Example"
             )
         }));
     }
@@ -3459,8 +3459,8 @@ mod tests {
         let mut models = AppModels::empty_with_settings(SettingsModel::default());
         let conversation_id = models.conversation.summary.id.clone();
         let member = ChannelMemberPreview {
-            user_id: UserId::new("cameron cooper"),
-            display_name: "Cameron Cooper".to_string(),
+            user_id: UserId::new("alice example"),
+            display_name: "Alice Example".to_string(),
             avatar_asset: None,
             affinity: Affinity::Positive,
             is_team_admin_or_owner: false,
@@ -3489,9 +3489,9 @@ mod tests {
             description: None,
             is_archived: false,
         });
-        models.upsert_quick_switcher_profile_name(&UserId::new("cameroncooper"), "Cameron Cooper");
+        models.upsert_quick_switcher_profile_name(&UserId::new("aliceexample"), "Alice Example");
 
-        let results = models.mention_autocomplete_candidates("camer", 8);
+        let results = models.mention_autocomplete_candidates("alice", 8);
         let candidate = results.into_iter().find_map(|candidate| match candidate {
             AutocompleteCandidate::MentionUser {
                 username,
@@ -3502,7 +3502,7 @@ mod tests {
         });
         assert_eq!(
             candidate,
-            Some(("cameroncooper".to_string(), "Cameron Cooper".to_string()))
+            Some(("aliceexample".to_string(), "Alice Example".to_string()))
         );
     }
 

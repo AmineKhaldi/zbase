@@ -57,12 +57,12 @@ mod tests {
     #[test]
     fn parses_group_dm_link() {
         let parsed = parse_keybase_chat_link(
-            "keybase://chat/adschmidtedly,cameroncooper,catherinerae,esaung,jde5011,paulhainsworth,s_shah22,storage_jm/14",
+            "keybase://chat/fixture_peer_a,aliceexample,fixture_peer_b,fixture_peer_c,fixture_peer33,fixture_peer_d,fixture_peer_e,fixture_peer_f/14",
         )
         .expect("expected group dm link to parse");
         assert_eq!(
             parsed.team,
-            "adschmidtedly,cameroncooper,catherinerae,esaung,jde5011,paulhainsworth,s_shah22,storage_jm"
+            "fixture_peer_a,aliceexample,fixture_peer_b,fixture_peer_c,fixture_peer33,fixture_peer_d,fixture_peer_e,fixture_peer_f"
         );
         assert_eq!(parsed.channel, None);
         assert_eq!(parsed.message_id, "14");

@@ -43,6 +43,22 @@ impl ConversationBadgeState {
     }
 }
 
+/// DM titles contain usernames, not display names. Keep only the other people,
+/// preserving the original title for a conversation with yourself.
+pub fn dm_peer_title(title: &str, self_username: Option<&str>) -> String {
+    let peers = title
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .filter(|name| !self_username.is_some_and(|me| name.eq_ignore_ascii_case(me.trim())))
+        .collect::<Vec<_>>();
+    if peers.is_empty() {
+        title.to_string()
+    } else {
+        peers.join(", ")
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConversationKind {
     Channel,
@@ -127,4 +143,36 @@ pub struct ConversationSummary {
     pub last_activity_ms: i64,
     /// Newest message, for inbox previews. `None` until a message is known.
     pub last_message: Option<MessagePreview>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dm_peer_title;
+
+    #[test]
+    fn dm_peer_titles_exclude_self_by_username_and_preserve_self_chats() {
+        assert_eq!(
+            dm_peer_title(
+                "charlieexample,helperbot,aliceexample",
+                Some(" AliceExample ")
+            ),
+            "charlieexample, helperbot"
+        );
+        assert_eq!(
+            dm_peer_title("aliceexample,charlieexample", Some("aliceexample")),
+            "charlieexample"
+        );
+        assert_eq!(
+            dm_peer_title("aliceexample", Some("aliceexample")),
+            "aliceexample"
+        );
+        assert_eq!(
+            dm_peer_title("charlieexample,helperbot", Some("aliceexample")),
+            "charlieexample, helperbot"
+        );
+        assert_eq!(
+            dm_peer_title("charlieexample,helperbot,aliceexample", None),
+            "charlieexample, helperbot, aliceexample"
+        );
+    }
 }
