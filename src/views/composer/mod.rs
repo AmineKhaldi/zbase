@@ -38,7 +38,7 @@ pub(crate) enum ComposerTarget {
 pub(crate) struct ComposerFieldState {
     pub focused: bool,
     pub can_send: bool,
-    /// While Keybase can't be reached: what the hint and send tooltip say.
+    /// While Keybase can't be reached: what the send tooltip says.
     pub send_notice: Option<SendNotice>,
     pub format_menu_open: bool,
 }
@@ -280,36 +280,8 @@ fn format_tool(
         .into_any_element()
 }
 
-/// Height of the strip under a composer field that holds the keyboard hint: 4px
-/// above an 14px line. It is always reserved, so focusing a field never moves
-/// the timeline; the composer adds 12px below it to the window edge.
-pub(crate) const COMPOSER_HINT_HEIGHT_PX: f32 = 18.;
-
-/// Space between the hint strip and the bottom of the window or pane.
+/// Space between the composer field and the bottom of the window or pane.
 pub(crate) const COMPOSER_BOTTOM_INSET_PX: f32 = 12.;
-
-/// "↵ to send · ⇧↵ for new line" under the focused, empty field, or what
-/// sending does while offline. Only the field with focus shows it, so at most
-/// one hint is ever visible.
-pub(crate) fn composer_hint(state: &ComposerFieldState) -> AnyElement {
-    let offline = state.send_notice.and_then(|notice| notice.composer_hint);
-    let text = match offline {
-        Some(offline) if state.focused => Some(offline),
-        _ if state.focused && !state.can_send => Some("↵ to send · ⇧↵ for new line"),
-        _ => None,
-    };
-    div()
-        .h(px(COMPOSER_HINT_HEIGHT_PX))
-        .flex_shrink_0()
-        .pt(px(4.))
-        // Line up with the text inside the field (1px border + 12px inset).
-        .pl(px(13.))
-        .text_size(px(11.))
-        .line_height(px(14.))
-        .text_color(rgb(text_secondary()))
-        .when_some(text, |hint, text| hint.child(text))
-        .into_any_element()
-}
 
 fn at_icon_sized(color: u32) -> AnyElement {
     icon_asset("assets/icons/at-sign.svg", 16., color)
@@ -357,7 +329,6 @@ impl ComposerPanel {
             ),
         };
 
-        let hint = composer_hint(&state);
         div()
             .px_4()
             .pt_1()
@@ -373,7 +344,6 @@ impl ComposerPanel {
                 rgb(field_bg()).into(),
                 cx,
             ))
-            .child(hint)
             .into_any_element()
     }
 }
