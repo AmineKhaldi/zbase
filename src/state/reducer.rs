@@ -2592,14 +2592,17 @@ fn normalize_messages_by_id(messages: &mut Vec<crate::domain::message::MessageRe
         return;
     }
     let mut latest_by_id = HashMap::with_capacity(messages.len());
-    for message in std::mem::take(messages) {
+    for mut message in std::mem::take(messages) {
         match latest_by_id.entry(message.id.clone()) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(message);
             }
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 if should_replace_duplicate(entry.get(), &message) {
+                    crate::domain::message::keep_original_attachments(&mut message, entry.get());
                     entry.insert(message);
+                } else {
+                    crate::domain::message::keep_original_attachments(entry.get_mut(), &message);
                 }
             }
         }
@@ -3449,6 +3452,41 @@ mod tests {
         upsert_message_in_state(&mut state, replacement);
         assert!(state.timeline.messages[0].attachments[0].source.is_none());
         assert!(state.thread.replies[0].attachments[0].source.is_none());
+    }
+
+    #[test]
+    fn caption_edit_keeps_the_attachment_in_either_arrival_order() {
+        let conversation_id = ConversationId::new("conversation");
+        let mut original = message(&conversation_id, "1", 1);
+        original.attachments.push(AttachmentSummary {
+            name: "Screenshot.png".into(),
+            kind: AttachmentKind::Image,
+            size_bytes: 182_750,
+            ..AttachmentSummary::default()
+        });
+        // A Keybase edit of an attachment carries only the new caption.
+        let mut edit = message(&conversation_id, "1", 2);
+        edit.fragments = vec![MessageFragment::Text("new caption".into())];
+        edit.edited = Some(crate::domain::message::EditMeta {
+            edit_id: MessageId::new("2"),
+            edited_at_ms: Some(2),
+        });
+
+        for events in [
+            [original.clone(), edit.clone()],
+            [edit.clone(), original.clone()],
+        ] {
+            let mut state = UiState::default();
+            state.timeline.conversation_id = Some(conversation_id.clone());
+            for event in events {
+                reduce_backend_event(&mut state, BackendEvent::MessageUpserted(event));
+            }
+            let merged = &state.timeline.messages[0];
+            assert_eq!(merged.attachments, original.attachments);
+            assert!(
+                matches!(&merged.fragments[..], [MessageFragment::Text(text)] if text == "new caption")
+            );
+        }
     }
 
     #[test]
