@@ -51,7 +51,7 @@ pub(super) fn cached_reply_context(
                 .message
                 .attachments
                 .first()
-                .map(|attachment| attachment_display_label(attachment))
+                .map(attachment_display_label)
         })
         .unwrap_or_default()
         .split_whitespace()
@@ -75,7 +75,7 @@ mod tests {
         domain::{
             affinity::Affinity,
             ids::{ConversationId, MessageId, UserId},
-            message::{MessageRecord, MessageFragment, MessageSendState},
+            message::{MessageFragment, MessageRecord, MessageSendState},
             presence::{Availability, Presence},
             user::UserSummary,
         },

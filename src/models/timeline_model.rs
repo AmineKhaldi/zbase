@@ -66,6 +66,10 @@ pub struct SystemEventRow {
 }
 
 #[derive(Clone, Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Message rows dominate the timeline; keep them inline without a per-row allocation."
+)]
 pub enum TimelineRow {
     DateDivider(String),
     UnreadDivider(String),
@@ -146,7 +150,11 @@ pub fn thread_summaries(rows: &[TimelineRow]) -> HashMap<MessageId, ThreadSummar
         }
         let summary = summaries.entry(root_id.clone()).or_default();
         if let Some(timestamp_ms) = row.message.timestamp_ms {
-            summary.last_reply_ms = Some(summary.last_reply_ms.map_or(timestamp_ms, |last| last.max(timestamp_ms)));
+            summary.last_reply_ms = Some(
+                summary
+                    .last_reply_ms
+                    .map_or(timestamp_ms, |last| last.max(timestamp_ms)),
+            );
         }
         let known = summary
             .repliers
@@ -301,7 +309,11 @@ mod thread_summary_tests {
         let summaries = thread_summaries(&rows);
         assert_eq!(summaries.len(), 1);
         let summary = &summaries[&MessageId::new("1")];
-        let names: Vec<_> = summary.repliers.iter().map(|user| user.id.0.as_str()).collect();
+        let names: Vec<_> = summary
+            .repliers
+            .iter()
+            .map(|user| user.id.0.as_str())
+            .collect();
         assert_eq!(names, ["lena", "Robin"]);
         assert_eq!(summary.last_reply_ms, Some(400));
     }

@@ -9,7 +9,7 @@ use crate::domain::{
     message::{EmojiSourceRef, MessageRecord},
     pins::PinnedState,
     presence::Presence,
-    profile::{UserProfile, SocialGraphListType, SocialListLoadState},
+    profile::{SocialGraphListType, SocialListLoadState, UserProfile},
     route::Route,
     search::{SearchFilter, SearchResult},
     user::UserSummary,

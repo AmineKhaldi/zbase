@@ -227,15 +227,17 @@ impl SearchIndex {
                             Ok(MessageChange::Dirty {
                                 conversation_id,
                                 message_id,
-                            }) => match store.get_canonical_message(&conversation_id, &message_id)? {
-                                Some(message) => IndexCommand::Upsert(
-                                    SearchDocument::from_message(&workspace_id, &message),
-                                ),
-                                None => IndexCommand::Delete(format!(
-                                    "{workspace_id}|{}|{}",
-                                    conversation_id.0, message_id.0
-                                )),
-                            },
+                            }) => {
+                                match store.get_canonical_message(&conversation_id, &message_id)? {
+                                    Some(message) => IndexCommand::Upsert(
+                                        SearchDocument::from_message(&workspace_id, &message),
+                                    ),
+                                    None => IndexCommand::Delete(format!(
+                                        "{workspace_id}|{}|{}",
+                                        conversation_id.0, message_id.0
+                                    )),
+                                }
+                            }
                             Ok(MessageChange::ReplayRequired) => continue 'replay,
                             Err(mpsc::RecvTimeoutError::Timeout) => continue,
                             Err(mpsc::RecvTimeoutError::Disconnected) => break 'replay,
@@ -245,10 +247,10 @@ impl SearchIndex {
                 }
                 Ok(())
             };
-            if let Err(error) = sync() {
-                if !shutdown.load(Ordering::Relaxed) {
-                    tracing::error!(%error, "search cache synchronization failed");
-                }
+            if let Err(error) = sync()
+                && !shutdown.load(Ordering::Relaxed)
+            {
+                tracing::error!(%error, "search cache synchronization failed");
             }
         });
     }

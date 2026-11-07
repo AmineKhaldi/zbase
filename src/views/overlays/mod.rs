@@ -1,5 +1,6 @@
 use crate::{
     domain::attachment::{AttachmentKind, AttachmentSource, AttachmentSummary},
+    domain::route::Route,
     models::{
         emoji_picker_model::EmojiPickerModel,
         file_upload_model::FileUploadLightboxModel,
@@ -10,25 +11,25 @@ use crate::{
         quick_switcher_model::{QuickSwitcherModel, QuickSwitcherResult, QuickSwitcherResultKind},
     },
     state::state::EmojiRenderState,
-    domain::route::Route,
     util::search_snippet::clean_search_snippet,
     views::{
-        accent, accent_strong, app_window::AppWindow, attachment_display_label, badge,
-        card_shadow, dm_icon, panel_alt_bg,
-        empty_state, hash_icon, icon_asset, image_source_from_attachment_source,
-        input::TextField, is_dark_theme, keycap, modal_surface, panel_surface,
+        accent, accent_strong,
+        app_window::AppWindow,
+        attachment_display_label, badge, card_shadow, dm_icon, empty_state, hash_icon, icon_asset,
+        image_source_from_attachment_source,
+        input::TextField,
+        is_dark_theme, keycap, modal_surface, panel_alt_bg, panel_surface,
         search::{MessageHit, SWITCHER_HIT, SearchResultContext, snippet_text},
-        section_label, shell_border, shell_border_strong,
-        sidebar_selected_bg, sidebar_selected_fg, sidebar_selected_secondary, subtle_surface,
-        text_primary, text_secondary, tint,
+        section_label, shell_border, shell_border_strong, sidebar_selected_bg, sidebar_selected_fg,
+        sidebar_selected_secondary, subtle_surface, text_primary, text_secondary, tint,
         truncated_line::{Segment, TruncatedLine},
     },
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, Context, Entity, FontWeight, InteractiveElement, IntoElement, ObjectFit,
-    ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, StyledImage, div,
-    img, px, rgb,
+    ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, StyledImage, div, img,
+    px, rgb,
 };
 use std::collections::HashMap;
 
@@ -49,6 +50,10 @@ const QUICK_SWITCHER_RENDER_LIMIT_MESSAGES: usize = 10;
 pub struct OverlayHost;
 
 impl OverlayHost {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     pub fn render(
         &self,
         overlay: &OverlayModel,
@@ -234,10 +239,9 @@ impl OverlayHost {
         let (frame_width, frame_height) = fullscreen_image_frame_size(
             image.width,
             image.height,
-            (f32::from(viewport.width) - 48.).max(1.).min(1120.),
+            (f32::from(viewport.width) - 48.).clamp(1., 1120.),
             (f32::from(viewport.height) - if caption.is_some() { 120. } else { 48. })
-                .max(1.)
-                .min(780.),
+                .clamp(1., 780.),
         );
 
         div()
@@ -277,22 +281,27 @@ impl OverlayHost {
                                     .w(px(frame_width))
                                     .h(px(frame_height))
                                     .flex_shrink_0()
-                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
-                                    .child(img(image_source)
-                                    .id("lightbox-image")
-                                    .size_full()
-                                    .object_fit(ObjectFit::Contain)
-                                    .with_fallback(|| {
-                                        div()
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                                    )
+                                    .child(
+                                        img(image_source)
+                                            .id("lightbox-image")
                                             .size_full()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .text_sm()
-                                            .text_color(rgb(text_secondary()))
-                                            .child("Image unavailable")
-                                            .into_any_element()
-                                    })),
+                                            .object_fit(ObjectFit::Contain)
+                                            .with_fallback(|| {
+                                                div()
+                                                    .size_full()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .text_sm()
+                                                    .text_color(rgb(text_secondary()))
+                                                    .child("Image unavailable")
+                                                    .into_any_element()
+                                            }),
+                                    ),
                             ),
                     )
                     .when_some(caption, |container, caption| {
@@ -849,7 +858,11 @@ impl OverlayHost {
             &primary.1,
             primary_color,
             match_color,
-            if is_message { FontWeight::MEDIUM } else { base_weight },
+            if is_message {
+                FontWeight::MEDIUM
+            } else {
+                base_weight
+            },
         );
         if simple_team {
             // Its one channel, as a quiet descriptor.
@@ -1193,7 +1206,10 @@ fn is_simple_team_label(label: &str) -> bool {
 fn split_channel_label(
     label: &str,
     ranges: &[(usize, usize)],
-) -> ((String, Vec<(usize, usize)>), Option<(String, Vec<(usize, usize)>)>) {
+) -> (
+    (String, Vec<(usize, usize)>),
+    Option<(String, Vec<(usize, usize)>)>,
+) {
     let Some(split) = label.find(" #") else {
         return ((label.to_string(), ranges.to_vec()), None);
     };

@@ -18,8 +18,10 @@ impl NewChatModel {
         if self.search_query.trim().is_empty() {
             return None;
         }
-        self.search_results
-            .get(self.highlighted_index.min(self.search_results.len().saturating_sub(1)))
+        self.search_results.get(
+            self.highlighted_index
+                .min(self.search_results.len().saturating_sub(1)),
+        )
     }
 
     pub fn move_highlight(&mut self, delta: isize) {

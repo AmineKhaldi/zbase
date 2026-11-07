@@ -359,6 +359,10 @@ pub enum EffectResult {
 }
 
 #[derive(Clone, Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Keep backend events inline when dispatching them through the reducer."
+)]
 pub enum AppEvent {
     Ui(super::action::UiAction),
     Backend(BackendEvent),

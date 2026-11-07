@@ -14,8 +14,8 @@ use crate::{
     views::{avatar::Avatar, text_secondary},
 };
 use gpui::{
-    AnyElement, Context, IntoElement, ParentElement, Styled, UniformListScrollHandle, div, px,
-    rgb, uniform_list,
+    AnyElement, Context, IntoElement, ParentElement, Styled, UniformListScrollHandle, div, px, rgb,
+    uniform_list,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -163,7 +163,9 @@ fn render_row<H: SidebarHost>(
                     team_asset(avatars, &team.id),
                     ROW_AVATAR_SIZE_PX,
                 ),
-                None => Sidebar::leading_element(row, &route_key, avatars, &colors, ROW_AVATAR_SIZE_PX),
+                None => {
+                    Sidebar::leading_element(row, &route_key, avatars, &colors, ROW_AVATAR_SIZE_PX)
+                }
             };
             CompactRow {
                 id: row_id,

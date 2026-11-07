@@ -9,12 +9,9 @@ use crate::{
         timeline_model::{TimelineModel, TimelineRow},
     },
     views::{
-        accent,
-        app_window::AppWindow,
-        attachment_open_target,
-        avatar::Avatar,
-        badge, border, danger, panel_alt_bg, panel_alt_surface, panel_surface,
-        subtle_surface, text_primary, text_secondary,
+        accent, app_window::AppWindow, attachment_open_target, avatar::Avatar, badge, border,
+        danger, panel_alt_bg, panel_alt_surface, panel_surface, subtle_surface, text_primary,
+        text_secondary,
     },
 };
 use gpui::prelude::FluentBuilder;
@@ -148,133 +145,131 @@ pub(super) fn render_details_panel(
         ConversationKind::GroupDirectMessage => "Group conversation",
     };
 
-    let body = div()
-        .flex_1()
-        .min_h(px(0.))
-        .id("right-pane-details-scroll")
-        .overflow_y_scroll()
-        .scrollbar_width(px(8.))
-        .p_4()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .child(
-            details_card()
-                .items_center()
-                .gap_3()
-                .child(if conversation.summary.kind == ConversationKind::Channel {
-                    Avatar::render_team(
-                        group_name.as_deref().unwrap_or(&title),
-                        conversation.avatar_asset.as_deref(),
-                        64.,
-                    )
-                } else {
-                    Avatar::render_participants_on(
-                        &conversation.participant_avatars,
-                        &title,
-                        64.,
-                        panel_surface(),
-                    )
-                })
-                .child(
-                    div()
-                        .text_lg()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(text_primary()))
-                        .text_center()
-                        .child(title),
-                )
-                .when_some(group_name, |card, group| {
-                    card.child(
-                        div()
-                            .text_sm()
-                            .text_center()
-                            .text_color(rgb(text_secondary()))
-                            .child(group),
-                    )
-                })
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .justify_center()
-                        .gap_2()
-                        .child(badge(kind_label, panel_alt_bg(), text_secondary()))
-                        .when(member_count > 0, |row| {
-                            row.child(badge(
-                                &format!("{member_count} members"),
-                                panel_alt_bg(),
-                                text_secondary(),
-                            ))
-                        })
-                        .when(conversation.summary.muted, |row| {
-                            row.child(badge("Muted", panel_alt_bg(), text_secondary()))
-                        }),
-                ),
-        )
-        .when_some(topic, |panel, topic| {
-            panel.child(
+    let body =
+        div()
+            .flex_1()
+            .min_h(px(0.))
+            .id("right-pane-details-scroll")
+            .overflow_y_scroll()
+            .scrollbar_width(px(8.))
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
                 details_card()
-                    .gap_2()
-                    .child(section_heading("About"))
+                    .items_center()
+                    .gap_3()
+                    .child(if conversation.summary.kind == ConversationKind::Channel {
+                        Avatar::render_team(
+                            group_name.as_deref().unwrap_or(&title),
+                            conversation.avatar_asset.as_deref(),
+                            64.,
+                        )
+                    } else {
+                        Avatar::render_participants_on(
+                            &conversation.participant_avatars,
+                            &title,
+                            64.,
+                            panel_surface(),
+                        )
+                    })
                     .child(
                         div()
-                            .text_sm()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
                             .text_color(rgb(text_primary()))
-                            .child(topic.to_owned()),
-                    ),
-            )
-        })
-        .when(has_members, |panel| {
-            panel.child(member_section(
-                &format!("Members ({})", people.len()),
-                "details-member-entry",
-                people,
-                cx,
-            ))
-        })
-        .when(has_bots, |panel| {
-            panel.child(member_section(
-                &format!("Bots ({})", bots.len()),
-                "details-bot-entry",
-                bots,
-                cx,
-            ))
-        })
-        .when(!has_members && !has_bots, |panel| {
-            panel.child(
-                details_card()
-                    .gap_2()
-                    .child(section_heading("Members"))
+                            .text_center()
+                            .child(title),
+                    )
+                    .when_some(group_name, |card, group| {
+                        card.child(
+                            div()
+                                .text_sm()
+                                .text_center()
+                                .text_color(rgb(text_secondary()))
+                                .child(group),
+                        )
+                    })
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(rgb(text_secondary()))
-                            .child("Member list is not available yet."),
+                            .flex()
+                            .flex_wrap()
+                            .justify_center()
+                            .gap_2()
+                            .child(badge(kind_label, panel_alt_bg(), text_secondary()))
+                            .when(member_count > 0, |row| {
+                                row.child(badge(
+                                    format!("{member_count} members"),
+                                    panel_alt_bg(),
+                                    text_secondary(),
+                                ))
+                            })
+                            .when(conversation.summary.muted, |row| {
+                                row.child(badge("Muted", panel_alt_bg(), text_secondary()))
+                            }),
                     ),
             )
-        })
-        .child(
-            details_card()
-                .gap_2()
-                .child(section_heading(&format!("Shared files ({files_count})")))
-                .when(files_count == 0, |section| {
-                    section.child(
-                        div()
-                            .rounded_md()
-                            .bg(rgb(panel_alt_bg()))
-                            .px_2()
-                            .py_1p5()
-                            .text_xs()
-                            .text_color(rgb(text_secondary()))
-                            .child("No files in the loaded messages."),
-                    )
-                })
-                .children(
-                    shared_attachments
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, attachment)| {
+            .when_some(topic, |panel, topic| {
+                panel.child(
+                    details_card()
+                        .gap_2()
+                        .child(section_heading("About"))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(text_primary()))
+                                .child(topic.to_owned()),
+                        ),
+                )
+            })
+            .when(has_members, |panel| {
+                panel.child(member_section(
+                    &format!("Members ({})", people.len()),
+                    "details-member-entry",
+                    people,
+                    cx,
+                ))
+            })
+            .when(has_bots, |panel| {
+                panel.child(member_section(
+                    &format!("Bots ({})", bots.len()),
+                    "details-bot-entry",
+                    bots,
+                    cx,
+                ))
+            })
+            .when(!has_members && !has_bots, |panel| {
+                panel.child(
+                    details_card()
+                        .gap_2()
+                        .child(section_heading("Members"))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(text_secondary()))
+                                .child("Member list is not available yet."),
+                        ),
+                )
+            })
+            .child(
+                details_card()
+                    .gap_2()
+                    .child(section_heading(&format!("Shared files ({files_count})")))
+                    .when(files_count == 0, |section| {
+                        section.child(
+                            div()
+                                .rounded_md()
+                                .bg(rgb(panel_alt_bg()))
+                                .px_2()
+                                .py_1p5()
+                                .text_xs()
+                                .text_color(rgb(text_secondary()))
+                                .child("No files in the loaded messages."),
+                        )
+                    })
+                    .children(shared_attachments.into_iter().enumerate().map(
+                        |(index, attachment)| {
                             let open_target = attachment_open_target(&attachment);
                             let fallback_open_target = attachment
                                 .source
@@ -343,44 +338,44 @@ pub(super) fn render_details_panel(
                                         .child(truncated_name),
                                 )
                                 .into_any_element()
-                        }),
-                ),
-        )
-        .when_some(
-            details.and_then(|details| details.leave_error.clone()),
-            |panel, error| panel.child(div().text_sm().text_color(rgb(danger())).child(error)),
-        )
-        .when(details.is_some_and(|details| details.can_leave), |panel| {
-            let leaving = details.is_some_and(|details| details.is_leaving);
-            panel.child(
-                div()
-                    .id("leave-channel")
-                    .flex_shrink_0()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(rgb(border()))
-                    .bg(panel_alt_surface())
-                    .p_3()
-                    .text_sm()
-                    .text_center()
-                    .text_color(rgb(danger()))
-                    .cursor(if leaving {
-                        CursorStyle::Arrow
-                    } else {
-                        CursorStyle::PointingHand
-                    })
-                    .when(!leaving, |button| {
-                        button
-                            .hover(|style| style.bg(subtle_surface()))
-                            .on_click(cx.listener(|this, _, _, cx| this.leave_current_channel(cx)))
-                    })
-                    .child(if leaving {
-                        "Leaving…"
-                    } else {
-                        "Leave Channel"
-                    }),
+                        },
+                    )),
             )
-        })
-        .into_any_element();
+            .when_some(
+                details.and_then(|details| details.leave_error.clone()),
+                |panel, error| panel.child(div().text_sm().text_color(rgb(danger())).child(error)),
+            )
+            .when(details.is_some_and(|details| details.can_leave), |panel| {
+                let leaving = details.is_some_and(|details| details.is_leaving);
+                panel.child(
+                    div()
+                        .id("leave-channel")
+                        .flex_shrink_0()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(border()))
+                        .bg(panel_alt_surface())
+                        .p_3()
+                        .text_sm()
+                        .text_center()
+                        .text_color(rgb(danger()))
+                        .cursor(if leaving {
+                            CursorStyle::Arrow
+                        } else {
+                            CursorStyle::PointingHand
+                        })
+                        .when(!leaving, |button| {
+                            button.hover(|style| style.bg(subtle_surface())).on_click(
+                                cx.listener(|this, _, _, cx| this.leave_current_channel(cx)),
+                            )
+                        })
+                        .child(if leaving {
+                            "Leaving…"
+                        } else {
+                            "Leave Channel"
+                        }),
+                )
+            })
+            .into_any_element();
     pane_with_header(pane_header("Details", None, "details-pane-close", cx), body)
 }

@@ -830,7 +830,9 @@ fn design_messages() -> Vec<MessageRecord> {
             vec![
                 Text("Release banner is final "),
                 Emoji("tada"),
-                Text(" The export lives in `assets/release/banner@2x.png`, *please* keep that name."),
+                Text(
+                    " The export lives in `assets/release/banner@2x.png`, *please* keep that name.",
+                ),
             ],
         ),
     ]
@@ -894,31 +896,43 @@ pub(crate) fn demo_send_state_messages() -> Vec<MessageRecord> {
     vec![
         pending(
             DEMO_FAILED_CLIENT_ID,
-            DemoMessage::new(0, DEMO_ME, (0, 10, 46), vec![
-                Mention("devon"),
-                Text(" the smoke test checklist is pinned in "),
-                Channel("releases"),
-                Text("."),
-            ]),
+            DemoMessage::new(
+                0,
+                DEMO_ME,
+                (0, 10, 46),
+                vec![
+                    Mention("devon"),
+                    Text(" the smoke test checklist is pinned in "),
+                    Channel("releases"),
+                    Text("."),
+                ],
+            ),
             MessageSendState::Failed,
         ),
         pending(
             DEMO_UPLOAD_CLIENT_ID,
-            DemoMessage::new(0, DEMO_ME, (0, 10, 47), vec![Text("Release notes for rc1:")]).attach(
-                AttachmentSummary {
-                    name: "release-notes-2.4.pdf".to_string(),
-                    kind: AttachmentKind::File,
-                    size_bytes: DEMO_UPLOAD_BYTES,
-                    ..AttachmentSummary::default()
-                },
-            ),
+            DemoMessage::new(
+                0,
+                DEMO_ME,
+                (0, 10, 47),
+                vec![Text("Release notes for rc1:")],
+            )
+            .attach(AttachmentSummary {
+                name: "release-notes-2.4.pdf".to_string(),
+                kind: AttachmentKind::File,
+                size_bytes: DEMO_UPLOAD_BYTES,
+                ..AttachmentSummary::default()
+            }),
             MessageSendState::Pending,
         ),
         pending(
             DEMO_PENDING_CLIENT_ID,
-            DemoMessage::new(0, DEMO_ME, (0, 10, 48), vec![Text(
-                "Build 2.4.0-rc1 is up, starting the smoke test now.",
-            )]),
+            DemoMessage::new(
+                0,
+                DEMO_ME,
+                (0, 10, 48),
+                vec![Text("Build 2.4.0-rc1 is up, starting the smoke test now.")],
+            ),
             MessageSendState::Pending,
         ),
     ]
@@ -1406,7 +1420,7 @@ pub(crate) fn demo_search_results(
         })
         .collect::<Vec<_>>();
     // Newest first, like the live search index.
-    results.sort_by(|left, right| right.message.timestamp_ms.cmp(&left.message.timestamp_ms));
+    results.sort_by_key(|left| std::cmp::Reverse(left.message.timestamp_ms));
     results
 }
 
@@ -1583,9 +1597,18 @@ mod tests {
                 .last_message
                 .as_ref()
                 .unwrap_or_else(|| panic!("{} has no preview", summary.id.0));
-            assert_eq!(preview.timestamp_ms, summary.last_activity_ms, "{}", summary.id.0);
+            assert_eq!(
+                preview.timestamp_ms, summary.last_activity_ms,
+                "{}",
+                summary.id.0
+            );
             if let Some(last) = demo_conversation_messages(&summary.id).last() {
-                assert_eq!(preview.message_id.as_ref(), Some(&last.id), "{}", summary.id.0);
+                assert_eq!(
+                    preview.message_id.as_ref(),
+                    Some(&last.id),
+                    "{}",
+                    summary.id.0
+                );
             }
         }
     }

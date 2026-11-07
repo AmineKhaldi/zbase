@@ -7,11 +7,11 @@ use crate::{
             ConversationGroup, ConversationKind, ConversationSummary, ConversationTeamType,
         },
         ids::{ConversationId, MessageId, UserId, WorkspaceId},
-        message_preview::{MessagePreview, PreviewBody},
         message::{
             BroadcastKind, ChatEvent, EditMeta, LinkPreview, MessageFragment, MessageRecord,
             MessageSendState,
         },
+        message_preview::{MessagePreview, PreviewBody},
     },
     state::bindings::{ConversationBinding, MessageBinding},
 };
@@ -981,12 +981,15 @@ mod tests {
 
     #[test]
     fn attachment_sources_roundtrip_and_legacy_records_remain_readable() {
-        let path = std::env::temp_dir().join(format!("zbase-source-roundtrip-{}.txt", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("zbase-source-roundtrip-{}.txt", std::process::id()));
         std::fs::write(&path, b"cached attachment").unwrap();
         let attachment = AttachmentSummary {
             name: "file.txt".into(),
             size_bytes: 42,
-            source: Some(AttachmentSource::LocalPath(path.to_string_lossy().into_owned())),
+            source: Some(AttachmentSource::LocalPath(
+                path.to_string_lossy().into_owned(),
+            )),
             ..AttachmentSummary::default()
         };
         let bytes = rmp_serde::to_vec(&CachedAttachment::from_domain(&attachment)).unwrap();

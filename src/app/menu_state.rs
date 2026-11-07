@@ -15,11 +15,7 @@ pub fn set_checked(menu: &str, item: &str, checked: bool) {
 // objc 0.2's `msg_send!` expands to a `cfg(feature = "cargo-clippy")` check.
 #[allow(unexpected_cfgs)]
 mod mac {
-    use objc::{
-        class, msg_send,
-        runtime::Object,
-        sel, sel_impl,
-    };
+    use objc::{class, msg_send, runtime::Object, sel, sel_impl};
     use std::ffi::CString;
 
     const NS_CONTROL_STATE_VALUE_OFF: isize = 0;
@@ -41,7 +37,8 @@ mod mac {
             if bar.is_null() {
                 return;
             }
-            let title: *mut Object = msg_send![class!(NSString), stringWithUTF8String: menu.as_ptr()];
+            let title: *mut Object =
+                msg_send![class!(NSString), stringWithUTF8String: menu.as_ptr()];
             let top: *mut Object = msg_send![bar, itemWithTitle: title];
             if top.is_null() {
                 return;
@@ -50,7 +47,8 @@ mod mac {
             if submenu.is_null() {
                 return;
             }
-            let title: *mut Object = msg_send![class!(NSString), stringWithUTF8String: item.as_ptr()];
+            let title: *mut Object =
+                msg_send![class!(NSString), stringWithUTF8String: item.as_ptr()];
             let entry: *mut Object = msg_send![submenu, itemWithTitle: title];
             if entry.is_null() {
                 return;

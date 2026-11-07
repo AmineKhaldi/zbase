@@ -47,32 +47,35 @@ impl SettingsWindow {
             titlebar: Some(TitlebarOptions {
                 title: Some(SETTINGS_WINDOW_TITLE.into()),
                 appears_transparent: cfg!(target_os = "macos"),
-                traffic_light_position: cfg!(target_os = "macos").then_some(point(px(14.), px(13.))),
+                traffic_light_position: cfg!(target_os = "macos")
+                    .then_some(point(px(14.), px(13.))),
             }),
             is_resizable: false,
             is_minimizable: false,
             window_background: WindowBackgroundAppearance::Opaque,
             ..Default::default()
         };
-        let handle = cx.open_window(options, |window, cx| {
-            let view = cx.new(|cx| {
-                let mut subscriptions = Vec::new();
-                if let Some(app) = app.upgrade() {
-                    subscriptions.push(cx.observe(&app, |_, _, cx| cx.notify()));
-                }
-                subscriptions.push(cx.observe_window_appearance(window, |_, _, cx| cx.notify()));
-                Self {
-                    app,
-                    main_window,
-                    focus_handle: cx.focus_handle(),
-                    _subscriptions: subscriptions,
-                }
-            });
-            window.focus(&view.focus_handle(cx));
-            view
-        })
-        .inspect_err(|error| tracing::warn!("failed to open settings window: {error}"))
-        .ok()?;
+        let handle = cx
+            .open_window(options, |window, cx| {
+                let view = cx.new(|cx| {
+                    let mut subscriptions = Vec::new();
+                    if let Some(app) = app.upgrade() {
+                        subscriptions.push(cx.observe(&app, |_, _, cx| cx.notify()));
+                    }
+                    subscriptions
+                        .push(cx.observe_window_appearance(window, |_, _, cx| cx.notify()));
+                    Self {
+                        app,
+                        main_window,
+                        focus_handle: cx.focus_handle(),
+                        _subscriptions: subscriptions,
+                    }
+                });
+                window.focus(&view.focus_handle(cx));
+                view
+            })
+            .inspect_err(|error| tracing::warn!("failed to open settings window: {error}"))
+            .ok()?;
         // Make it key even when it was requested from a menu while another app
         // was frontmost.
         cx.activate(true);
@@ -104,7 +107,12 @@ impl SettingsWindow {
     }
 
     /// ⌘, while Settings is already frontmost: nothing to open.
-    fn reopen(&mut self, _: &commands::OpenPreferences, window: &mut Window, _: &mut Context<Self>) {
+    fn reopen(
+        &mut self,
+        _: &commands::OpenPreferences,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
         window.activate_window();
     }
 }

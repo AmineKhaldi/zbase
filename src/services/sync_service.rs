@@ -79,7 +79,7 @@ mod tests {
         let sync = SyncService::default();
         let a = ProviderConversationRef::new("a");
         let b = ProviderConversationRef::new("b");
-        assert!(sync.request(&[a.clone()]));
+        assert!(sync.request(std::slice::from_ref(&a)));
         assert_eq!(sync.take_pending().unwrap(), vec![a.clone()]);
         assert!(!sync.request(&[b.clone(), b.clone()]));
         assert_eq!(sync.take_pending().unwrap(), vec![b]);
@@ -91,7 +91,7 @@ mod tests {
     fn cancellation_stops_existing_and_future_work() {
         let sync = SyncService::default();
         let a = ProviderConversationRef::new("a");
-        assert!(sync.request(&[a.clone()]));
+        assert!(sync.request(std::slice::from_ref(&a)));
         sync.cancel();
         assert!(sync.take_pending().is_none());
         assert!(!sync.request(&[a]));

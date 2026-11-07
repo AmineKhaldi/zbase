@@ -14,6 +14,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  formatting:
+    name: Rust formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install rustfmt
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
   scripts:
     name: Workflow and script checks
     runs-on: ubuntu-latest
@@ -97,7 +112,9 @@ jobs:
           scripts/macos/test_updater_bridge.sh
       - name: Clippy
         id: clippy
-        run: cargo clippy --locked --all-targets --features gpui/runtime_shaders,macos-updater --timings
+        run: |
+          cargo clippy --locked --all-targets --features gpui/runtime_shaders,macos-updater --timings -- -D warnings
+          cargo clippy --locked --all-targets --all-features --features gpui/runtime_shaders --timings -- -D warnings
       - name: Rust tests
         env:
           DYLD_FRAMEWORK_PATH: ${{ github.workspace }}/dist/sparkle

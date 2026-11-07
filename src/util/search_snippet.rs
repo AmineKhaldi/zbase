@@ -266,7 +266,9 @@ pub fn clean_search_snippet(raw: &str, ranges: &[(usize, usize)]) -> CleanSnippe
         if ch == '/'
             && index > 0
             && !chars[index - 1].1.is_whitespace()
-            && chars.get(index + 1).is_some_and(|(_, next)| !next.is_whitespace())
+            && chars
+                .get(index + 1)
+                .is_some_and(|(_, next)| !next.is_whitespace())
         {
             builder.out.push(BREAK_AFTER);
         }
@@ -303,7 +305,10 @@ fn mention_at(chars: &[(usize, char)], index: usize) -> Option<(usize, MentionKi
     let name: String = chars[index + 1..end].iter().map(|(_, ch)| *ch).collect();
     let kind = if sigil == '#' {
         MentionKind::Channel
-    } else if matches!(name.to_ascii_lowercase().as_str(), "here" | "channel" | "everyone") {
+    } else if matches!(
+        name.to_ascii_lowercase().as_str(),
+        "here" | "channel" | "everyone"
+    ) {
         MentionKind::Broadcast
     } else {
         MentionKind::User(name)
@@ -459,7 +464,11 @@ mod tests {
     fn breaks_after_a_slash_inside_a_path_never_before_it() {
         let raw = "The export lives in assets/release/banner@2x.png, please";
         let clean = clean_search_snippet(raw, &ranges_of(raw, "release"));
-        assert!(clean.text.contains("assets/\u{200A}release/\u{200A}banner@2x.png"));
+        assert!(
+            clean
+                .text
+                .contains("assets/\u{200A}release/\u{200A}banner@2x.png")
+        );
         // Every break opportunity at a slash follows it.
         for (offset, ch) in clean.text.char_indices() {
             if ch == BREAK_AFTER {
@@ -478,7 +487,8 @@ mod tests {
 
     #[test]
     fn marks_user_broadcast_and_channel_mentions() {
-        let raw = "@robin can you take it? Checklist is in #releases. cc @here, mail me@example.com";
+        let raw =
+            "@robin can you take it? Checklist is in #releases. cc @here, mail me@example.com";
         let clean = clean_search_snippet(raw, &[]);
         let mentions: Vec<(&str, &MentionKind)> = clean
             .mentions

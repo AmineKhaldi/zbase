@@ -41,7 +41,11 @@ pub fn run() {
             KeyBinding::new("cmd-]", commands::NavigateForward, Some("Workspace")),
             KeyBinding::new("cmd-shift-a", commands::ShowActivity, Some("Workspace")),
             KeyBinding::new("cmd-,", commands::OpenPreferences, Some("Workspace")),
-            KeyBinding::new("alt-cmd-1", commands::SortSidebarByRecent, Some("Workspace")),
+            KeyBinding::new(
+                "alt-cmd-1",
+                commands::SortSidebarByRecent,
+                Some("Workspace"),
+            ),
             KeyBinding::new("alt-cmd-2", commands::GroupSidebarByTeam, Some("Workspace")),
             KeyBinding::new(
                 "cmd-shift-\\",

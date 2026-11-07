@@ -18,6 +18,10 @@ use std::{collections::HashMap, sync::Arc};
 pub struct MainPanelHost;
 
 impl MainPanelHost {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     pub fn render(
         &self,
         models: &AppModels,

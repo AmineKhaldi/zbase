@@ -366,7 +366,10 @@ mod tests {
             me: Some("me"),
             display_names: &names,
         };
-        assert_eq!(names.typing_line(&["lena_f"]).as_deref(), Some("Lena is typing…"));
+        assert_eq!(
+            names.typing_line(&["lena_f"]).as_deref(),
+            Some("Lena is typing…")
+        );
         assert_eq!(
             names.typing_line(&["lena_f", "me", "sam"]).as_deref(),
             Some("Lena and Sam are typing…")

@@ -176,7 +176,13 @@ mod tests {
         channels[0].muted = true;
         channels[1].unread_count = 3;
         let workspace = WorkspaceId::new("ws");
-        let rows = build_recent_rows(&channels, &[channels[0].clone()], &[], &workspace, &HashMap::new());
+        let rows = build_recent_rows(
+            &channels,
+            &[channels[0].clone()],
+            &[],
+            &workspace,
+            &HashMap::new(),
+        );
         assert_eq!(rows.len(), 2);
         assert_eq!(
             rows[0].row.route,
@@ -185,7 +191,10 @@ mod tests {
         assert_eq!(rows[0].secondary, "ips");
         assert_eq!(rows[1].secondary, "ent_wallet");
         channels[1].unread_count = 0;
-        assert_eq!(build_recent_rows(&channels, &[], &[], &workspace, &HashMap::new()).len(), 2);
+        assert_eq!(
+            build_recent_rows(&channels, &[], &[], &workspace, &HashMap::new()).len(),
+            2
+        );
         channels[0].last_activity_ms = 30;
         assert_eq!(
             build_recent_rows(&channels, &[], &[], &workspace, &HashMap::new())[0]
@@ -232,7 +241,10 @@ mod tests {
         // Filtering down to one #general makes it unique again.
         let visible = rows.iter().filter(|recent| recent.secondary != "beta");
         let ambiguous = ambiguous_channel_labels(visible);
-        assert!(rows.iter().all(|recent| recent.team_label(&ambiguous).is_none()));
+        assert!(
+            rows.iter()
+                .all(|recent| recent.team_label(&ambiguous).is_none())
+        );
     }
 
     #[test]
@@ -317,7 +329,13 @@ mod tests {
         dm.kind = ConversationKind::DirectMessage;
         dm.title = "alice".into();
         dm.group = None;
-        let rows = build_recent_rows(&[simple, normal], &[dm], &[], &WorkspaceId::new("ws"), &HashMap::new());
+        let rows = build_recent_rows(
+            &[simple, normal],
+            &[dm],
+            &[],
+            &WorkspaceId::new("ws"),
+            &HashMap::new(),
+        );
         assert_eq!(
             rows.iter()
                 .map(|recent| recent.row.label.as_str())

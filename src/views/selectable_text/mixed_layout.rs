@@ -489,7 +489,7 @@ mod tests {
             let result = plan(
                 &text,
                 &runs(&[length]),
-                &[0..length],
+                std::slice::from_ref(&(0..length)),
                 px(14.),
                 px(22.),
                 px(30.),
@@ -523,7 +523,7 @@ mod tests {
         let result = plan(
             text,
             &runs(&[text.len()]),
-            &[0..text.len()],
+            std::slice::from_ref(&(0..text.len())),
             px(14.),
             px(22.),
             px(200.),
@@ -563,7 +563,7 @@ mod tests {
         let result = plan(
             text,
             &runs,
-            &[start..end],
+            std::slice::from_ref(&(start..end)),
             px(14.),
             px(22.),
             px(80.),

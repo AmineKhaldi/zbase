@@ -483,7 +483,8 @@ impl AppModels {
         let changed = self.settings.sidebar_style != style;
         // A width the user dragged stays; the previous style's default follows the style.
         if changed
-            && (self.sidebar.width_px - crate::views::sidebar_width_for_style(self.sidebar.style)).abs()
+            && (self.sidebar.width_px - crate::views::sidebar_width_for_style(self.sidebar.style))
+                .abs()
                 < 0.5
         {
             self.sidebar.width_px = crate::views::sidebar_width_for_style(style);
@@ -814,26 +815,24 @@ impl AppModels {
             .take(QUICK_SWITCHER_MESSAGE_LIMIT)
             .collect::<Vec<_>>();
         kept.sort_by(|left, right| left.cmp_for_display(right));
-        self.quick_switcher.results.extend(
-            kept
-                .into_iter()
-                .map(|result| QuickSwitcherResult {
-                    label: quick_switcher_message_label(
-                        &result.conversation_id,
-                        &self.workspace.channels,
-                        &self.workspace.direct_messages,
-                        &self.quick_switcher_profile_names,
-                    ),
-                    sublabel: Some(result.snippet.clone()),
-                    kind: QuickSwitcherResultKind::Message,
-                    route: result.route.clone(),
-                    conversation_id: result.conversation_id.clone(),
-                    message_id: Some(result.message.id.clone()),
-                    match_ranges: result.snippet_highlight_ranges.clone(),
-                    author_id: Some(result.message.author_id.clone()),
-                    timestamp_ms: result.message.timestamp_ms,
-                }),
-        );
+        self.quick_switcher
+            .results
+            .extend(kept.into_iter().map(|result| QuickSwitcherResult {
+                label: quick_switcher_message_label(
+                    &result.conversation_id,
+                    &self.workspace.channels,
+                    &self.workspace.direct_messages,
+                    &self.quick_switcher_profile_names,
+                ),
+                sublabel: Some(result.snippet.clone()),
+                kind: QuickSwitcherResultKind::Message,
+                route: result.route.clone(),
+                conversation_id: result.conversation_id.clone(),
+                message_id: Some(result.message.id.clone()),
+                match_ranges: result.snippet_highlight_ranges.clone(),
+                author_id: Some(result.message.author_id.clone()),
+                timestamp_ms: result.message.timestamp_ms,
+            }));
         if self.quick_switcher.results.is_empty() {
             self.quick_switcher.selected_index = 0;
         } else {
@@ -1110,21 +1109,38 @@ impl AppModels {
 
     /// Restart only when text drafts can be restored without losing other work.
     pub fn update_restart_blocker(&self) -> Option<&'static str> {
-        if self.call.active_call.as_ref().is_some_and(|call| call.status != crate::domain::call::CallStatus::Idle) {
+        if self
+            .call
+            .active_call
+            .as_ref()
+            .is_some_and(|call| call.status != crate::domain::call::CallStatus::Idle)
+        {
             return Some("End the active call before restarting.");
         }
         if !matches!(self.composer.mode, ComposerMode::Compose)
-            || self.composer_drafts.iter().any(|(id, draft)| id != &self.composer.conversation_id && !matches!(draft.mode, ComposerMode::Compose)) {
+            || self.composer_drafts.iter().any(|(id, draft)| {
+                id != &self.composer.conversation_id && !matches!(draft.mode, ComposerMode::Compose)
+            })
+        {
             return Some("Finish or cancel message edits and inline replies before restarting.");
         }
         if self.timeline.rows.iter().any(|row| matches!(row, crate::models::timeline_model::TimelineRow::Message(row) if row.message.send_state == crate::domain::message::MessageSendState::Pending))
             || !self.timeline.upload_progress.is_empty() {
             return Some("Wait for messages and uploads to finish before restarting.");
         }
-        if !self.composer.attachments.is_empty() || !self.thread_pane.reply_attachments.is_empty()
-            || self.composer_drafts.iter().any(|(id, draft)| id != &self.composer.conversation_id && !draft.attachments.is_empty())
-            || self.thread_reply_drafts.iter().any(|(id, draft)| Some(id) != self.thread_pane.root_message_id.as_ref() && !draft.attachments.is_empty()) {
-            return Some("Send or remove draft attachments, including in other conversations, before restarting.");
+        if !self.composer.attachments.is_empty()
+            || !self.thread_pane.reply_attachments.is_empty()
+            || self.composer_drafts.iter().any(|(id, draft)| {
+                id != &self.composer.conversation_id && !draft.attachments.is_empty()
+            })
+            || self.thread_reply_drafts.iter().any(|(id, draft)| {
+                Some(id) != self.thread_pane.root_message_id.as_ref()
+                    && !draft.attachments.is_empty()
+            })
+        {
+            return Some(
+                "Send or remove draft attachments, including in other conversations, before restarting.",
+            );
         }
         None
     }
@@ -1573,37 +1589,37 @@ impl AppModels {
             .recent_aliases
             .iter()
             .find(|alias| !is_builtin(alias))
-            .and_then(|alias| {
+            .map(|alias| {
                 let bare = alias
                     .strip_prefix(':')
                     .and_then(|s| s.strip_suffix(':'))
                     .unwrap_or(alias);
                 if let Some(render) = self.timeline.emoji_index.get(&bare.to_ascii_lowercase()) {
-                    Some(QuickReactRecent {
+                    QuickReactRecent {
                         alias: alias.clone(),
                         unicode: render.unicode.clone(),
                         asset_path: render.asset_path.clone(),
-                    })
+                    }
                 } else if let Some(stock) =
                     crate::util::emoji_aliases::standard_emoji_for_alias(bare).and_then(emojis::get)
                 {
-                    Some(QuickReactRecent {
+                    QuickReactRecent {
                         alias: bare.to_string(),
                         unicode: Some(stock.to_string()),
                         asset_path: None,
-                    })
+                    }
                 } else if emojis::get(alias).is_some() {
-                    Some(QuickReactRecent {
+                    QuickReactRecent {
                         alias: alias.clone(),
                         unicode: Some(alias.clone()),
                         asset_path: None,
-                    })
+                    }
                 } else {
-                    Some(QuickReactRecent {
+                    QuickReactRecent {
                         alias: alias.clone(),
                         unicode: None,
                         asset_path: None,
-                    })
+                    }
                 }
             });
     }
@@ -2108,10 +2124,10 @@ impl AppModels {
 
     fn mark_route_seen(&mut self, route: &Route, message_id: Option<&MessageId>) {
         #[cfg(any(test, feature = "demo-fixtures"))]
-        if self.fixture_mode {
-            if let Some(conversation_id) = conversation_id_for_route(route) {
-                self.clear_workspace_counts(&conversation_id);
-            }
+        if self.fixture_mode
+            && let Some(conversation_id) = conversation_id_for_route(route)
+        {
+            self.clear_workspace_counts(&conversation_id);
         }
 
         for item in &mut self.notifications.activity_items {
@@ -2486,7 +2502,7 @@ fn normalize_tlf_name(tlf: &str) -> String {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .collect();
-    parts.sort_unstable_by(|a, b| a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()));
+    parts.sort_unstable_by_key(|a| a.to_ascii_lowercase());
     parts.join(",")
 }
 
@@ -2668,13 +2684,12 @@ fn resolve_mention_username(
         return username.clone();
     }
 
-    if raw.contains(' ') {
-        if let Some((username, _)) = profile_names
+    if raw.contains(' ')
+        && let Some((username, _)) = profile_names
             .iter()
             .find(|(_, full_name)| full_name.trim().eq_ignore_ascii_case(raw))
-        {
-            return username.clone();
-        }
+    {
+        return username.clone();
     }
 
     raw_lower
@@ -2918,11 +2933,16 @@ mod tests {
         let mut models = AppModels::empty_with_settings(SettingsModel::default());
         models.update_composer_draft_text("unsent text".into());
         assert!(models.update_restart_blocker().is_none());
-        models.composer.mode = ComposerMode::Edit { message_id: MessageId::new("edited") };
+        models.composer.mode = ComposerMode::Edit {
+            message_id: MessageId::new("edited"),
+        };
         models.store_current_composer_draft();
         assert!(models.update_restart_blocker().unwrap().contains("edits"));
         models.composer.mode = ComposerMode::Compose;
-        assert!(models.update_restart_blocker().is_none(), "live state takes precedence over a cached edit snapshot");
+        assert!(
+            models.update_restart_blocker().is_none(),
+            "live state takes precedence over a cached edit snapshot"
+        );
     }
 
     #[test]
@@ -2936,8 +2956,14 @@ mod tests {
         let names = HashMap::new();
         let mut bookclub = channel_summary("bookclub.general", "general");
         bookclub.group = Some(group("bookclub", ConversationTeamType::Simple));
-        assert_eq!(quick_switcher_label_for_summary(&bookclub, &names), "bookclub");
-        assert_eq!(conversation_location_for_summary(&bookclub, &names), "bookclub");
+        assert_eq!(
+            quick_switcher_label_for_summary(&bookclub, &names),
+            "bookclub"
+        );
+        assert_eq!(
+            conversation_location_for_summary(&bookclub, &names),
+            "bookclub"
+        );
         let mut general = channel_summary("lighthouse.general", "general");
         general.group = Some(group("lighthouse", ConversationTeamType::Complex));
         assert_eq!(
@@ -2985,9 +3011,15 @@ mod tests {
             display_name: "bookclub".to_string(),
             team_type: ConversationTeamType::Simple,
         });
-        assert_eq!(conversation_location_for_summary(&simple, &profiles), "bookclub");
+        assert_eq!(
+            conversation_location_for_summary(&simple, &profiles),
+            "bookclub"
+        );
         let dm = dm_summary("0000dm", "alicej", ConversationKind::DirectMessage);
-        assert_eq!(conversation_location_for_summary(&dm, &profiles), "Alice Johnson");
+        assert_eq!(
+            conversation_location_for_summary(&dm, &profiles),
+            "Alice Johnson"
+        );
 
         let mut models = AppModels::empty_with_settings(SettingsModel::default());
         models.workspace.channels = vec![general];
@@ -3332,8 +3364,10 @@ mod tests {
 
     #[test]
     fn quick_switcher_affinity_boost_prioritizes_preferred_match() {
-        let corpus =
-            quick_switcher_dm_corpus(&[("conv_sample_a", "sample a"), ("conv_sample_b", "sample b")]);
+        let corpus = quick_switcher_dm_corpus(&[
+            ("conv_sample_a", "sample a"),
+            ("conv_sample_b", "sample b"),
+        ]);
         let now_ms = 1_710_000_000_000i64;
         let mut affinity = HashMap::new();
         affinity.insert("conv_sample_b".to_string(), (6.0, now_ms));
@@ -3358,8 +3392,10 @@ mod tests {
 
     #[test]
     fn quick_switcher_affinity_decay_reduces_stale_bias() {
-        let corpus =
-            quick_switcher_dm_corpus(&[("conv_sample_a", "sample a"), ("conv_sample_b", "sample b")]);
+        let corpus = quick_switcher_dm_corpus(&[
+            ("conv_sample_a", "sample a"),
+            ("conv_sample_b", "sample b"),
+        ]);
         let now_ms = 1_710_000_000_000i64;
         let sixty_days_ms = 60 * 24 * 60 * 60 * 1000_i64;
         let mut affinity = HashMap::new();

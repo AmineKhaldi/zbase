@@ -1,7 +1,6 @@
 pub(crate) mod layout_anchor;
 use crate::util::emoji_aliases::{normalize_emoji_alias, standard_emoji_for_alias};
 mod reply_context;
-use reply_context::{ReplyContext, cached_reply_context};
 use super::quick_react_placement::{BUTTON_SIZE, HoverGeometry, toolbar_size};
 use crate::{
     domain::{
@@ -26,9 +25,9 @@ use crate::{
         attachment_image_source, attachment_lightbox_source, attachment_local_path,
         avatar::{Avatar, default_avatar_background},
         border, clipboard_icon, copy_icon, danger, format_duration_ms, glass_surface_dark,
-        hash_icon, link,
+        hash_icon,
         inline_markdown::{InlineMarkdownConfig, apply_inline_markdown, remap_source_byte_range},
-        mono_font_family, mono_font_size, new_messages, panel_alt_bg, panel_bg, pin_icon,
+        link, mono_font_family, mono_font_size, new_messages, panel_alt_bg, panel_bg, pin_icon,
         play_icon, plus_icon,
         selectable_text::{
             InlineAttachment, LinkRange, SelectableText, StyledRange, resolve_selectable_text,
@@ -47,6 +46,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, StyledImage, Window, canvas, deferred, div, img, list, px,
     relative, rgb,
 };
+use reply_context::{ReplyContext, cached_reply_context};
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 #[derive(Clone)]
@@ -349,6 +349,10 @@ impl TimelineList {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     pub(crate) fn render_row_cached(
         timeline: &TimelineModel,
         row_index: usize,
@@ -397,6 +401,10 @@ impl TimelineList {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     fn render_row_inner(
         timeline: &TimelineModel,
         row: &TimelineRow,
@@ -435,9 +443,7 @@ impl TimelineList {
                             .font_weight(FontWeight::MEDIUM)
                             .child(name.clone())
                             .into_any_element(),
-                        EventSpan::Text(text) => {
-                            div().child(text.clone()).into_any_element()
-                        }
+                        EventSpan::Text(text) => div().child(text.clone()).into_any_element(),
                         EventSpan::ChannelLink {
                             channel_name,
                             team_name,
@@ -479,7 +485,8 @@ impl TimelineList {
                             let uid = user_id.clone();
                             div()
                                 .id(SharedString::from(format!(
-                                    "user-link-{row_identity}-{span_idx}-{}", user_id.0
+                                    "user-link-{row_identity}-{span_idx}-{}",
+                                    user_id.0
                                 )))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(rgb(accent()))
@@ -570,6 +577,10 @@ impl TimelineList {
             .into_any_element()
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     fn render_message_row(
         timeline: &TimelineModel,
         row: &MessageRow,
@@ -631,7 +642,9 @@ impl TimelineList {
                         "timeline-author-name-{}",
                         row.message.id.0
                     )))
-                    .tooltip(crate::views::tooltip::TextTooltip::single_line(author_tooltip))
+                    .tooltip(crate::views::tooltip::TextTooltip::single_line(
+                        author_tooltip,
+                    ))
                     .on_click(cx.listener({
                         let author_user_id = author_user_id.clone();
                         move |this, _, _, cx| {
@@ -907,7 +920,9 @@ impl TimelineList {
                         .flex()
                         .justify_end()
                         .pt(px(5.))
-                        .when(sending, |gutter| gutter.child(pending_clock(&row.message.id.0))),
+                        .when(sending, |gutter| {
+                            gutter.child(pending_clock(&row.message.id.0))
+                        }),
                 )
                 .child(content)
         };
@@ -918,7 +933,14 @@ impl TimelineList {
         row_wrapper
             .when(open_thread_parent, |row| {
                 row.relative()
-                    .bg(tint(accent(), if crate::views::is_dark_theme() { 0.14 } else { 0.08 }))
+                    .bg(tint(
+                        accent(),
+                        if crate::views::is_dark_theme() {
+                            0.14
+                        } else {
+                            0.08
+                        },
+                    ))
                     .child(
                         div()
                             .absolute()
@@ -940,6 +962,10 @@ impl TimelineList {
         super::mention_colors_for_user(affinity_index, current_user_id, user_id)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     fn render_message(
         message: &crate::domain::message::MessageRecord,
         highlighted: bool,
@@ -1743,6 +1769,10 @@ impl TimelineList {
         (!caption.is_empty()).then(|| caption.to_string())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     fn render_message_fragments(
         message: &crate::domain::message::MessageRecord,
         edited_inline: bool,
@@ -1881,6 +1911,10 @@ impl TimelineList {
             .into_any_element()
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     fn render_link_previews(
         message_id: MessageId,
         message_key: &str,
@@ -2147,8 +2181,8 @@ impl TimelineList {
         let scale = (max_width / width).min(max_height / height).min(1.0);
         width *= scale;
         height *= scale;
-        let min_width = max_width.min(120.0).max(1.0);
-        let min_height = max_height.min(90.0).max(1.0);
+        let min_width = max_width.clamp(1.0, 120.0);
+        let min_height = max_height.clamp(1.0, 90.0);
         (width.max(min_width), height.max(min_height))
     }
 
@@ -2172,6 +2206,10 @@ impl TimelineList {
             .into_any_element()
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     fn render_inline_fragments(
         _message_key: &str,
         render_key: String,
@@ -2372,6 +2410,10 @@ impl TimelineList {
             .into_any_element()
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     fn render_inline_fragments_with_asset_emojis(
         message_key: &str,
         fragments: &[MessageFragment],
@@ -2605,6 +2647,10 @@ impl TimelineList {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     fn render_fragment(
         message_key: &str,
         index: usize,
@@ -3085,6 +3131,10 @@ impl TimelineList {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     fn render_styled_fragment_text(
         message_key: &str,
         index: usize,
@@ -3139,6 +3189,10 @@ impl TimelineList {
             .into_any_element()
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     fn render_linked_styled_fragment_text(
         message_key: &str,
         index: usize,
@@ -3547,7 +3601,10 @@ fn new_messages_divider(label: &str, compact: bool) -> AnyElement {
 /// is scrolled out of view above the summary.
 fn thread_summary_label(reply_count: u32, clipped_parent_author: Option<&str>) -> String {
     let noun = if reply_count == 1 { "reply" } else { "replies" };
-    match clipped_parent_author.map(str::trim).filter(|name| !name.is_empty()) {
+    match clipped_parent_author
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
         Some(author) => format!("{reply_count} {noun} to {author}"),
         None => format!("{reply_count} {noun}"),
     }
@@ -3565,8 +3622,14 @@ fn pending_clock(message_id: &str) -> AnyElement {
         .flex()
         .items_center()
         .justify_center()
-        .tooltip(crate::views::tooltip::TextTooltip::single_line("Sending…".to_string()))
-        .child(crate::views::icon_asset("assets/icons/clock.svg", 12., text_secondary()))
+        .tooltip(crate::views::tooltip::TextTooltip::single_line(
+            "Sending…".to_string(),
+        ))
+        .child(crate::views::icon_asset(
+            "assets/icons/clock.svg",
+            12.,
+            text_secondary(),
+        ))
         .into_any_element()
 }
 
@@ -3600,17 +3663,21 @@ fn thread_summary_row(
         .hover(|style| style.bg(tint(text_primary(), 0.06)))
         .when(repliers.is_empty(), |row| row.child(thread_icon(link())))
         .when(!repliers.is_empty(), |row| {
-            row.child(div().flex().items_center().gap(px(2.)).children(
-                repliers.iter().map(|replier| {
-                    Avatar::render(
-                        &replier.display_name,
-                        replier.avatar_asset.as_deref(),
-                        16.,
-                        default_avatar_background(&replier.display_name),
-                        text_primary(),
-                    )
-                }),
-            ))
+            row.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .children(repliers.iter().map(|replier| {
+                        Avatar::render(
+                            &replier.display_name,
+                            replier.avatar_asset.as_deref(),
+                            16.,
+                            default_avatar_background(&replier.display_name),
+                            text_primary(),
+                        )
+                    })),
+            )
         })
         .child(
             div()
@@ -3780,7 +3847,10 @@ mod tests {
     fn thread_summary_names_the_parent_only_when_it_is_out_of_view() {
         assert_eq!(thread_summary_label(2, None), "2 replies");
         assert_eq!(thread_summary_label(1, None), "1 reply");
-        assert_eq!(thread_summary_label(2, Some("Alice Johnson")), "2 replies to Alice Johnson");
+        assert_eq!(
+            thread_summary_label(2, Some("Alice Johnson")),
+            "2 replies to Alice Johnson"
+        );
         assert_eq!(thread_summary_label(2, Some("  ")), "2 replies");
     }
 

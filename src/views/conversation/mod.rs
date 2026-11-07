@@ -4,12 +4,9 @@ use crate::{
         pins::{PinnedItem, PinnedTarget},
     },
     models::{
-        app_model::Connectivity,
-        composer_model::ComposerModel,
-        conversation_model::ConversationModel,
-        find_in_chat_model::FindInChatModel,
-        navigation_model::RightPaneMode,
-        settings_model::SettingsModel,
+        app_model::Connectivity, composer_model::ComposerModel,
+        conversation_model::ConversationModel, find_in_chat_model::FindInChatModel,
+        navigation_model::RightPaneMode, settings_model::SettingsModel,
         timeline_model::TimelineModel,
     },
     views::{
@@ -42,6 +39,10 @@ pub struct ConversationView;
 pub struct ConversationHeader;
 
 impl ConversationView {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit inputs of this existing view API."
+    )]
     pub fn render(
         &self,
         conversation: &ConversationModel,

@@ -754,11 +754,7 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 state.workspace.active_workspace_id = payload.active_workspace_id.clone();
             }
             state.workspace.workspace_name = payload.workspace_name;
-            merge_workspace_conversations(
-                state,
-                payload.channels,
-                payload.direct_messages,
-            );
+            merge_workspace_conversations(state, payload.channels, payload.direct_messages);
 
             for binding in payload.workspace_bindings {
                 state
@@ -793,24 +789,23 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 state.sidebar.retained_unread_conversation.as_ref(),
             );
 
-            if initialize_selection {
-                if let Some(conversation_id) = payload
+            if initialize_selection
+                && let Some(conversation_id) = payload
                     .selected_conversation_id
                     .clone()
                     .filter(|id| !state.workspace.left_conversation_ids.contains(id))
-                {
-                    state.timeline.conversation_id = Some(conversation_id.clone());
-                    if let Some(route) = route_for_conversation_id(
-                        &conversation_id,
-                        &workspace_id,
-                        &state.workspace.channels,
-                        &state.workspace.direct_messages,
-                    ) {
-                        state.navigation.current_route = Some(route.clone());
-                        state.sidebar.highlighted_route = Some(route);
-                    }
-                    state.timeline.unread_marker = payload.unread_marker;
+            {
+                state.timeline.conversation_id = Some(conversation_id.clone());
+                if let Some(route) = route_for_conversation_id(
+                    &conversation_id,
+                    &workspace_id,
+                    &state.workspace.channels,
+                    &state.workspace.direct_messages,
+                ) {
+                    state.navigation.current_route = Some(route.clone());
+                    state.sidebar.highlighted_route = Some(route);
                 }
+                state.timeline.unread_marker = payload.unread_marker;
             }
             if state.timeline.conversation_id == payload.selected_conversation_id {
                 for message in payload.selected_messages {
@@ -1664,11 +1659,7 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 conversation_binding.conversation_id.clone(),
                 conversation_binding,
             );
-            merge_workspace_conversations(
-                state,
-                vec![conversation.clone()],
-                Vec::new(),
-            );
+            merge_workspace_conversations(state, vec![conversation.clone()], Vec::new());
             if state.workspace.active_workspace_id.is_none() {
                 state.workspace.active_workspace_id = Some(workspace_id.clone());
             }
@@ -1743,7 +1734,9 @@ fn reduce_command_failure(
         BackendCommand::LeaveChannel {
             conversation_id, ..
         } => {
-            state.workspace.leave_channel_errors
+            state
+                .workspace
+                .leave_channel_errors
                 .insert(conversation_id.clone(), error.clone());
             state
                 .workspace
@@ -2154,8 +2147,7 @@ fn note_conversation_message(state: &mut UiState, message: &MessageRecord) {
             summary.last_activity_ms = activity;
             activity_changed = true;
         }
-        summary.last_message =
-            MessagePreview::newest(summary.last_message.take(), preview.clone());
+        summary.last_message = MessagePreview::newest(summary.last_message.take(), preview.clone());
     }
     if activity_changed {
         refresh_sidebar(state);
@@ -2268,21 +2260,21 @@ fn upsert_message_in_state(state: &mut UiState, mut message: MessageRecord) {
     // If we're upserting our own message (e.g. from MessageUpserted when outbox wasn't
     // matched), remove a matching pending so we don't show the same message twice.
     let current_user = current_user_id(state);
-    if message.author_id == current_user {
-        if let Some(incoming_body) = message_body_text_for_matching(&message) {
-            let pending_id_to_remove = state
-                .timeline
-                .messages
-                .iter()
-                .rev()
-                .find(|m| {
-                    m.id.0.starts_with("local:")
-                        && message_body_text_for_matching(m).as_ref() == Some(&incoming_body)
-                })
-                .map(|m| m.id.clone());
-            if let Some(pending_id) = pending_id_to_remove {
-                replace_pending_message_id(state, &pending_id, &message.id);
-            }
+    if message.author_id == current_user
+        && let Some(incoming_body) = message_body_text_for_matching(&message)
+    {
+        let pending_id_to_remove = state
+            .timeline
+            .messages
+            .iter()
+            .rev()
+            .find(|m| {
+                m.id.0.starts_with("local:")
+                    && message_body_text_for_matching(m).as_ref() == Some(&incoming_body)
+            })
+            .map(|m| m.id.clone());
+        if let Some(pending_id) = pending_id_to_remove {
+            replace_pending_message_id(state, &pending_id, &message.id);
         }
     }
 
@@ -2418,7 +2410,10 @@ fn discard_failed_message(state: &mut UiState, message_id: &MessageId) {
     else {
         return;
     };
-    state.timeline.messages.retain(|message| !is_failed(message));
+    state
+        .timeline
+        .messages
+        .retain(|message| !is_failed(message));
     state.thread.replies.retain(|message| !is_failed(message));
     state.timeline.upload_progress.remove(message_id);
     // If the failed message was the conversation's newest, preview the one
@@ -3204,7 +3199,9 @@ mod tests {
         // Still pending: discarding is refused.
         reduce_ui_action(
             &mut state,
-            UiAction::DiscardFailedMessage { message_id: failed_id.clone() },
+            UiAction::DiscardFailedMessage {
+                message_id: failed_id.clone(),
+            },
         );
         assert_eq!(state.timeline.messages.len(), 2);
 
@@ -3218,10 +3215,21 @@ mod tests {
         );
         let output = reduce_ui_action(
             &mut state,
-            UiAction::DiscardFailedMessage { message_id: failed_id.clone() },
+            UiAction::DiscardFailedMessage {
+                message_id: failed_id.clone(),
+            },
         );
-        assert!(output.effects.is_empty(), "local only: nothing goes to Keybase");
-        assert!(state.timeline.messages.iter().all(|message| message.id != failed_id));
+        assert!(
+            output.effects.is_empty(),
+            "local only: nothing goes to Keybase"
+        );
+        assert!(
+            state
+                .timeline
+                .messages
+                .iter()
+                .all(|message| message.id != failed_id)
+        );
         assert_eq!(
             state.workspace.channels[0]
                 .last_message
@@ -3233,7 +3241,9 @@ mod tests {
         // Sent messages can't be discarded this way.
         reduce_ui_action(
             &mut state,
-            UiAction::DiscardFailedMessage { message_id: earlier.id.clone() },
+            UiAction::DiscardFailedMessage {
+                message_id: earlier.id.clone(),
+            },
         );
         assert_eq!(state.timeline.messages.len(), 1);
     }
@@ -3281,7 +3291,11 @@ mod tests {
         reduce_backend_event(&mut state, progress(400));
         assert!(state.timeline.upload_progress.is_empty());
         assert_eq!(
-            crate::state::state::UploadProgress { sent_bytes: 0, total_bytes: 0 }.fraction(),
+            crate::state::state::UploadProgress {
+                sent_bytes: 0,
+                total_bytes: 0
+            }
+            .fraction(),
             0.
         );
     }
@@ -3877,7 +3891,10 @@ mod tests {
             edited_at_ms: Some(3_000),
         });
         reduce_backend_event(&mut state, BackendEvent::MessageUpserted(edit));
-        assert_eq!(preview_text(&state, "other").as_deref(), Some("alice: fixed"));
+        assert_eq!(
+            preview_text(&state, "other").as_deref(),
+            Some("alice: fixed")
+        );
 
         // Deleting it in a closed conversation leaves a "deleted" line.
         reduce_backend_event(
@@ -3939,7 +3956,10 @@ mod tests {
         );
         let preview = state.workspace.channels[0].last_message.clone().unwrap();
         assert_eq!(preview.message_id, Some(MessageId::new("31")));
-        assert_eq!(preview_text(&state, "conv").as_deref(), Some("user_me: on my way"));
+        assert_eq!(
+            preview_text(&state, "conv").as_deref(),
+            Some("user_me: on my way")
+        );
     }
 
     #[test]
@@ -3969,14 +3989,22 @@ mod tests {
         reduce_backend_event(&mut state, extend(snippet.clone()));
         assert_eq!(preview_text(&state, "conv").as_deref(), Some("alice: m40"));
         assert!(matches!(
-            state.workspace.channels[0].last_message.as_ref().unwrap().body,
+            state.workspace.channels[0]
+                .last_message
+                .as_ref()
+                .unwrap()
+                .body,
             PreviewBody::Text(_)
         ));
         // A snippet of a newer message does replace it.
         snippet.last_message.as_mut().unwrap().message_id = Some(MessageId::new("41"));
         reduce_backend_event(&mut state, extend(snippet));
         assert!(matches!(
-            state.workspace.channels[0].last_message.as_ref().unwrap().body,
+            state.workspace.channels[0]
+                .last_message
+                .as_ref()
+                .unwrap()
+                .body,
             PreviewBody::Snippet(_)
         ));
     }
@@ -4091,11 +4119,7 @@ mod tests {
             "distinct real IDs with the same name must survive"
         );
         // Classification changes also remove the old DM entry.
-        merge_workspace_conversations(
-            &mut state,
-            vec![channel_summary("same", "general")],
-            vec![],
-        );
+        merge_workspace_conversations(&mut state, vec![channel_summary("same", "general")], vec![]);
         assert_eq!(state.workspace.channels.len(), 1);
         assert_eq!(state.workspace.direct_messages.len(), 1);
     }
@@ -4810,10 +4834,10 @@ mod tests {
     fn open_or_create_direct_message_navigates_existing_direct_message() {
         let mut state = UiState::default();
         state.workspace.active_workspace_id = Some(WorkspaceId::new("ws_primary"));
-        state.workspace.direct_messages.push(dm_summary(
-            "kb_conv:dm-existing",
-            "aliceexample,peer_user",
-        ));
+        state
+            .workspace
+            .direct_messages
+            .push(dm_summary("kb_conv:dm-existing", "aliceexample,peer_user"));
 
         let output = reduce_ui_action(
             &mut state,

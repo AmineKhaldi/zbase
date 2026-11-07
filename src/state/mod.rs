@@ -4,6 +4,10 @@ pub mod effect;
 pub mod event;
 pub mod ids;
 pub mod reducer;
+#[expect(
+    clippy::module_inception,
+    reason = "Preserve the established state::state module path."
+)]
 pub mod state;
 pub mod store;
 
