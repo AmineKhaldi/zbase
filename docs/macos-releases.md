@@ -47,6 +47,8 @@ If building or notarization fails, the public release remains available with its
 
 Reruns use the workflow and scripts from the original tag. If a fix changes those files, validate it with a manual Release run on the fixed branch, then publish a new version containing the fix. Rerunning an older tag cannot pick up changes from `main`.
 
+Ticket stapling and validation retry transient Apple service failures up to four times with 10, 20, and 40 second delays. Every check must still succeed; invalid, missing, or revoked tickets fail immediately. Persistent service outages fail the build and require a rerun.
+
 ## Packaging and media libraries
 
 `scripts/macos/build_media_deps.sh` builds pinned, checksum-verified FFmpeg and dav1d sources with a macOS 15 deployment target. FFmpeg uses shared libraries, disables GPL/nonfree components and automatic discovery of installed third-party libraries, and includes dav1d for AV1 decoding. Source archives accompany the release; licenses, configuration and the bundled library list are included in the app's Resources/Licenses/Media directory.
