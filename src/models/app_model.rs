@@ -18,8 +18,6 @@ pub enum Connectivity {
 pub struct SendNotice {
     pub banner_title: &'static str,
     pub banner_detail: &'static str,
-    /// Under the focused composer, in place of the Return hint.
-    pub composer_hint: Option<&'static str>,
     /// On the send button, in place of "Send".
     pub send_tooltip: Option<&'static str>,
 }
@@ -32,13 +30,11 @@ impl Connectivity {
             Self::Reconnecting => Some(SendNotice {
                 banner_title: "Connecting to Keybase…",
                 banner_detail: "New messages will show up once the connection is back.",
-                composer_hint: None,
                 send_tooltip: None,
             }),
             Self::Offline => Some(SendNotice {
                 banner_title: "You're offline",
                 banner_detail: "Messages can't be sent until Keybase reconnects.",
-                composer_hint: Some("Offline · messages can't be sent until Keybase reconnects"),
                 send_tooltip: Some("Offline · sending fails until Keybase reconnects"),
             }),
         }
@@ -68,17 +64,15 @@ mod tests {
     #[test]
     fn offline_copy_is_consistent_and_never_promises_a_queue() {
         let notice = Connectivity::Offline.send_notice().expect("offline notice");
-        let hint = notice.composer_hint.expect("offline composer hint");
         let tooltip = notice.send_tooltip.expect("offline send tooltip");
         // Sends while disconnected fail (and keep Retry); none of the copy may
         // suggest they are held and delivered later.
-        for line in [notice.banner_detail, hint, tooltip] {
+        for line in [notice.banner_detail, tooltip] {
             let lower = line.to_lowercase();
             assert!(!lower.contains("will send"), "{line}");
             assert!(!lower.contains("queued"), "{line}");
             assert!(lower.contains("reconnect"), "{line}");
         }
-        assert!(hint.starts_with("Offline"));
         assert!(tooltip.starts_with("Offline"));
     }
 
@@ -87,7 +81,6 @@ mod tests {
         let notice = Connectivity::Reconnecting
             .send_notice()
             .expect("connecting notice");
-        assert_eq!(notice.composer_hint, None);
         assert_eq!(notice.send_tooltip, None);
     }
 }

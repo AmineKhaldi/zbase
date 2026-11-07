@@ -342,8 +342,7 @@ impl ThreadPane {
                             rgb(crate::views::main_bg()).into()
                         },
                         cx,
-                    ))
-                    .child(crate::views::composer::composer_hint(&reply_state)),
+                    )),
             )
             .into_any_element()
     }
