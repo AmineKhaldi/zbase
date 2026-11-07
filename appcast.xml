@@ -1,0 +1,17 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>zBase updates</title>
+    <link>https://github.com/cameroncooper/zbase/releases</link>
+    <description>Verified stable macOS updates</description>
+    <item>
+      <title>zBase 1.0.16</title>
+      <sparkle:version>1.0.16</sparkle:version>
+      <sparkle:shortVersionString>1.0.16</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <link>https://github.com/cameroncooper/zbase/releases/tag/v1.0.16</link>
+      <sparkle:releaseNotesLink>https://raw.githubusercontent.com/cameroncooper/zbase/updates/notes/v1.0.16.txt</sparkle:releaseNotesLink>
+      <enclosure url="https://github.com/cameroncooper/zbase/releases/download/v1.0.16/zBase-1.0.16-macos-arm64.dmg" length="34197791" type="application/octet-stream" sparkle:edSignature="LorPyPYVwgpZ09w+bZ2K/F77CqFsGVPt8kEC4pM6tvjCCvsBDClFCru2GrqjOte4Wg4hZU/OyWSpiKhuTDOTBw==" />
+    </item>
+  </channel>
+</rss>
