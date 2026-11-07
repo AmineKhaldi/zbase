@@ -3080,7 +3080,7 @@ mod tests {
                 capabilities: Default::default(),
             },
         );
-        let mut summary = channel_summary("bot-group", "alexandermey,butterbot,cameroncooper");
+        let mut summary = channel_summary("bot-group", "charlieexample,helperbot,aliceexample");
         summary.kind = ConversationKind::GroupDirectMessage;
         reduce_backend_event(
             &mut state,
@@ -3088,7 +3088,7 @@ mod tests {
                 source: BootstrapSource::Cache,
                 account_id,
                 payload: BootstrapPayload {
-                    account_display_name: Some("CameronCooper".into()),
+                    account_display_name: Some("AliceExample".into()),
                     direct_messages: vec![summary.clone()],
                     ..BootstrapPayload::default()
                 },
@@ -3096,7 +3096,7 @@ mod tests {
         );
         assert_eq!(
             state.workspace.direct_messages[0].title,
-            "alexandermey, butterbot"
+            "charlieexample, helperbot"
         );
         let workspace = WorkspaceId::new("ws");
         // A notification containing all members must not reintroduce self.
@@ -3104,20 +3104,20 @@ mod tests {
             &mut state,
             BackendEvent::WorkspaceConversationsExtended {
                 workspace_id: workspace,
-                channels: vec![channel_summary("team", "cameroncooper")],
+                channels: vec![channel_summary("team", "aliceexample")],
                 direct_messages: vec![summary],
                 conversation_bindings: vec![],
             },
         );
         assert_eq!(
             state.workspace.direct_messages[0].title,
-            "alexandermey, butterbot"
+            "charlieexample, helperbot"
         );
-        assert_eq!(state.workspace.channels[0].title, "cameroncooper");
+        assert_eq!(state.workspace.channels[0].title, "aliceexample");
         let row = state.sidebar.sections.iter().flat_map(|section| &section.rows)
             .find(|row| matches!(&row.route, Some(Route::DirectMessage { dm_id, .. }) if dm_id.0 == "bot-group"))
             .unwrap();
-        assert_eq!(row.label, "alexandermey, butterbot");
+        assert_eq!(row.label, "charlieexample, helperbot");
     }
 
     #[test]
@@ -4005,13 +4005,13 @@ mod tests {
             channel_summary("same", "stale"),
             channel_summary("same", "stale"),
         ];
-        state.workspace.direct_messages = vec![dm_summary("internal", "butterbot")];
+        state.workspace.direct_messages = vec![dm_summary("internal", "helperbot")];
         let event = BackendEvent::WorkspaceConversationsExtended {
             workspace_id: WorkspaceId::new("ws"),
             channels: vec![],
             direct_messages: vec![
-                dm_summary("same", "butterbot"),
-                dm_summary("other", "butterbot"),
+                dm_summary("same", "helperbot"),
+                dm_summary("other", "helperbot"),
             ],
             conversation_bindings: vec![],
         };
@@ -4029,7 +4029,7 @@ mod tests {
             direct_messages, ..
         } = &mut stale
         {
-            direct_messages.push(dm_summary("internal", "butterbot"));
+            direct_messages.push(dm_summary("internal", "helperbot"));
         }
         reduce_backend_event(&mut state, stale);
         assert!(state.workspace.channels.is_empty());
@@ -4668,7 +4668,7 @@ mod tests {
     #[test]
     fn follow_user_ui_action_updates_follow_status_optimistically() {
         let mut state = UiState::default();
-        let user_id = UserId::new("cmmarslender");
+        let user_id = UserId::new("peer_user");
         state.backend.profile_panel.profiles.insert(
             user_id.clone(),
             profile_with_follow_status(&user_id.0, false),
@@ -4704,7 +4704,7 @@ mod tests {
     #[test]
     fn follow_status_change_failed_reverts_optimistic_follow_toggle() {
         let mut state = UiState::default();
-        let user_id = UserId::new("cmmarslender");
+        let user_id = UserId::new("peer_user");
         state.backend.profile_panel.profiles.insert(
             user_id.clone(),
             profile_with_follow_status(&user_id.0, false),
@@ -4742,7 +4742,7 @@ mod tests {
     #[test]
     fn follow_status_changed_updates_lowercase_profile_key_without_forced_refresh() {
         let mut state = UiState::default();
-        let lower = UserId::new("cmmarslender");
+        let lower = UserId::new("peer_user");
         state
             .backend
             .profile_panel
@@ -4752,7 +4752,7 @@ mod tests {
         let output = reduce_backend_event(
             &mut state,
             BackendEvent::FollowStatusChanged {
-                user_id: UserId::new("CMMARSLENDER"),
+                user_id: UserId::new("PEER_USER"),
                 you_are_following: true,
             },
         );
@@ -4774,13 +4774,13 @@ mod tests {
         state.workspace.active_workspace_id = Some(WorkspaceId::new("ws_primary"));
         state.workspace.direct_messages.push(dm_summary(
             "kb_conv:dm-existing",
-            "cameroncooper,cmmarslender",
+            "aliceexample,peer_user",
         ));
 
         let output = reduce_ui_action(
             &mut state,
             UiAction::OpenOrCreateDirectMessage {
-                user_id: UserId::new("cmmarslender"),
+                user_id: UserId::new("peer_user"),
             },
         );
 
@@ -4807,7 +4807,7 @@ mod tests {
         let output = reduce_ui_action(
             &mut state,
             UiAction::OpenOrCreateDirectMessage {
-                user_id: UserId::new("cmmarslender"),
+                user_id: UserId::new("peer_user"),
             },
         );
 
@@ -4818,7 +4818,7 @@ mod tests {
                 participants,
                 kind: ConversationKind::DirectMessage,
                 ..
-            }) if participants.len() == 1 && participants[0].0 == "cmmarslender"
+            }) if participants.len() == 1 && participants[0].0 == "peer_user"
         ));
     }
 

@@ -1701,8 +1701,8 @@ mod highlight_color_tests {
     fn inline_highlights_are_readable_and_self_mentions_are_distinct_in_both_themes() {
         for theme in [ThemeVariant::Light, ThemeVariant::Dark] {
             with_theme(theme, || {
-                let me = UserId::new("CameronCooper");
-                let mentioned_me = UserId::new("cameroncooper");
+                let me = UserId::new("AliceExample");
+                let mentioned_me = UserId::new("aliceexample");
                 let other = UserId::new("someone_else");
                 let following = HashMap::from([(mentioned_me.clone(), Affinity::Positive)]);
                 let own = mention_colors_for_user(&following, Some(&me), &mentioned_me);

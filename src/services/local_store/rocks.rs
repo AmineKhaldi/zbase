@@ -2118,7 +2118,7 @@ mod tests {
                 .persist_conversation(
                     &ConversationSummary {
                         id: id.clone(),
-                        title: "butterbot".into(),
+                        title: "helperbot".into(),
                         kind: ConversationKind::DirectMessage,
                         topic: String::new(),
                         group: None,

@@ -153,26 +153,26 @@ mod tests {
     fn dm_peer_titles_exclude_self_by_username_and_preserve_self_chats() {
         assert_eq!(
             dm_peer_title(
-                "alexandermey,butterbot,cameroncooper",
-                Some(" CameronCooper ")
+                "charlieexample,helperbot,aliceexample",
+                Some(" AliceExample ")
             ),
-            "alexandermey, butterbot"
+            "charlieexample, helperbot"
         );
         assert_eq!(
-            dm_peer_title("cameroncooper,alexandermey", Some("cameroncooper")),
-            "alexandermey"
+            dm_peer_title("aliceexample,charlieexample", Some("aliceexample")),
+            "charlieexample"
         );
         assert_eq!(
-            dm_peer_title("cameroncooper", Some("cameroncooper")),
-            "cameroncooper"
+            dm_peer_title("aliceexample", Some("aliceexample")),
+            "aliceexample"
         );
         assert_eq!(
-            dm_peer_title("alexandermey,butterbot", Some("cameroncooper")),
-            "alexandermey, butterbot"
+            dm_peer_title("charlieexample,helperbot", Some("aliceexample")),
+            "charlieexample, helperbot"
         );
         assert_eq!(
-            dm_peer_title("alexandermey,butterbot,cameroncooper", None),
-            "alexandermey, butterbot, cameroncooper"
+            dm_peer_title("charlieexample,helperbot,aliceexample", None),
+            "charlieexample, helperbot, aliceexample"
         );
     }
 }

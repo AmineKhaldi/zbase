@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn channels_dms_and_simple_teams_share_one_activity_order() {
         let normal = channel("channel", "chia_network.ent_wallet", 20);
-        let mut simple = channel("simple", "annar", 10);
+        let mut simple = channel("simple", "example_team", 10);
         simple.title = "general".into();
         simple.group.as_mut().unwrap().team_type = ConversationTeamType::Simple;
         let mut dm = channel("dm", "unused", 30);
@@ -322,7 +322,7 @@ mod tests {
             rows.iter()
                 .map(|recent| recent.row.label.as_str())
                 .collect::<Vec<_>>(),
-            ["alice", "alerts-prod-mainnet", "annar"]
+            ["alice", "alerts-prod-mainnet", "example_team"]
         );
         assert!(!rows[0].is_channel);
         assert!(rows[1].is_channel);

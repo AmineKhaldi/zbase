@@ -194,6 +194,8 @@ GitHub Actions runs workflow/script linting, Clippy, Rust tests, and macOS packa
 
 Media dependencies are cached as soon as their build succeeds. Rust build outputs are saved even if later validation fails, with compiler-specific cache keys. The separate Release workflow runs tests in release mode and builds the optimized app using the same profile, then signs and notarizes it with release credentials.
 
+Test and demo data must use fictional identities and conversations. Use names such as `Alice Example`, synthetic usernames, and `example.com` addresses. When reproducing a bug, preserve the relevant case, punctuation, Unicode, or membership structure rather than copying real names, handles, or private conversation content.
+
 Unit and packaging tests do not require Keybase or a logged-in account. Tests requiring a live service remain opt-in. Native interactive UI checks are still performed separately; CI does not verify on-screen rendering or live account synchronization.
 
 ## Development tools
