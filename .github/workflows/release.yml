@@ -55,6 +55,14 @@ jobs:
         run: |
           : "${SPARKLE_PUBLIC_KEY:?Set the SPARKLE_PUBLIC_KEY Actions variable}"
           : "${SPARKLE_PRIVATE_KEY:?Set the SPARKLE_PRIVATE_KEY Actions secret}"
+      - name: Import and verify signing credentials
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: scripts/macos/import_signing_identity.sh
       - name: Install build tools
         id: toolchain
         run: |
@@ -114,12 +122,6 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ steps.rust-cache.outputs.cache-primary-key }}
-      - name: Import signing credentials
-        env:
-          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
-          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
-        run: scripts/macos/import_signing_identity.sh
       - name: Sign, notarize, and validate app and DMG
         env:
           MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
