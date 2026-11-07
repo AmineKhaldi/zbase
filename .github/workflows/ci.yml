@@ -49,7 +49,6 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
       DEPS_DIR: ${{ github.workspace }}/dist/macos-deps
       SPARKLE_DIR: ${{ github.workspace }}/dist/sparkle
-      DYLD_FRAMEWORK_PATH: ${{ github.workspace }}/dist/sparkle
     steps:
       - uses: actions/checkout@v7
         with:
@@ -100,6 +99,8 @@ jobs:
         id: clippy
         run: cargo clippy --locked --all-targets --features gpui/runtime_shaders,macos-updater --timings
       - name: Rust tests
+        env:
+          DYLD_FRAMEWORK_PATH: ${{ github.workspace }}/dist/sparkle
         run: cargo test --locked --all-targets --features gpui/runtime_shaders,macos-updater --timings
       - name: Packaging integration tests
         run: python3 -m unittest discover -s scripts/macos -p 'test_*.py' -v
