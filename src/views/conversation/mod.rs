@@ -61,7 +61,6 @@ impl ConversationView {
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         let reduced_motion = settings.reduced_motion;
-        // Overlay typing activity without changing the timeline's viewport or scroll position.
         // Who is typing is unknown while disconnected; don't show stale news.
         let typing_label = timeline
             .typing_text
@@ -153,16 +152,13 @@ impl ConversationView {
                         },
                         |container| container.child(crate::views::scroll_edge_shadow()),
                     )
-                    .when_some(typing_label, |container, label| {
-                        container.child(typing_indicator(label.clone(), reduced_motion))
-                    })
                     .when(show_jump, |container| {
                         container.child(
                             div()
                                 .absolute()
                                 .left_0()
                                 .right_0()
-                                .bottom(px(if typing_label.is_some() { 44. } else { 8. }))
+                                .bottom(px(8.))
                                 .flex()
                                 .justify_center()
                                 .child(jump_pill),
@@ -170,7 +166,13 @@ impl ConversationView {
                     }),
             )
             .when(conversation.can_post, |container| {
-                container.child(ComposerPanel.render(composer, composer_input, composer_state, cx))
+                container.child(ComposerPanel.render(
+                    composer,
+                    composer_input,
+                    composer_state,
+                    typing_label.map(|label| typing_indicator(label.clone(), reduced_motion)),
+                    cx,
+                ))
             })
             .when(!conversation.can_post, |container| {
                 container.child(Self::render_join_bar(conversation, cx))
@@ -747,8 +749,8 @@ impl ConversationHeader {
     }
 }
 
-/// A floating pill above the composer. Plain, noninteractive divs leave clicks
-/// and scrolling available to the messages underneath; no timeline space is reserved.
+/// "Lena Fischer is typing…" with three pulsing dots (static when reduced
+/// motion is on), in the row the composer reserves above its field.
 fn typing_indicator(label: String, reduced_motion: bool) -> AnyElement {
     let dots = (0..3).map(|index| {
         let dot = div().size(px(4.)).rounded_full().bg(rgb(text_secondary()));
@@ -764,33 +766,18 @@ fn typing_indicator(label: String, reduced_motion: bool) -> AnyElement {
         }
     });
     div()
-        .absolute()
-        .left(px(16.))
-        .right(px(16.))
-        .bottom(px(8.))
+        .min_w(px(0.))
         .flex()
-        .justify_end()
+        .items_center()
+        .gap_2()
+        .child(div().flex_shrink_0().flex().gap(px(3.)).children(dots))
         .child(
             div()
                 .min_w(px(0.))
-                .h(px(28.))
-                .px_3()
-                .rounded_full()
-                .bg(glass_surface_dark().opacity(0.65))
-                .border_1()
-                .border_color(shell_border())
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(div().flex_shrink_0().flex().gap(px(3.)).children(dots))
-                .child(
-                    div()
-                        .min_w(px(0.))
-                        .text_xs()
-                        .text_color(rgb(text_secondary()))
-                        .truncate()
-                        .child(label),
-                ),
+                .text_xs()
+                .text_color(rgb(text_secondary()))
+                .truncate()
+                .child(label),
         )
         .into_any_element()
 }

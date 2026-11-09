@@ -276,7 +276,20 @@ fn format_tool(
 }
 
 /// Space between the composer field and the bottom of the window or pane.
-pub(crate) const COMPOSER_BOTTOM_INSET_PX: f32 = 12.;
+pub(crate) const COMPOSER_BOTTOM_INSET_PX: f32 = 16.;
+
+/// The row above the conversation composer that says who is typing.
+const TYPING_SLOT_HEIGHT_PX: f32 = 22.;
+
+/// The composer field's fill: the window's white in light mode, a raised
+/// field in dark mode where the panel is already dark.
+pub(crate) fn composer_fill() -> Hsla {
+    if is_dark_theme() {
+        rgb(field_bg()).into()
+    } else {
+        rgb(crate::views::main_bg()).into()
+    }
+}
 
 fn at_icon_sized(color: u32) -> AnyElement {
     icon_asset("assets/icons/at-sign.svg", 16., color)
@@ -296,6 +309,7 @@ impl ComposerPanel {
         composer: &ComposerModel,
         editor: &Entity<TextField>,
         state: ComposerFieldState,
+        typing: Option<AnyElement>,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         let mode_banner = match &composer.mode {
@@ -326,17 +340,27 @@ impl ComposerPanel {
 
         div()
             .px_4()
-            .pt_1()
             .pb(px(COMPOSER_BOTTOM_INSET_PX))
             .flex_shrink_0()
             .flex()
             .flex_col()
+            // Always reserved, so the timeline never shifts when typing starts or stops.
+            .child(
+                div()
+                    .h(px(TYPING_SLOT_HEIGHT_PX))
+                    .mt(px(2.))
+                    // Lines the dots up with the field's text.
+                    .pl(px(13.))
+                    .flex()
+                    .items_center()
+                    .children(typing),
+            )
             .when_some(mode_banner, |div, banner| div.mb_2().child(banner))
             .child(composer_field(
                 ComposerTarget::Conversation,
                 editor,
                 state,
-                rgb(field_bg()).into(),
+                composer_fill(),
                 cx,
             ))
             .into_any_element()
