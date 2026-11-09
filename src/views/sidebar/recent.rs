@@ -123,13 +123,13 @@ fn render_row<H: SidebarHost>(
     let emphasized = activity.is_unread() || selection.is_full();
     match look {
         RowLook::Previews { compact_time } => {
-            // A channel is a `#` tile badged with its team; a simple team keeps its mark.
+            // A channel shows its team's logo; a simple team keeps its mark.
             let (lead, circular) = match &row.team {
                 Some(team) => (
-                    Avatar::render_channel(
-                        Some((&team.display_name, team_asset(avatars, &team.id))),
+                    Avatar::render_team(
+                        &team.display_name,
+                        team_asset(avatars, &team.id),
                         PREVIEW_AVATAR_PX,
-                        colors.surface,
                     ),
                     false,
                 ),

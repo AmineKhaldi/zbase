@@ -175,48 +175,6 @@ impl Avatar {
             .into_any_element()
     }
 
-    /// A channel: a neutral tile with `#`, so channels of one team differ from
-    /// its team mark. `team` adds the team's square as a badge where a DM's
-    /// presence dot sits, ringed in `surface`; omit it under the team's header.
-    pub fn render_channel(
-        team: Option<(&str, Option<&str>)>,
-        size: f32,
-        surface: Hsla,
-    ) -> AnyElement {
-        let tile = div()
-            .flex_shrink_0()
-            .w(px(size))
-            .h(px(size))
-            .rounded(px(square_radius(size)))
-            .bg(rgb(if is_dark_theme() { 0x2f2f2f } else { 0xe6e8ec }))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(crate::views::hash_icon(crate::views::text_secondary()));
-        let Some((name, asset)) = team else {
-            return tile.into_any_element();
-        };
-        let badge = (size * 0.44).round();
-        let ring = 2.;
-        div()
-            .relative()
-            .flex_shrink_0()
-            .w(px(size))
-            .h(px(size))
-            .child(tile)
-            .child(
-                div()
-                    .absolute()
-                    .right(px(-ring - 1.))
-                    .bottom(px(-ring - 1.))
-                    .p(px(ring))
-                    .rounded(px(square_radius(badge) + ring))
-                    .bg(surface)
-                    .child(Self::render_team(name, asset, badge)),
-            )
-            .into_any_element()
-    }
-
     /// Draws a thin light ring around a lead (avatar or mark) on a selected
     /// row, so colored marks don't sit directly on the selection fill.
     pub fn with_selection_ring(lead: AnyElement, size: f32, circular: bool) -> AnyElement {

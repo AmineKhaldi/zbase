@@ -1130,24 +1130,29 @@ impl Sidebar {
         let channel_under_team = row.team.is_some() && matches!(row.route, Route::Channel { .. });
         match context.look {
             RowLook::Previews { compact_time } => {
-                // Under its team's header a channel needs no team badge.
-                let (lead, circular) = if channel_under_team {
-                    (
-                        Avatar::render_channel(None, PREVIEW_AVATAR_PX, colors.surface),
-                        false,
-                    )
-                } else {
-                    (
-                        Self::leading_element(
-                            row,
-                            &route_label,
-                            context.avatars,
-                            &colors,
-                            PREVIEW_AVATAR_PX,
-                        ),
-                        matches!(row.route, Route::DirectMessage { .. }),
-                    )
-                };
+                // A channel shows its team's logo rather than a `#`.
+                let (lead, circular) =
+                    if let Some(team) = row.team.as_ref().filter(|_| channel_under_team) {
+                        (
+                            Avatar::render_team(
+                                &team.display_name,
+                                team_asset(context.avatars, &team.id),
+                                PREVIEW_AVATAR_PX,
+                            ),
+                            false,
+                        )
+                    } else {
+                        (
+                            Self::leading_element(
+                                row,
+                                &route_label,
+                                context.avatars,
+                                &colors,
+                                PREVIEW_AVATAR_PX,
+                            ),
+                            matches!(row.route, Route::DirectMessage { .. }),
+                        )
+                    };
                 PreviewRow {
                     row,
                     id: row_id,
