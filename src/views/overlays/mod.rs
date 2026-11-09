@@ -22,6 +22,7 @@ use crate::{
         search::{MessageHit, SWITCHER_HIT, SearchResultContext, snippet_text},
         section_label, shell_border, shell_border_strong, subtle_surface, text_primary,
         text_secondary, tint,
+        tooltip::shortcut_label,
         truncated_line::{Segment, TruncatedLine},
     },
 };
@@ -690,7 +691,7 @@ impl OverlayHost {
                 .flex()
                 .items_center()
                 .gap(px(4.))
-                .children(keys.into_iter().map(keycap))
+                .children(keys.into_iter().map(|key| keycap(shortcut_label(key))))
                 .child(div().pl(px(2.)).child(label))
         };
 
@@ -780,7 +781,7 @@ impl OverlayHost {
                         quick_switcher.results.get(*index).map(|result| {
                             let shortcut_hint = (show_recent_shortcuts
                                 && display_index < QUICK_SWITCHER_RECENT_SHORTCUT_LIMIT)
-                                .then(|| format!("⌘{}", display_index + 1));
+                                .then(|| shortcut_label(&format!("⌘{}", display_index + 1)));
                             let selected = quick_switcher.selected_index == *index;
                             match hits.get(index) {
                                 Some(context) => Self::quick_switcher_message_row(
@@ -1132,7 +1133,7 @@ impl OverlayHost {
                 div()
                     .text_xs()
                     .text_color(rgb(text_secondary()))
-                    .child(shortcut),
+                    .child(shortcut_label(shortcut)),
             )
             .into_any_element()
     }

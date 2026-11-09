@@ -8,7 +8,33 @@ use crate::views::input::{
     SelectEnd, SelectHome, SelectLeft, SelectRight, SelectToBeginningOfLine, SelectToEndOfLine,
     SelectToNextWordEnd, SelectToPreviousWordStart, SelectUp, ShowCharacterPalette, Undo, Up,
 };
-use gpui::{Application, KeyBinding, Menu, MenuItem, SystemMenuType};
+use gpui::{Action, Application, KeyBinding, Menu, MenuItem, SystemMenuType};
+
+/// Key bindings are written with macOS keys. Elsewhere Cmd becomes Ctrl, text
+/// editing follows the platform (Ctrl moves by word; Home and End move by
+/// line), and the Emacs-style Ctrl bindings are left out because Ctrl is the
+/// command key there.
+fn binding<A: Action>(keys: &str, action: A, context: Option<&str>) -> Option<KeyBinding> {
+    if cfg!(target_os = "macos") {
+        return Some(KeyBinding::new(keys, action, context));
+    }
+    let keys = match keys {
+        "cmd-left" | "cmd-right" | "cmd-shift-left" | "cmd-shift-right" | "cmd-backspace"
+        | "cmd-delete" | "alt-b" | "alt-f" => return None,
+        "alt-backspace" | "alt-left" | "alt-right" | "alt-shift-left" | "alt-shift-right" => {
+            keys.replacen("alt-", "ctrl-", 1)
+        }
+        _ if keys.split('-').any(|part| part == "ctrl") => return None,
+        _ => keys.replace("cmd-", "ctrl-"),
+    };
+    Some(KeyBinding::new(&keys, action, context))
+}
+
+fn platform_bindings<const N: usize>(
+    bindings: [Option<KeyBinding>; N],
+) -> impl IntoIterator<Item = KeyBinding> {
+    bindings.into_iter().flatten()
+}
 
 pub fn run() {
     let application = Application::new().with_assets(KbuiAssets {});
@@ -32,349 +58,349 @@ pub fn run() {
             .detach();
         }
 
-        cx.bind_keys([
-            KeyBinding::new("cmd-q", commands::QuitApp, Some("Workspace")),
-            KeyBinding::new("cmd-w", commands::CloseWindow, Some("SettingsWindow")),
-            KeyBinding::new("cmd-q", commands::QuitApp, Some("SettingsWindow")),
-            KeyBinding::new("cmd-w", commands::CloseWindow, Some("Workspace")),
-            KeyBinding::new("cmd-[", commands::NavigateBack, Some("Workspace")),
-            KeyBinding::new("cmd-]", commands::NavigateForward, Some("Workspace")),
-            KeyBinding::new("cmd-shift-a", commands::ShowActivity, Some("Workspace")),
-            KeyBinding::new("cmd-,", commands::OpenPreferences, Some("Workspace")),
-            KeyBinding::new(
+        cx.bind_keys(platform_bindings([
+            binding("cmd-q", commands::QuitApp, Some("Workspace")),
+            binding("cmd-w", commands::CloseWindow, Some("SettingsWindow")),
+            binding("cmd-q", commands::QuitApp, Some("SettingsWindow")),
+            binding("cmd-w", commands::CloseWindow, Some("Workspace")),
+            binding("cmd-[", commands::NavigateBack, Some("Workspace")),
+            binding("cmd-]", commands::NavigateForward, Some("Workspace")),
+            binding("cmd-shift-a", commands::ShowActivity, Some("Workspace")),
+            binding("cmd-,", commands::OpenPreferences, Some("Workspace")),
+            binding(
                 "alt-cmd-1",
                 commands::SortSidebarByRecent,
                 Some("Workspace"),
             ),
-            KeyBinding::new("alt-cmd-2", commands::GroupSidebarByTeam, Some("Workspace")),
-            KeyBinding::new(
+            binding("alt-cmd-2", commands::GroupSidebarByTeam, Some("Workspace")),
+            binding(
                 "cmd-shift-\\",
                 commands::ToggleThreadPane,
                 Some("Workspace"),
             ),
-            KeyBinding::new(
+            binding(
                 "cmd-shift-m",
                 commands::ToggleMembersPane,
                 Some("Workspace"),
             ),
-            KeyBinding::new(
+            binding(
                 "cmd-shift-d",
                 commands::ToggleDetailsPane,
                 Some("Workspace"),
             ),
-            KeyBinding::new("cmd-shift-f", commands::OpenFilesPane, Some("Workspace")),
-            KeyBinding::new(
+            binding("cmd-shift-f", commands::OpenFilesPane, Some("Workspace")),
+            binding(
                 "cmd-shift-s",
                 commands::ToggleSplashScreen,
                 Some("Workspace"),
             ),
-            KeyBinding::new("cmd-1", commands::ShowHome, Some("Workspace")),
-            KeyBinding::new(
+            binding("cmd-1", commands::ShowHome, Some("Workspace")),
+            binding(
                 "cmd-2",
                 commands::OpenQuickSwitcherRecent2,
                 Some("Workspace"),
             ),
-            KeyBinding::new(
+            binding(
                 "cmd-3",
                 commands::OpenQuickSwitcherRecent3,
                 Some("Workspace"),
             ),
-            KeyBinding::new(
+            binding(
                 "cmd-4",
                 commands::OpenQuickSwitcherRecent4,
                 Some("Workspace"),
             ),
-            KeyBinding::new(
+            binding(
                 "cmd-5",
                 commands::OpenQuickSwitcherRecent5,
                 Some("Workspace"),
             ),
-            KeyBinding::new("cmd-j", commands::OpenSearch, Some("Workspace")),
-            KeyBinding::new("cmd-f", commands::ToggleFindInChat, Some("Workspace")),
-            KeyBinding::new("enter", commands::ConfirmPrimary, Some("Workspace")),
-            KeyBinding::new(
+            binding("cmd-j", commands::OpenSearch, Some("Workspace")),
+            binding("cmd-f", commands::ToggleFindInChat, Some("Workspace")),
+            binding("enter", commands::ConfirmPrimary, Some("Workspace")),
+            binding(
                 "tab",
                 commands::AcceptAutocomplete,
                 Some("MultilineTextField"),
             ),
-            KeyBinding::new("up", commands::SelectPrevious, Some("Workspace")),
-            KeyBinding::new("down", commands::SelectNext, Some("Workspace")),
-            KeyBinding::new("tab", commands::SelectNext, Some("QuickSwitcherTextField")),
-            KeyBinding::new(
+            binding("up", commands::SelectPrevious, Some("Workspace")),
+            binding("down", commands::SelectNext, Some("Workspace")),
+            binding("tab", commands::SelectNext, Some("QuickSwitcherTextField")),
+            binding(
                 "shift-tab",
                 commands::SelectPrevious,
                 Some("QuickSwitcherTextField"),
             ),
-            KeyBinding::new("backspace", Backspace, Some("QuickSwitcherTextField")),
-            KeyBinding::new(
+            binding("backspace", Backspace, Some("QuickSwitcherTextField")),
+            binding(
                 "alt-backspace",
                 DeleteWordBackward,
                 Some("QuickSwitcherTextField"),
             ),
-            KeyBinding::new(
+            binding(
                 "cmd-backspace",
                 DeleteToBeginningOfLine,
                 Some("QuickSwitcherTextField"),
             ),
-            KeyBinding::new(
+            binding(
                 "cmd-delete",
                 DeleteToEndOfLine,
                 Some("QuickSwitcherTextField"),
             ),
-            KeyBinding::new("ctrl-k", DeleteToEndOfLine, Some("QuickSwitcherTextField")),
-            KeyBinding::new("delete", Delete, Some("QuickSwitcherTextField")),
-            KeyBinding::new("left", Left, Some("QuickSwitcherTextField")),
-            KeyBinding::new("right", Right, Some("QuickSwitcherTextField")),
-            KeyBinding::new("ctrl-h", Backspace, Some("QuickSwitcherTextField")),
-            KeyBinding::new("ctrl-b", Left, Some("QuickSwitcherTextField")),
-            KeyBinding::new("ctrl-f", Right, Some("QuickSwitcherTextField")),
-            KeyBinding::new(
+            binding("ctrl-k", DeleteToEndOfLine, Some("QuickSwitcherTextField")),
+            binding("delete", Delete, Some("QuickSwitcherTextField")),
+            binding("left", Left, Some("QuickSwitcherTextField")),
+            binding("right", Right, Some("QuickSwitcherTextField")),
+            binding("ctrl-h", Backspace, Some("QuickSwitcherTextField")),
+            binding("ctrl-b", Left, Some("QuickSwitcherTextField")),
+            binding("ctrl-f", Right, Some("QuickSwitcherTextField")),
+            binding(
                 "alt-b",
                 MoveToPreviousWordStart,
                 Some("QuickSwitcherTextField"),
             ),
-            KeyBinding::new("alt-f", MoveToNextWordEnd, Some("QuickSwitcherTextField")),
-            KeyBinding::new(
+            binding("alt-f", MoveToNextWordEnd, Some("QuickSwitcherTextField")),
+            binding(
                 "alt-left",
                 MoveToPreviousWordStart,
                 Some("QuickSwitcherTextField"),
             ),
-            KeyBinding::new(
+            binding(
                 "alt-right",
                 MoveToNextWordEnd,
                 Some("QuickSwitcherTextField"),
             ),
-            KeyBinding::new(
+            binding(
                 "cmd-left",
                 MoveToBeginningOfLine,
                 Some("QuickSwitcherTextField"),
             ),
-            KeyBinding::new("cmd-right", MoveToEndOfLine, Some("QuickSwitcherTextField")),
-            KeyBinding::new("shift-left", SelectLeft, Some("QuickSwitcherTextField")),
-            KeyBinding::new("shift-right", SelectRight, Some("QuickSwitcherTextField")),
-            KeyBinding::new(
+            binding("cmd-right", MoveToEndOfLine, Some("QuickSwitcherTextField")),
+            binding("shift-left", SelectLeft, Some("QuickSwitcherTextField")),
+            binding("shift-right", SelectRight, Some("QuickSwitcherTextField")),
+            binding(
                 "alt-shift-left",
                 SelectToPreviousWordStart,
                 Some("QuickSwitcherTextField"),
             ),
-            KeyBinding::new(
+            binding(
                 "alt-shift-right",
                 SelectToNextWordEnd,
                 Some("QuickSwitcherTextField"),
             ),
-            KeyBinding::new(
+            binding(
                 "cmd-shift-left",
                 SelectToBeginningOfLine,
                 Some("QuickSwitcherTextField"),
             ),
-            KeyBinding::new(
+            binding(
                 "cmd-shift-right",
                 SelectToEndOfLine,
                 Some("QuickSwitcherTextField"),
             ),
-            KeyBinding::new("cmd-a", SelectAll, Some("QuickSwitcherTextField")),
-            KeyBinding::new("cmd-v", Paste, Some("QuickSwitcherTextField")),
-            KeyBinding::new("cmd-c", Copy, Some("QuickSwitcherTextField")),
-            KeyBinding::new("cmd-x", Cut, Some("QuickSwitcherTextField")),
-            KeyBinding::new("cmd-z", Undo, Some("QuickSwitcherTextField")),
-            KeyBinding::new("ctrl-/", Undo, Some("QuickSwitcherTextField")),
-            KeyBinding::new("cmd-shift-z", Redo, Some("QuickSwitcherTextField")),
-            KeyBinding::new("home", Home, Some("QuickSwitcherTextField")),
-            KeyBinding::new("end", End, Some("QuickSwitcherTextField")),
-            KeyBinding::new("shift-home", SelectHome, Some("QuickSwitcherTextField")),
-            KeyBinding::new("shift-end", SelectEnd, Some("QuickSwitcherTextField")),
-            KeyBinding::new(
+            binding("cmd-a", SelectAll, Some("QuickSwitcherTextField")),
+            binding("cmd-v", Paste, Some("QuickSwitcherTextField")),
+            binding("cmd-c", Copy, Some("QuickSwitcherTextField")),
+            binding("cmd-x", Cut, Some("QuickSwitcherTextField")),
+            binding("cmd-z", Undo, Some("QuickSwitcherTextField")),
+            binding("ctrl-/", Undo, Some("QuickSwitcherTextField")),
+            binding("cmd-shift-z", Redo, Some("QuickSwitcherTextField")),
+            binding("home", Home, Some("QuickSwitcherTextField")),
+            binding("end", End, Some("QuickSwitcherTextField")),
+            binding("shift-home", SelectHome, Some("QuickSwitcherTextField")),
+            binding("shift-end", SelectEnd, Some("QuickSwitcherTextField")),
+            binding(
                 "ctrl-a",
                 MoveToBeginningOfLine,
                 Some("QuickSwitcherTextField"),
             ),
-            KeyBinding::new("ctrl-e", MoveToEndOfLine, Some("QuickSwitcherTextField")),
-            KeyBinding::new("ctrl-d", Delete, Some("QuickSwitcherTextField")),
-            KeyBinding::new(
+            binding("ctrl-e", MoveToEndOfLine, Some("QuickSwitcherTextField")),
+            binding("ctrl-d", Delete, Some("QuickSwitcherTextField")),
+            binding(
                 "ctrl-cmd-space",
                 ShowCharacterPalette,
                 Some("QuickSwitcherTextField"),
             ),
-            KeyBinding::new("alt-up", commands::SelectSidebarPrevious, Some("Workspace")),
-            KeyBinding::new("alt-down", commands::SelectSidebarNext, Some("Workspace")),
-            KeyBinding::new(
+            binding("alt-up", commands::SelectSidebarPrevious, Some("Workspace")),
+            binding("alt-down", commands::SelectSidebarNext, Some("Workspace")),
+            binding(
                 "alt-enter",
                 commands::ActivateSidebarSelection,
                 Some("Workspace"),
             ),
-            KeyBinding::new("cmd-n", commands::OpenNewChat, Some("Workspace")),
-            KeyBinding::new("cmd-enter", commands::StartNewChat, Some("Workspace")),
-            KeyBinding::new("cmd-b", commands::FormatBold, Some("MultilineTextField")),
-            KeyBinding::new("cmd-i", commands::FormatItalic, Some("MultilineTextField")),
-            KeyBinding::new("cmd-e", commands::FormatCode, Some("MultilineTextField")),
-            KeyBinding::new("cmd-k", commands::ToggleQuickSwitcher, Some("Workspace")),
-            KeyBinding::new(
+            binding("cmd-n", commands::OpenNewChat, Some("Workspace")),
+            binding("cmd-enter", commands::StartNewChat, Some("Workspace")),
+            binding("cmd-b", commands::FormatBold, Some("MultilineTextField")),
+            binding("cmd-i", commands::FormatItalic, Some("MultilineTextField")),
+            binding("cmd-e", commands::FormatCode, Some("MultilineTextField")),
+            binding("cmd-k", commands::ToggleQuickSwitcher, Some("Workspace")),
+            binding(
                 "cmd-shift-p",
                 commands::ToggleCommandPalette,
                 Some("Workspace"),
             ),
-            KeyBinding::new(
+            binding(
                 "cmd-shift-i",
                 commands::ToggleKeybaseInspector,
                 Some("Workspace"),
             ),
-            KeyBinding::new(
+            binding(
                 "cmd-shift-b",
                 commands::ToggleBenchmarkCapture,
                 Some("Workspace"),
             ),
-            KeyBinding::new("escape", commands::DismissOverlays, Some("Workspace")),
-            KeyBinding::new(
+            binding("escape", commands::DismissOverlays, Some("Workspace")),
+            binding(
                 "enter",
                 commands::FindNextMatch,
                 Some("FindInChatTextField"),
             ),
-            KeyBinding::new(
+            binding(
                 "shift-enter",
                 commands::FindPrevMatch,
                 Some("FindInChatTextField"),
             ),
-            KeyBinding::new(
+            binding(
                 "escape",
                 commands::CloseFindInChat,
                 Some("FindInChatTextField"),
             ),
-            KeyBinding::new("backspace", Backspace, Some("TextField")),
-            KeyBinding::new("alt-backspace", DeleteWordBackward, Some("TextField")),
-            KeyBinding::new("cmd-backspace", DeleteToBeginningOfLine, Some("TextField")),
-            KeyBinding::new("cmd-delete", DeleteToEndOfLine, Some("TextField")),
-            KeyBinding::new("ctrl-k", DeleteToEndOfLine, Some("TextField")),
-            KeyBinding::new("delete", Delete, Some("TextField")),
-            KeyBinding::new("left", Left, Some("TextField")),
-            KeyBinding::new("right", Right, Some("TextField")),
-            KeyBinding::new("ctrl-h", Backspace, Some("TextField")),
-            KeyBinding::new("ctrl-b", Left, Some("TextField")),
-            KeyBinding::new("ctrl-f", Right, Some("TextField")),
-            KeyBinding::new("alt-b", MoveToPreviousWordStart, Some("TextField")),
-            KeyBinding::new("alt-f", MoveToNextWordEnd, Some("TextField")),
-            KeyBinding::new("alt-left", MoveToPreviousWordStart, Some("TextField")),
-            KeyBinding::new("alt-right", MoveToNextWordEnd, Some("TextField")),
-            KeyBinding::new("cmd-left", MoveToBeginningOfLine, Some("TextField")),
-            KeyBinding::new("cmd-right", MoveToEndOfLine, Some("TextField")),
-            KeyBinding::new("shift-left", SelectLeft, Some("TextField")),
-            KeyBinding::new("shift-right", SelectRight, Some("TextField")),
-            KeyBinding::new(
+            binding("backspace", Backspace, Some("TextField")),
+            binding("alt-backspace", DeleteWordBackward, Some("TextField")),
+            binding("cmd-backspace", DeleteToBeginningOfLine, Some("TextField")),
+            binding("cmd-delete", DeleteToEndOfLine, Some("TextField")),
+            binding("ctrl-k", DeleteToEndOfLine, Some("TextField")),
+            binding("delete", Delete, Some("TextField")),
+            binding("left", Left, Some("TextField")),
+            binding("right", Right, Some("TextField")),
+            binding("ctrl-h", Backspace, Some("TextField")),
+            binding("ctrl-b", Left, Some("TextField")),
+            binding("ctrl-f", Right, Some("TextField")),
+            binding("alt-b", MoveToPreviousWordStart, Some("TextField")),
+            binding("alt-f", MoveToNextWordEnd, Some("TextField")),
+            binding("alt-left", MoveToPreviousWordStart, Some("TextField")),
+            binding("alt-right", MoveToNextWordEnd, Some("TextField")),
+            binding("cmd-left", MoveToBeginningOfLine, Some("TextField")),
+            binding("cmd-right", MoveToEndOfLine, Some("TextField")),
+            binding("shift-left", SelectLeft, Some("TextField")),
+            binding("shift-right", SelectRight, Some("TextField")),
+            binding(
                 "alt-shift-left",
                 SelectToPreviousWordStart,
                 Some("TextField"),
             ),
-            KeyBinding::new("alt-shift-right", SelectToNextWordEnd, Some("TextField")),
-            KeyBinding::new("cmd-shift-left", SelectToBeginningOfLine, Some("TextField")),
-            KeyBinding::new("cmd-shift-right", SelectToEndOfLine, Some("TextField")),
-            KeyBinding::new("cmd-a", SelectAll, Some("TextField")),
-            KeyBinding::new("cmd-v", Paste, Some("TextField")),
-            KeyBinding::new("cmd-c", Copy, Some("TextField")),
-            KeyBinding::new("cmd-x", Cut, Some("TextField")),
-            KeyBinding::new("cmd-z", Undo, Some("TextField")),
-            KeyBinding::new("ctrl-/", Undo, Some("TextField")),
-            KeyBinding::new("cmd-shift-z", Redo, Some("TextField")),
-            KeyBinding::new("home", Home, Some("TextField")),
-            KeyBinding::new("end", End, Some("TextField")),
-            KeyBinding::new("shift-home", SelectHome, Some("TextField")),
-            KeyBinding::new("shift-end", SelectEnd, Some("TextField")),
-            KeyBinding::new("ctrl-a", MoveToBeginningOfLine, Some("TextField")),
-            KeyBinding::new("ctrl-e", MoveToEndOfLine, Some("TextField")),
-            KeyBinding::new("ctrl-d", Delete, Some("TextField")),
-            KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, Some("TextField")),
-            KeyBinding::new("backspace", Backspace, Some("MultilineTextField")),
-            KeyBinding::new(
+            binding("alt-shift-right", SelectToNextWordEnd, Some("TextField")),
+            binding("cmd-shift-left", SelectToBeginningOfLine, Some("TextField")),
+            binding("cmd-shift-right", SelectToEndOfLine, Some("TextField")),
+            binding("cmd-a", SelectAll, Some("TextField")),
+            binding("cmd-v", Paste, Some("TextField")),
+            binding("cmd-c", Copy, Some("TextField")),
+            binding("cmd-x", Cut, Some("TextField")),
+            binding("cmd-z", Undo, Some("TextField")),
+            binding("ctrl-/", Undo, Some("TextField")),
+            binding("cmd-shift-z", Redo, Some("TextField")),
+            binding("home", Home, Some("TextField")),
+            binding("end", End, Some("TextField")),
+            binding("shift-home", SelectHome, Some("TextField")),
+            binding("shift-end", SelectEnd, Some("TextField")),
+            binding("ctrl-a", MoveToBeginningOfLine, Some("TextField")),
+            binding("ctrl-e", MoveToEndOfLine, Some("TextField")),
+            binding("ctrl-d", Delete, Some("TextField")),
+            binding("ctrl-cmd-space", ShowCharacterPalette, Some("TextField")),
+            binding("backspace", Backspace, Some("MultilineTextField")),
+            binding(
                 "alt-backspace",
                 DeleteWordBackward,
                 Some("MultilineTextField"),
             ),
-            KeyBinding::new(
+            binding(
                 "cmd-backspace",
                 DeleteToBeginningOfLine,
                 Some("MultilineTextField"),
             ),
-            KeyBinding::new("cmd-delete", DeleteToEndOfLine, Some("MultilineTextField")),
-            KeyBinding::new("ctrl-k", DeleteToEndOfLine, Some("MultilineTextField")),
-            KeyBinding::new("delete", Delete, Some("MultilineTextField")),
-            KeyBinding::new("left", Left, Some("MultilineTextField")),
-            KeyBinding::new("right", Right, Some("MultilineTextField")),
-            KeyBinding::new("ctrl-h", Backspace, Some("MultilineTextField")),
-            KeyBinding::new("ctrl-b", Left, Some("MultilineTextField")),
-            KeyBinding::new("ctrl-f", Right, Some("MultilineTextField")),
-            KeyBinding::new("alt-b", MoveToPreviousWordStart, Some("MultilineTextField")),
-            KeyBinding::new("alt-f", MoveToNextWordEnd, Some("MultilineTextField")),
-            KeyBinding::new(
+            binding("cmd-delete", DeleteToEndOfLine, Some("MultilineTextField")),
+            binding("ctrl-k", DeleteToEndOfLine, Some("MultilineTextField")),
+            binding("delete", Delete, Some("MultilineTextField")),
+            binding("left", Left, Some("MultilineTextField")),
+            binding("right", Right, Some("MultilineTextField")),
+            binding("ctrl-h", Backspace, Some("MultilineTextField")),
+            binding("ctrl-b", Left, Some("MultilineTextField")),
+            binding("ctrl-f", Right, Some("MultilineTextField")),
+            binding("alt-b", MoveToPreviousWordStart, Some("MultilineTextField")),
+            binding("alt-f", MoveToNextWordEnd, Some("MultilineTextField")),
+            binding(
                 "alt-left",
                 MoveToPreviousWordStart,
                 Some("MultilineTextField"),
             ),
-            KeyBinding::new("alt-right", MoveToNextWordEnd, Some("MultilineTextField")),
-            KeyBinding::new(
+            binding("alt-right", MoveToNextWordEnd, Some("MultilineTextField")),
+            binding(
                 "cmd-left",
                 MoveToBeginningOfLine,
                 Some("MultilineTextField"),
             ),
-            KeyBinding::new("cmd-right", MoveToEndOfLine, Some("MultilineTextField")),
-            KeyBinding::new("up", Up, Some("MultilineTextField")),
-            KeyBinding::new("down", Down, Some("MultilineTextField")),
-            KeyBinding::new("shift-left", SelectLeft, Some("MultilineTextField")),
-            KeyBinding::new("shift-right", SelectRight, Some("MultilineTextField")),
-            KeyBinding::new(
+            binding("cmd-right", MoveToEndOfLine, Some("MultilineTextField")),
+            binding("up", Up, Some("MultilineTextField")),
+            binding("down", Down, Some("MultilineTextField")),
+            binding("shift-left", SelectLeft, Some("MultilineTextField")),
+            binding("shift-right", SelectRight, Some("MultilineTextField")),
+            binding(
                 "alt-shift-left",
                 SelectToPreviousWordStart,
                 Some("MultilineTextField"),
             ),
-            KeyBinding::new(
+            binding(
                 "alt-shift-right",
                 SelectToNextWordEnd,
                 Some("MultilineTextField"),
             ),
-            KeyBinding::new(
+            binding(
                 "cmd-shift-left",
                 SelectToBeginningOfLine,
                 Some("MultilineTextField"),
             ),
-            KeyBinding::new(
+            binding(
                 "cmd-shift-right",
                 SelectToEndOfLine,
                 Some("MultilineTextField"),
             ),
-            KeyBinding::new("shift-up", SelectUp, Some("MultilineTextField")),
-            KeyBinding::new("shift-down", SelectDown, Some("MultilineTextField")),
-            KeyBinding::new("cmd-a", SelectAll, Some("MultilineTextField")),
-            KeyBinding::new("cmd-v", Paste, Some("MultilineTextField")),
-            KeyBinding::new("cmd-c", Copy, Some("MultilineTextField")),
-            KeyBinding::new("cmd-x", Cut, Some("MultilineTextField")),
-            KeyBinding::new("cmd-z", Undo, Some("MultilineTextField")),
-            KeyBinding::new("ctrl-/", Undo, Some("MultilineTextField")),
-            KeyBinding::new("cmd-shift-z", Redo, Some("MultilineTextField")),
-            KeyBinding::new("home", Home, Some("MultilineTextField")),
-            KeyBinding::new("end", End, Some("MultilineTextField")),
-            KeyBinding::new("shift-home", SelectHome, Some("MultilineTextField")),
-            KeyBinding::new("shift-end", SelectEnd, Some("MultilineTextField")),
-            KeyBinding::new("ctrl-a", MoveToBeginningOfLine, Some("MultilineTextField")),
-            KeyBinding::new("ctrl-e", MoveToEndOfLine, Some("MultilineTextField")),
-            KeyBinding::new("ctrl-d", Delete, Some("MultilineTextField")),
-            KeyBinding::new("shift-enter", InsertNewline, Some("MultilineTextField")),
-            KeyBinding::new(
+            binding("shift-up", SelectUp, Some("MultilineTextField")),
+            binding("shift-down", SelectDown, Some("MultilineTextField")),
+            binding("cmd-a", SelectAll, Some("MultilineTextField")),
+            binding("cmd-v", Paste, Some("MultilineTextField")),
+            binding("cmd-c", Copy, Some("MultilineTextField")),
+            binding("cmd-x", Cut, Some("MultilineTextField")),
+            binding("cmd-z", Undo, Some("MultilineTextField")),
+            binding("ctrl-/", Undo, Some("MultilineTextField")),
+            binding("cmd-shift-z", Redo, Some("MultilineTextField")),
+            binding("home", Home, Some("MultilineTextField")),
+            binding("end", End, Some("MultilineTextField")),
+            binding("shift-home", SelectHome, Some("MultilineTextField")),
+            binding("shift-end", SelectEnd, Some("MultilineTextField")),
+            binding("ctrl-a", MoveToBeginningOfLine, Some("MultilineTextField")),
+            binding("ctrl-e", MoveToEndOfLine, Some("MultilineTextField")),
+            binding("ctrl-d", Delete, Some("MultilineTextField")),
+            binding("shift-enter", InsertNewline, Some("MultilineTextField")),
+            binding(
                 "ctrl-cmd-space",
                 ShowCharacterPalette,
                 Some("MultilineTextField"),
             ),
-            KeyBinding::new("left", Left, Some("SelectableText")),
-            KeyBinding::new("right", Right, Some("SelectableText")),
-            KeyBinding::new("up", Up, Some("SelectableText")),
-            KeyBinding::new("down", Down, Some("SelectableText")),
-            KeyBinding::new("shift-left", SelectLeft, Some("SelectableText")),
-            KeyBinding::new("shift-right", SelectRight, Some("SelectableText")),
-            KeyBinding::new("shift-up", SelectUp, Some("SelectableText")),
-            KeyBinding::new("shift-down", SelectDown, Some("SelectableText")),
-            KeyBinding::new("cmd-a", SelectAll, Some("SelectableText")),
-            KeyBinding::new("cmd-c", Copy, Some("SelectableText")),
-            KeyBinding::new("home", Home, Some("SelectableText")),
-            KeyBinding::new("end", End, Some("SelectableText")),
-            KeyBinding::new("shift-home", SelectHome, Some("SelectableText")),
-            KeyBinding::new("shift-end", SelectEnd, Some("SelectableText")),
-        ]);
+            binding("left", Left, Some("SelectableText")),
+            binding("right", Right, Some("SelectableText")),
+            binding("up", Up, Some("SelectableText")),
+            binding("down", Down, Some("SelectableText")),
+            binding("shift-left", SelectLeft, Some("SelectableText")),
+            binding("shift-right", SelectRight, Some("SelectableText")),
+            binding("shift-up", SelectUp, Some("SelectableText")),
+            binding("shift-down", SelectDown, Some("SelectableText")),
+            binding("cmd-a", SelectAll, Some("SelectableText")),
+            binding("cmd-c", Copy, Some("SelectableText")),
+            binding("home", Home, Some("SelectableText")),
+            binding("end", End, Some("SelectableText")),
+            binding("shift-home", SelectHome, Some("SelectableText")),
+            binding("shift-end", SelectEnd, Some("SelectableText")),
+        ]));
         cx.set_menus(app_menus());
         open_main_window(cx);
     });

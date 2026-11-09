@@ -6,7 +6,7 @@ use crate::{
         card_shadow, close_icon, empty_state, icon_asset, input::TextField, modal_surface,
         primary_button, search_field_shell, secondary_button, section_label, shell_border,
         shell_border_strong, sidebar_selected_bg, sidebar_selected_fg, sidebar_selected_secondary,
-        text_primary, text_secondary, tint,
+        text_primary, text_secondary, tint, tooltip::shortcut_label,
     },
 };
 use gpui::prelude::FluentBuilder;
@@ -259,7 +259,9 @@ pub fn render_new_chat_modal(
                         .truncate()
                         .text_size(px(12.))
                         .text_color(rgb(text_secondary()))
-                        .when_some(keyboard_hint, |hint, text| hint.child(text)),
+                        .when_some(keyboard_hint, |hint, text| {
+                            hint.child(text.replace("⌘↵", &shortcut_label("⌘↵")))
+                        }),
                 )
                 .child(
                     secondary_button("new-chat-cancel", "Cancel").on_click(cx.listener(
