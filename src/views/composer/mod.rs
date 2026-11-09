@@ -11,7 +11,7 @@ use crate::{
         card_shadow, field_bg, field_border, icon_asset,
         input::TextField,
         is_dark_theme, modal_surface,
-        popup_menu::{MenuHighlight, PopupMenuEntry, popup_menu},
+        popup_menu::{PopupMenuEntry, popup_menu},
         send_icon, shell_border_strong, text_primary, text_secondary, tint,
         tooltip::{TextTooltip, shortcut_label},
     },
@@ -248,7 +248,6 @@ fn format_tool(
                     .child(popup_menu(
                         menu_id,
                         180.,
-                        MenuHighlight::Accent,
                         entries,
                         cx.listener(|this, _, _, cx| this.close_composer_format_menu(cx)),
                     )),
