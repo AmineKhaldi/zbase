@@ -219,6 +219,21 @@ Unit and packaging tests do not require Keybase or a logged-in account. Tests re
   ```
 - **Keybase Inspector** (`Cmd+Shift+I`) — in-app RPC debug panel
 
+## Testing pull request builds
+
+Each pull request's **CI** run uploads a self-contained **macOS ARM64 app ZIP**
+(macOS 15 or newer) and a **Windows x64 installer**. Open the PR's **Checks** tab,
+open the CI run, and download the platform artifact from **Artifacts**. Artifacts
+include the PR number and tested commit SHA in their names and expire after seven
+days. PR runs test GitHub's merge commit with the base branch.
+
+You can also download them with `gh run download <run-id> -R cameroncooper/zbase`.
+Extract the macOS archive to get `zBase.app`; extract the Windows artifact and run
+its setup EXE. These development builds use ad hoc signing on macOS and are
+unsigned on Windows, so the OS may require an explicit first-launch override.
+They connect to your installed Keybase service and use your normal zBase data.
+Release signing and publishing remain in the Release workflow.
+
 ## License
 
 MIT

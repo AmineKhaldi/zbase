@@ -149,73 +149,10 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/zbase-signing/release.keychain-db" 2>/dev/null || true
           rm -rf "$RUNNER_TEMP/zbase-signing"
 
-  # Unsigned for now: Windows SmartScreen warns on first run. See docs/windows-releases.md.
   build-windows:
-    runs-on: windows-2025
-    timeout-minutes: 120
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-    defaults:
-      run:
-        shell: pwsh
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      CARGO_INCREMENTAL: '0'
-      CARGO_PROFILE_DEV_DEBUG: '0'
-      CARGO_PROFILE_TEST_DEBUG: '0'
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - name: Validate release version
-        id: version
-        env:
-          RELEASE_BUILD: ${{ github.event_name == 'release' }}
-        run: |
-          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
-          if ($env:RELEASE_BUILD -eq 'true' -and $env:GITHUB_REF -ne "refs/tags/v$version") {
-            Write-Error 'Release tag must match the package version in Cargo.toml'
-            exit 1
-          }
-          "version=$version" >> $env:GITHUB_OUTPUT
-      - name: Install build tools
-        id: toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
-            choco install innosetup --no-progress -y
-          }
-          $bytes = [System.Text.Encoding]::UTF8.GetBytes((rustc -vV | Out-String))
-          $key = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
-          "rust-key=$key" >> $env:GITHUB_OUTPUT
-      - uses: actions/cache/restore@v6
-        id: rust-cache
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: rust-windows-x64-${{ steps.toolchain.outputs.rust-key }}-${{ hashFiles('Cargo.lock', 'scripts/windows/build_installer.ps1') }}-${{ github.sha }}
-          restore-keys: |
-            rust-windows-x64-${{ steps.toolchain.outputs.rust-key }}-${{ hashFiles('Cargo.lock', 'scripts/windows/build_installer.ps1') }}-
-      - name: Rust release tests and installer
-        id: installer
-        run: ./scripts/windows/build_installer.ps1 -Test
-      # Preserve compiled dependencies even if a later step fails.
-      - uses: actions/cache/save@v6
-        if: ${{ !cancelled() && steps.installer.outcome == 'success' && steps.rust-cache.outputs.cache-hit != 'true' }}
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
-      - uses: actions/upload-artifact@v7
-        with:
-          name: windows-release
-          path: dist/release/
-          if-no-files-found: error
+    uses: ./.github/workflows/windows-build.yml
+    with:
+      artifact-name: windows-release
 
   attach:
     needs: build

@@ -122,7 +122,6 @@ jobs:
       - name: Packaging integration tests
         run: python3 -m unittest discover -s scripts/macos -p 'test_*.py' -v
       - name: Build and verify self-contained app
-        if: github.event_name != 'pull_request'
         run: |
           # Reuse the debug dependencies from Clippy/tests for the development app.
           # The Release workflow still builds and signs the optimized app.
@@ -144,15 +143,14 @@ jobs:
             target
           key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Archive development app
-        if: github.event_name != 'pull_request'
         run: ditto -c -k --sequesterRsrc --keepParent dist/macos/zBase.app dist/macos/zBase-development.zip
       - uses: actions/upload-artifact@v7
-        if: github.event_name != 'pull_request'
         with:
-          name: macos-development-app
+          name: zBase-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.event_name }}-${{ github.sha }}-macos-arm64
           path: dist/macos/zBase-development.zip
           if-no-files-found: error
           retention-days: 7
+          compression-level: 0
       - name: Upload Cargo timing reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
@@ -161,3 +159,9 @@ jobs:
           path: target/cargo-timings/
           if-no-files-found: ignore
           retention-days: 7
+
+  windows:
+    name: Windows build, tests, and installer
+    uses: ./.github/workflows/windows-build.yml
+    with:
+      artifact-name: zBase-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.event_name }}-${{ github.sha }}-windows-x64
