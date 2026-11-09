@@ -177,39 +177,6 @@ impl Avatar {
             .into_any_element()
     }
 
-    /// Draws a thin light ring around a lead (avatar or mark) on a selected
-    /// row, so colored marks don't sit directly on the selection fill.
-    pub fn with_selection_ring(lead: AnyElement, size: f32, circular: bool) -> AnyElement {
-        let ring = 1.5;
-        div()
-            .relative()
-            .flex_shrink_0()
-            .w(px(size))
-            .h(px(size))
-            // Painted first: the lead covers the ring's inner half, and a
-            // presence dot or team badge stays on top of it.
-            .child(
-                div()
-                    .absolute()
-                    .top(px(-ring))
-                    .left(px(-ring))
-                    .w(px(size + ring * 2.))
-                    .h(px(size + ring * 2.))
-                    .when(circular, |ring| ring.rounded_full())
-                    .when(!circular, |frame| {
-                        frame.rounded(px(square_radius(size) + ring))
-                    })
-                    .border(px(ring))
-                    .border_color(if is_dark_theme() {
-                        crate::views::tint(0xffffff, 0.2)
-                    } else {
-                        crate::views::tint(0xffffff, 1.)
-                    }),
-            )
-            .child(lead)
-            .into_any_element()
-    }
-
     pub fn render_group(names: &[(&str, Option<&str>, u32, u32)], size: f32) -> AnyElement {
         Self::render_group_on(names, size, rgb(crate::views::panel_bg()).into())
     }

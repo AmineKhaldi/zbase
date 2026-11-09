@@ -17,9 +17,8 @@ use crate::{
         avatar::Avatar,
         chevron_down_icon, chevron_right_icon, hash_icon, icon_asset, is_dark_theme,
         popup_menu::{PopupMenuEntry, popup_menu},
-        sidebar_bg, sidebar_hover_bg, sidebar_selected_bg, sidebar_selected_fg,
-        sidebar_selected_secondary, subtle_surface, success_soft, text_primary, text_secondary,
-        tint,
+        sidebar_bg, sidebar_card_bg, sidebar_card_shadow, sidebar_hover_bg, subtle_surface,
+        success_soft, text_primary, text_secondary, tint,
         tooltip::shortcut_label,
         truncated_line::{Segment, TruncatedLine},
         warning,
@@ -80,7 +79,7 @@ pub enum SidebarMenu {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RowSelection {
     None,
-    /// The one selected row: accent fill.
+    /// The one selected row: a raised card.
     Full,
     /// Another listing of the open conversation (its Unread shortcut): a thin
     /// accent bar only, so the sidebar never shows two selections.
@@ -130,18 +129,21 @@ pub(super) struct RowColors {
     pub background: Option<Hsla>,
     /// What the row sits on: rings around avatars and presence dots use it.
     pub surface: Hsla,
+    /// The selected row is a card with a soft shadow.
+    pub raised: bool,
 }
 
 impl RowColors {
     /// A muted conversation reads in secondary text unless it is selected.
     pub fn new(selected: bool, hovered: bool, muted: bool) -> Self {
         if selected {
-            let background: Hsla = rgb(sidebar_selected_bg()).into();
+            let background: Hsla = rgb(sidebar_card_bg()).into();
             return Self {
-                primary: rgb(sidebar_selected_fg()).into(),
-                secondary: sidebar_selected_secondary(),
+                primary: rgb(text_primary()).into(),
+                secondary: rgb(text_secondary()).into(),
                 background: Some(background),
                 surface: background,
+                raised: true,
             };
         }
         let background = hovered.then(|| rgb(sidebar_hover_bg()).into());
@@ -155,6 +157,7 @@ impl RowColors {
             secondary: rgb(text_secondary()).into(),
             background,
             surface: background.unwrap_or_else(|| rgb(sidebar_bg()).into()),
+            raised: false,
         }
     }
 }
@@ -277,6 +280,7 @@ impl CompactRow<'_> {
             .rounded(px(6.))
             .cursor_pointer()
             .when_some(colors.background, |row, background| row.bg(background))
+            .when(colors.raised, |row| row.shadow(sidebar_card_shadow()))
             .when(selection == RowSelection::Marker, |row| {
                 row.child(
                     div()
@@ -1068,7 +1072,7 @@ impl Sidebar {
                     context.hovered_row == Some(id.as_str()),
                     row.muted,
                 );
-                let emphasized = selection.is_full() || RowActivity::of(row).is_unread();
+                let emphasized = !selection.is_full() && RowActivity::of(row).is_unread();
                 let (label, suffix, leading) = match &row.team {
                     Some(team) => (
                         format!("#{}", row.label),
@@ -1127,39 +1131,31 @@ impl Sidebar {
             context.hovered_row == Some(row_id.as_str()),
             row.muted,
         );
-        let emphasized = selection.is_full() || activity.is_unread();
+        let emphasized = !selection.is_full() && activity.is_unread();
         let channel_under_team = row.team.is_some() && matches!(row.route, Route::Channel { .. });
         match context.look {
             RowLook::Previews { compact_time } => {
                 // A channel shows its team's logo rather than a `#`.
-                let (lead, circular) =
-                    if let Some(team) = row.team.as_ref().filter(|_| channel_under_team) {
-                        (
-                            Avatar::render_team(
-                                &team.display_name,
-                                team_asset(context.avatars, &team.id),
-                                PREVIEW_AVATAR_PX,
-                            ),
-                            false,
-                        )
-                    } else {
-                        (
-                            Self::leading_element(
-                                row,
-                                &route_label,
-                                context.avatars,
-                                &colors,
-                                PREVIEW_AVATAR_PX,
-                            ),
-                            matches!(row.route, Route::DirectMessage { .. }),
-                        )
-                    };
+                let lead = if let Some(team) = row.team.as_ref().filter(|_| channel_under_team) {
+                    Avatar::render_team(
+                        &team.display_name,
+                        team_asset(context.avatars, &team.id),
+                        PREVIEW_AVATAR_PX,
+                    )
+                } else {
+                    Self::leading_element(
+                        row,
+                        &route_label,
+                        context.avatars,
+                        &colors,
+                        PREVIEW_AVATAR_PX,
+                    )
+                };
                 PreviewRow {
                     row,
                     id: row_id,
                     title: title_segments(row.label.clone(), None, &colors, emphasized),
                     lead,
-                    lead_circular: circular,
                     colors: &colors,
                     selected: selection.is_full(),
                     live: row

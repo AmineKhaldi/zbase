@@ -9,9 +9,7 @@ use crate::{
     models::{sidebar_model::SidebarRow, sidebar_preview::PreviewLive},
     util::formatting::{sidebar_time_label, sidebar_time_label_compact},
     views::{
-        accent,
-        avatar::Avatar,
-        danger,
+        accent, danger,
         truncated_line::{Segment, TruncatedLine},
     },
 };
@@ -38,7 +36,6 @@ pub(super) struct PreviewRow<'a> {
     pub title: Vec<Segment>,
     /// 32px avatar or mark, already rendered on the row's surface.
     pub lead: AnyElement,
-    pub lead_circular: bool,
     pub colors: &'a RowColors,
     pub selected: bool,
     /// Shown instead of the newest message.
@@ -54,7 +51,6 @@ impl PreviewRow<'_> {
             id,
             title,
             lead,
-            lead_circular,
             colors,
             selected,
             live,
@@ -71,13 +67,7 @@ impl PreviewRow<'_> {
             } else {
                 sidebar_time_label
             });
-        let (preview_line, italic) = preview_line(row, live, colors, unread, selected);
-        // On the selection fill a thin light ring keeps colored marks off the accent.
-        let lead = if selected {
-            Avatar::with_selection_ring(lead, PREVIEW_AVATAR_PX, lead_circular)
-        } else {
-            lead
-        };
+        let (preview_line, italic) = preview_line(row, live, colors, unread);
         let hover_id = id.clone();
         let route: Route = row.route.clone();
         div()
@@ -92,6 +82,9 @@ impl PreviewRow<'_> {
             .rounded(px(8.))
             .cursor_pointer()
             .when_some(colors.background, |row, background| row.bg(background))
+            .when(colors.raised, |row| {
+                row.shadow(crate::views::sidebar_card_shadow())
+            })
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 this.sidebar_set_row_hovered(hover_id.clone(), *hovered, cx);
             }))
@@ -160,7 +153,7 @@ impl PreviewRow<'_> {
                                                 .path("assets/icons/alert-triangle.svg")
                                                 .size(px(12.))
                                                 .flex_shrink_0()
-                                                .text_color(not_sent_color(colors, selected)),
+                                                .text_color(rgb(danger())),
                                         )
                                     })
                                     .child(div().flex_1().min_w(px(0.)).children(preview_line)),
@@ -175,14 +168,12 @@ impl PreviewRow<'_> {
 }
 
 /// The second line and whether it is set in italics (typing). Live states
-/// replace the newest message; on the selection fill they keep the row's
-/// light text so nothing colored sits on the accent.
+/// replace the newest message.
 fn preview_line(
     row: &SidebarRow,
     live: Option<&PreviewLive>,
     colors: &RowColors,
     unread: bool,
-    selected: bool,
 ) -> (Option<TruncatedLine>, bool) {
     let segment = |text: String, color: Hsla, weight: FontWeight| Segment {
         text,
@@ -202,11 +193,7 @@ fn preview_line(
             Some(TruncatedLine::new(vec![
                 segment(
                     "Draft: ".to_string(),
-                    if selected {
-                        colors.primary
-                    } else {
-                        rgb(accent()).into()
-                    },
+                    rgb(accent()).into(),
                     FontWeight::MEDIUM,
                 ),
                 segment(text.clone(), colors.secondary, FontWeight::NORMAL),
@@ -216,7 +203,7 @@ fn preview_line(
         Some(PreviewLive::NotSent) => (
             Some(TruncatedLine::new(vec![segment(
                 "Not sent".to_string(),
-                not_sent_color(colors, selected),
+                rgb(danger()).into(),
                 FontWeight::MEDIUM,
             )])),
             false,
@@ -247,15 +234,7 @@ fn preview_line(
     }
 }
 
-fn not_sent_color(colors: &RowColors, selected: bool) -> Hsla {
-    if selected {
-        colors.primary
-    } else {
-        rgb(danger()).into()
-    }
-}
-
-/// Title segments: the name, semibold while unread or selected, then a
+/// Title segments: the name, semibold while unread, then a
 /// secondary suffix (the team of an ambiguous channel) that truncates first.
 pub(super) fn title_segments(
     label: String,
