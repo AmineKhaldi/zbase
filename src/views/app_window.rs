@@ -9446,10 +9446,6 @@ impl Render for AppWindow {
 
         // A background window keeps keyboard focus but shows no focus rings.
         let window_active = window.is_window_active();
-        let composer_input_focused =
-            window_active && self.composer_input.focus_handle(cx).is_focused(window);
-        let thread_input_focused =
-            window_active && self.thread_input.focus_handle(cx).is_focused(window);
         let search_input_focused =
             window_active && self.search_input.focus_handle(cx).is_focused(window);
         let new_chat_input_focused =
@@ -9520,7 +9516,6 @@ impl Render for AppWindow {
                             &mut self.selectable_texts,
                             &self.thread_input,
                             crate::views::composer::ComposerFieldState {
-                                focused: thread_input_focused,
                                 can_send: self.thread_has_text,
                                 send_notice: self.models.app.connectivity.send_notice(),
                                 format_menu_open: self.composer_format_menu
@@ -9741,7 +9736,6 @@ impl Render for AppWindow {
                         &self.find_in_chat_input,
                         &self.composer_input,
                         crate::views::composer::ComposerFieldState {
-                            focused: composer_input_focused,
                             can_send: self.composer_has_text
                                 || !self.models.composer.attachments.is_empty(),
                             send_notice: self.models.app.connectivity.send_notice(),

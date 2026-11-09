@@ -8,7 +8,7 @@ use crate::{
     views::{
         accent, accent_soft, accent_strong,
         app_window::AppWindow,
-        card_shadow, field_bg, field_border, focus_ring, icon_asset,
+        card_shadow, field_bg, field_border, icon_asset,
         input::TextField,
         is_dark_theme, modal_surface,
         popup_menu::{PopupMenuEntry, popup_menu},
@@ -36,7 +36,6 @@ pub(crate) enum ComposerTarget {
 /// Visible state of a composer field.
 #[derive(Clone, Copy)]
 pub(crate) struct ComposerFieldState {
-    pub focused: bool,
     pub can_send: bool,
     /// While Keybase can't be reached: what the send tooltip says.
     pub send_notice: Option<SendNotice>,
@@ -44,8 +43,9 @@ pub(crate) struct ComposerFieldState {
 }
 
 /// Bordered message field shared by the conversation and thread composers: an
-/// 8px-radius box (40px tall at one line) whose border turns accent with a soft
-/// ring on focus, and attach, emoji and send controls inside its right edge.
+/// 8px-radius box (40px tall at one line) with attach, emoji and send controls
+/// inside its right edge. It shows no focus highlight: switching chats focuses
+/// it automatically, so a ring would be lit nearly all the time.
 pub(crate) fn composer_field(
     target: ComposerTarget,
     editor: &Entity<TextField>,
@@ -125,12 +125,7 @@ pub(crate) fn composer_field(
         .min_h(px(40.))
         .rounded(px(8.))
         .border_1()
-        .border_color(if state.focused {
-            rgb(accent())
-        } else {
-            rgb(field_border())
-        })
-        .when(state.focused, |field| field.shadow(vec![focus_ring()]))
+        .border_color(rgb(field_border()))
         .bg(fill)
         .text_sm()
         .line_height(px(22.))
