@@ -1213,8 +1213,20 @@ impl AppWindow {
                 if this.models.new_chat.search_query == query {
                     return;
                 }
-                this.models.new_chat.search_query = query.clone();
                 this.dispatch_ui_action(UiAction::NewChatSearchUsers { query });
+                if let Some(query_id) = this.app_store.snapshot().new_chat.active_query_id.clone() {
+                    cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                        let background = cx.background_executor().clone();
+                        let mut async_app = cx.clone();
+                        async move {
+                            background.timer(Duration::from_millis(200)).await;
+                            let _ = this.update(&mut async_app, move |this, cx| {
+                                this.dispatch_ui_action(UiAction::NewChatSearchRemote { query_id });
+                                cx.notify();
+                            });
+                        }
+                    }).detach();
+                }
                 cx.notify();
             }),
             cx.observe(&self.emoji_picker_input, |this, input, cx| {
@@ -3571,6 +3583,7 @@ impl AppWindow {
         self.models.search.is_loading = snapshot.search.is_loading;
         self.models.search.submitted_query = snapshot.search.submitted_query.clone();
         self.models.new_chat.open = snapshot.new_chat.open;
+        self.models.new_chat.is_searching = snapshot.new_chat.is_searching;
         if self.models.new_chat.search_query != snapshot.new_chat.search_query {
             self.models.new_chat.highlighted_index = 0;
         }

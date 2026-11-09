@@ -209,6 +209,7 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
         UiAction::OpenNewChat => {
             state.new_chat = super::state::UiNewChatState::default();
             state.new_chat.open = true;
+            state.new_chat.people = super::new_chat_search::PeopleCorpus::from_state(state);
             ReducerOutput::default()
         }
         UiAction::CloseNewChat => {
@@ -216,19 +217,30 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             ReducerOutput::default()
         }
         UiAction::NewChatSearchUsers { query } => {
+            if state.new_chat.people_dirty {
+                state.new_chat.people = super::new_chat_search::PeopleCorpus::from_state(state);
+                state.new_chat.people_dirty = false;
+            }
             state.new_chat.search_query = query.clone();
             state.new_chat.active_query_id = None;
-            state.new_chat.search_results.clear();
+            state.new_chat.search_results = state.new_chat.people.search(&query, 32);
+            state.new_chat.is_searching = !query.trim().is_empty();
             state.new_chat.error = None;
             if query.trim().is_empty() {
                 return ReducerOutput::default();
             }
             let query_id = next_query_id(state);
-            state.new_chat.active_query_id = Some(query_id.clone());
+            state.new_chat.active_query_id = Some(query_id);
+            ReducerOutput::default()
+        }
+        UiAction::NewChatSearchRemote { query_id } => {
+            if !state.new_chat.open || state.new_chat.active_query_id.as_ref() != Some(&query_id) {
+                return ReducerOutput::default();
+            }
             ReducerOutput {
                 effects: vec![Effect::Backend(BackendCommand::SearchUsers {
                     query_id,
-                    query,
+                    query: state.new_chat.search_query.clone(),
                 })],
             }
         }
@@ -704,6 +716,25 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
 }
 
 fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutput {
+    // Rebuild lazily on the next input, so background hydration does not reorder
+    // the rows under a keyboard selection or repeatedly rebuild the corpus.
+    if state.new_chat.open
+        && matches!(
+            &event,
+            BackendEvent::BootstrapLoaded { .. }
+                | BackendEvent::WorkspaceConversationsExtended { .. }
+                | BackendEvent::UserProfileUpserted { .. }
+                | BackendEvent::UserProfileLoaded { .. }
+                | BackendEvent::SocialGraphListLoaded { .. }
+                | BackendEvent::FollowStatusChanged { .. }
+                | BackendEvent::AffinityChanged { .. }
+                | BackendEvent::AffinitySynced { .. }
+                | BackendEvent::TeamRolesUpdated { .. }
+                | BackendEvent::ConversationMembersUpdated { .. }
+        )
+    {
+        state.new_chat.people_dirty = true;
+    }
     match event {
         BackendEvent::AccountConnected { account_id } => {
             if let Some(account) = state.backend.accounts.get_mut(&account_id) {
@@ -1614,7 +1645,8 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             if state.new_chat.active_query_id.as_ref() != Some(&query_id) {
                 return ReducerOutput::default();
             }
-            state.new_chat.search_results = results;
+            super::new_chat_search::merge_results(&mut state.new_chat.search_results, results);
+            state.new_chat.is_searching = false;
         }
         BackendEvent::ChannelResolved {
             conversation_binding,
@@ -1729,6 +1761,11 @@ fn reduce_command_failure(
     command: BackendCommand,
     error: String,
 ) -> ReducerOutput {
+    if let BackendCommand::SearchUsers { query_id, .. } = &command
+        && state.new_chat.active_query_id.as_ref() != Some(query_id)
+    {
+        return ReducerOutput::default();
+    }
     let mut effects = Vec::new();
     match command {
         BackendCommand::LeaveChannel {
@@ -1759,7 +1796,7 @@ fn reduce_command_failure(
         BackendCommand::SearchUsers { query_id, .. }
             if state.new_chat.active_query_id.as_ref() == Some(&query_id) =>
         {
-            state.new_chat.search_results.clear();
+            state.new_chat.is_searching = false;
             state.new_chat.error = Some(error.clone());
         }
         BackendCommand::CreateConversation { .. } => {
@@ -3729,6 +3766,138 @@ mod tests {
             },
         );
         assert!(!state.search.is_loading);
+    }
+
+    #[test]
+    fn new_chat_search_is_local_until_current_debounce_fires() {
+        let mut state = UiState::default();
+        state.backend.user_affinities.insert(
+            UserId::new("alice"),
+            crate::domain::affinity::Affinity::Positive,
+        );
+        reduce_ui_action(&mut state, UiAction::OpenNewChat);
+        let output = reduce_ui_action(
+            &mut state,
+            UiAction::NewChatSearchUsers {
+                query: "ali".into(),
+            },
+        );
+        assert!(output.effects.is_empty());
+        assert_eq!(state.new_chat.search_results[0].id.0, "alice");
+        assert!(state.new_chat.is_searching);
+        let old = state.new_chat.active_query_id.clone().unwrap();
+        reduce_ui_action(
+            &mut state,
+            UiAction::NewChatSearchUsers {
+                query: "alice".into(),
+            },
+        );
+        assert!(
+            reduce_ui_action(
+                &mut state,
+                UiAction::NewChatSearchRemote {
+                    query_id: old.clone()
+                }
+            )
+            .effects
+            .is_empty()
+        );
+        let current = state.new_chat.active_query_id.clone().unwrap();
+        let output = reduce_ui_action(
+            &mut state,
+            UiAction::NewChatSearchRemote {
+                query_id: current.clone(),
+            },
+        );
+        assert!(
+            matches!(&output.effects[0], Effect::Backend(BackendCommand::SearchUsers { query_id, query }) if query_id == &current && query == "alice")
+        );
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::UserSearchResults {
+                query_id: old,
+                results: Vec::new(),
+            },
+        );
+        assert!(state.new_chat.is_searching);
+        assert_eq!(state.new_chat.search_results.len(), 1);
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::UserSearchResults {
+                query_id: current,
+                results: Vec::new(),
+            },
+        );
+        assert!(!state.new_chat.is_searching);
+        assert_eq!(state.new_chat.search_results[0].id.0, "alice");
+    }
+
+    #[test]
+    fn new_chat_remote_failure_preserves_local_people_and_close_invalidates_timer() {
+        let mut state = UiState::default();
+        state.backend.user_affinities.insert(
+            UserId::new("alice"),
+            crate::domain::affinity::Affinity::Positive,
+        );
+        reduce_ui_action(&mut state, UiAction::OpenNewChat);
+        reduce_ui_action(
+            &mut state,
+            UiAction::NewChatSearchUsers {
+                query: "ali".into(),
+            },
+        );
+        let query_id = state.new_chat.active_query_id.clone().unwrap();
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::CommandFailed {
+                command: Box::new(BackendCommand::SearchUsers {
+                    query_id: query_id.clone(),
+                    query: "ali".into(),
+                }),
+                error: "offline".into(),
+            },
+        );
+        assert!(!state.new_chat.is_searching);
+        assert_eq!(state.new_chat.search_results[0].id.0, "alice");
+        assert_eq!(state.new_chat.error.as_deref(), Some("offline"));
+        reduce_ui_action(&mut state, UiAction::CloseNewChat);
+        reduce_ui_action(&mut state, UiAction::OpenNewChat);
+        assert!(
+            reduce_ui_action(&mut state, UiAction::NewChatSearchRemote { query_id })
+                .effects
+                .is_empty()
+        );
+        assert!(state.new_chat.search_results.is_empty());
+    }
+
+    #[test]
+    fn new_chat_picks_up_profiles_loaded_while_open_on_next_input() {
+        let mut state = UiState::default();
+        reduce_ui_action(&mut state, UiAction::OpenNewChat);
+        reduce_ui_action(
+            &mut state,
+            UiAction::NewChatSearchUsers {
+                query: "river".into(),
+            },
+        );
+        assert!(state.new_chat.search_results.is_empty());
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::UserProfileUpserted {
+                user_id: UserId::new("sam"),
+                display_name: "Sam Rivera".into(),
+                avatar_asset: None,
+                updated_ms: 1,
+            },
+        );
+        assert!(state.new_chat.search_results.is_empty());
+        reduce_ui_action(
+            &mut state,
+            UiAction::NewChatSearchUsers {
+                query: "rivera".into(),
+            },
+        );
+        assert_eq!(state.new_chat.search_results[0].id.0, "sam");
     }
 
     #[test]

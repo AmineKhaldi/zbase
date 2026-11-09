@@ -3,6 +3,7 @@ pub mod bindings;
 pub mod effect;
 pub mod event;
 pub mod ids;
+mod new_chat_search;
 pub mod reducer;
 #[expect(
     clippy::module_inception,
