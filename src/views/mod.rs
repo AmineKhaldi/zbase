@@ -1056,6 +1056,10 @@ pub fn clipboard_icon(color: u32) -> AnyElement {
     icon_asset("assets/icons/clipboard.svg", 18., color)
 }
 
+pub fn pencil_icon(color: u32) -> AnyElement {
+    icon_asset("assets/icons/pencil.svg", 18., color)
+}
+
 pub fn trash_icon(color: u32) -> AnyElement {
     icon_asset("assets/icons/trash.svg", 18., color)
 }

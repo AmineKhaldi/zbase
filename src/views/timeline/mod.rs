@@ -27,8 +27,8 @@ use crate::{
         border, clipboard_icon, copy_icon, danger, display_image_source, format_duration_ms,
         glass_surface_dark, hash_icon,
         inline_markdown::{InlineMarkdownConfig, apply_inline_markdown, remap_source_byte_range},
-        link, mono_font_family, mono_font_size, new_messages, panel_alt_bg, panel_bg, pin_icon,
-        play_icon, plus_icon,
+        link, mono_font_family, mono_font_size, new_messages, panel_alt_bg, panel_bg, pencil_icon,
+        pin_icon, play_icon, plus_icon,
         scaled_image::Fit,
         selectable_text::{
             InlineAttachment, LinkRange, SelectableText, StyledRange, resolve_selectable_text,
@@ -1545,6 +1545,9 @@ impl TimelineList {
                                 "quick-react-{alias}-{}",
                                 message.id.0
                             )))
+                            .tooltip(crate::views::tooltip::TextTooltip::single_line(format!(
+                                ":{alias}:"
+                            )))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.clear_hovered_message_immediate(cx);
                                 this.quick_react(msg_id.clone(), unicode_str.clone(), cx);
@@ -1624,9 +1627,16 @@ impl TimelineList {
                 let message_id_for_copy_link_btn = message.id.clone();
                 let message_id_for_copy_text_btn = message.id.clone();
                 let message_id_for_delete_btn = message.id.clone();
+                let message_id_for_edit_btn = message.id.clone();
                 let is_own_message = current_user_id
                     .is_some_and(|id| id.0.eq_ignore_ascii_case(&message.author_id.0));
-                let toolbar_size = toolbar_size(QUICK_REACT_EMOJI.len(), recent_react_button.is_some(), is_own_message);
+                // Edits happen in the main composer, so the thread pane offers delete only.
+                let can_edit = is_own_message && !is_thread && message.event.is_none();
+                let toolbar_size = toolbar_size(
+                    QUICK_REACT_EMOJI.len(),
+                    recent_react_button.is_some(),
+                    usize::from(is_own_message) + usize::from(can_edit),
+                );
                 let inline_toolbar = div()
                     .w(px(toolbar_size.width)).h(px(toolbar_size.height))
                     .flex()
@@ -1652,6 +1662,7 @@ impl TimelineList {
                     .child(Self::toolbar_icon_button(
                         "message-react-more",
                         &message.id.0,
+                        "Add reaction",
                         plus_icon(text_secondary()),
                         cx.listener(move |this, _, _, cx| {
                             this.clear_hovered_message_immediate(cx);
@@ -1668,6 +1679,7 @@ impl TimelineList {
                     .child(Self::toolbar_icon_button(
                         "message-thread",
                         &message.id.0,
+                        "Reply in thread",
                         thread_icon(text_secondary()),
                         cx.listener(move |this, _, window, cx| {
                             this.clear_hovered_message_immediate(cx);
@@ -1677,6 +1689,7 @@ impl TimelineList {
                     .child(Self::toolbar_icon_button(
                         "message-copy-link",
                         &message.id.0,
+                        "Copy link",
                         copy_icon(text_secondary()),
                         cx.listener(move |this, _, _, cx| {
                             this.clear_hovered_message_immediate(cx);
@@ -1686,16 +1699,30 @@ impl TimelineList {
                     .child(Self::toolbar_icon_button(
                         "message-copy-text",
                         &message.id.0,
+                        "Copy text",
                         clipboard_icon(text_secondary()),
                         cx.listener(move |this, _, _, cx| {
                             this.clear_hovered_message_immediate(cx);
                             this.copy_message_text(message_id_for_copy_text_btn.clone(), cx);
                         }),
                     ))
+                    .when(can_edit, |toolbar| {
+                        toolbar.child(Self::toolbar_icon_button(
+                            "message-edit",
+                            &message.id.0,
+                            "Edit",
+                            pencil_icon(text_secondary()),
+                            cx.listener(move |this, _, window, cx| {
+                                this.clear_hovered_message_immediate(cx);
+                                this.edit_message(message_id_for_edit_btn.clone(), window, cx);
+                            }),
+                        ))
+                    })
                     .when(is_own_message, |toolbar| {
                         toolbar.child(Self::toolbar_icon_button(
                             "message-delete",
                             &message.id.0,
+                            "Delete",
                             trash_icon(danger()),
                             cx.listener(move |this, _, _, cx| {
                                 this.clear_hovered_message_immediate(cx);
@@ -2196,11 +2223,15 @@ impl TimelineList {
     fn toolbar_icon_button(
         prefix: &str,
         message_key: &str,
+        label: &str,
         icon: AnyElement,
         listener: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
     ) -> AnyElement {
         div()
             .id(SharedString::from(format!("{prefix}-{message_key}")))
+            .tooltip(crate::views::tooltip::TextTooltip::single_line(
+                label.to_string(),
+            ))
             .on_click(listener)
             .w(px(BUTTON_SIZE))
             .h(px(BUTTON_SIZE))
