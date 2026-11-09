@@ -6660,6 +6660,7 @@ dependencies = [
  "base64",
  "chrono",
  "directories",
+ "embed-resource",
  "emojis",
  "ffmpeg-next",
  "gpui",

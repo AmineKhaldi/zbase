@@ -189,6 +189,22 @@ fn quick_switcher_remote_debounce(conversation_count: usize) -> Duration {
     }
 }
 
+fn open_with_default_app(path: &Path) {
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("explorer").arg(path).spawn();
+    #[cfg(not(target_os = "windows"))]
+    let _ = std::process::Command::new("open").arg(path).spawn();
+}
+
+fn home_dir() -> Option<std::ffi::OsString> {
+    std::env::var_os("HOME").or_else(|| {
+        #[cfg(target_os = "windows")]
+        return std::env::var_os("USERPROFILE");
+        #[cfg(not(target_os = "windows"))]
+        None
+    })
+}
+
 fn unique_copy_destination(downloads_dir: &Path, preferred_name: &str) -> PathBuf {
     let candidate = downloads_dir.join(preferred_name);
     if !candidate.exists() {
@@ -7205,7 +7221,7 @@ impl AppWindow {
     }
 
     pub(crate) fn open_video_in_native_player(path: &str) {
-        let _ = std::process::Command::new("open").arg(path).spawn();
+        open_with_default_app(Path::new(path));
     }
 
     pub(crate) fn save_attachment_copy(
@@ -7221,7 +7237,7 @@ impl AppWindow {
             self.refresh(cx);
             return;
         }
-        let Some(home) = std::env::var_os("HOME") else {
+        let Some(home) = home_dir() else {
             self.models
                 .push_toast("Unable to resolve home directory", None);
             self.refresh(cx);
@@ -7246,7 +7262,7 @@ impl AppWindow {
         let destination = unique_copy_destination(&downloads_dir, preferred);
         match std::fs::copy(&source, &destination) {
             Ok(_) => {
-                let _ = std::process::Command::new("open").arg(&destination).spawn();
+                open_with_default_app(&destination);
                 self.models.push_toast(
                     format!(
                         "Saved to {}",
@@ -7272,7 +7288,7 @@ impl AppWindow {
         suggested_name: &str,
         cx: &mut Context<Self>,
     ) {
-        let Some(home) = std::env::var_os("HOME") else {
+        let Some(home) = home_dir() else {
             self.models
                 .push_toast("Unable to resolve home directory", None);
             self.refresh(cx);
@@ -7302,7 +7318,7 @@ impl AppWindow {
             .status();
         match status {
             Ok(status) if status.success() => {
-                let _ = std::process::Command::new("open").arg(&destination).spawn();
+                open_with_default_app(&destination);
                 self.models.push_toast(
                     format!(
                         "Saved to {}",

@@ -1,3 +1,5 @@
+// Release builds on Windows are GUI apps, so no console window opens with them.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 #![allow(dead_code)]
 
 mod app;

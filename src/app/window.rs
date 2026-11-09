@@ -96,7 +96,8 @@ pub fn open_main_window(cx: &mut App) {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(size(px(WINDOW_MIN_WIDTH_PX), px(WINDOW_MIN_HEIGHT_PX))),
         titlebar: Some(TitlebarOptions {
-            title: None,
+            // Other platforms show the title in the title bar, task switcher and taskbar.
+            title: (!cfg!(target_os = "macos")).then(|| "zBase".into()),
             appears_transparent: cfg!(target_os = "macos"),
             traffic_light_position: cfg!(target_os = "macos").then_some(point(px(18.), px(18.))),
         }),
