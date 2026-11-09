@@ -20,8 +20,8 @@ use crate::{
         input::TextField,
         is_dark_theme, keycap, modal_surface, panel_alt_bg, panel_surface,
         search::{MessageHit, SWITCHER_HIT, SearchResultContext, snippet_text},
-        section_label, shell_border, shell_border_strong, sidebar_selected_bg, sidebar_selected_fg,
-        sidebar_selected_secondary, subtle_surface, text_primary, text_secondary, tint,
+        section_label, shell_border, shell_border_strong, subtle_surface, text_primary,
+        text_secondary, tint,
         truncated_line::{Segment, TruncatedLine},
     },
 };
@@ -802,8 +802,8 @@ impl OverlayHost {
     }
 
     /// Conversation rows are one 36px line: icon, name, team. Message rows add
-    /// the snippet underneath. The selected row takes the accent fill, like a
-    /// macOS list selection, so keyboard focus is obvious in both themes.
+    /// the snippet underneath. The selected row is a grey fill with the normal
+    /// text colors, like the sidebar's selection and pop-up menus.
     fn quick_switcher_row(
         index: usize,
         result: &QuickSwitcherResult,
@@ -812,26 +812,14 @@ impl OverlayHost {
         conversation_avatars: &HashMap<String, crate::models::sidebar_model::SidebarAvatar>,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
-        let row_surface: gpui::Hsla = if selected {
-            rgb(sidebar_selected_bg()).into()
+        let row_surface = if selected {
+            switcher_selection_bg()
         } else {
             modal_surface()
         };
-        let primary_color: gpui::Hsla = if selected {
-            rgb(sidebar_selected_fg()).into()
-        } else {
-            rgb(text_primary()).into()
-        };
-        let secondary_color: gpui::Hsla = if selected {
-            sidebar_selected_secondary()
-        } else {
-            rgb(text_secondary()).into()
-        };
-        let match_color: gpui::Hsla = if selected {
-            primary_color
-        } else {
-            rgb(accent_strong()).into()
-        };
+        let primary_color: gpui::Hsla = rgb(text_primary()).into();
+        let secondary_color: gpui::Hsla = rgb(text_secondary()).into();
+        let match_color: gpui::Hsla = rgb(accent_strong()).into();
         let is_message = result.kind == QuickSwitcherResultKind::Message;
         let is_dm = matches!(result.route, Route::DirectMessage { .. });
         let unread = result.kind == QuickSwitcherResultKind::UnreadChannel;
@@ -895,11 +883,7 @@ impl OverlayHost {
                 .or(simple_team.then_some(result.label.as_str())),
             conversation_avatars,
             row_surface,
-            if selected {
-                sidebar_selected_fg()
-            } else {
-                text_secondary()
-            },
+            text_secondary(),
         );
         let snippet = is_message.then(|| {
             clean_search_snippet(
@@ -953,21 +937,10 @@ impl OverlayHost {
                             .child(TruncatedLine::new(segments)),
                     )
                     .when_some(snippet, |column, snippet| {
-                        column.child(snippet_text(&snippet, SWITCHER_HIT, selected))
+                        column.child(snippet_text(&snippet, SWITCHER_HIT, false))
                     }),
             )
-            .when_some(shortcut_hint, |row, hint| {
-                row.child(if selected {
-                    div()
-                        .flex_shrink_0()
-                        .text_size(px(12.))
-                        .text_color(sidebar_selected_secondary())
-                        .child(hint)
-                        .into_any_element()
-                } else {
-                    keycap(hint)
-                })
-            })
+            .when_some(shortcut_hint, |row, hint| row.child(keycap(hint)))
             .into_any_element()
     }
 
@@ -1001,7 +974,7 @@ impl OverlayHost {
             .flex()
             .items_start()
             .gap(px(10.))
-            .when(selected, |row| row.bg(rgb(sidebar_selected_bg())))
+            .when(selected, |row| row.bg(switcher_selection_bg()))
             .when(!selected, |row| {
                 row.hover(|style| style.bg(tint(text_primary(), 0.06)))
             })
@@ -1010,7 +983,7 @@ impl OverlayHost {
                 this.open_quick_switcher_result_at(index, window, cx);
             }))
             .child(hit.avatar(SWITCHER_HIT))
-            .child(hit.column(SWITCHER_HIT, selected))
+            .child(hit.column(SWITCHER_HIT, false))
             .into_any_element()
     }
 
@@ -1343,4 +1316,10 @@ mod image_viewer_tests {
             );
         }
     }
+}
+
+/// The quick switcher's keyboard selection: a grey a step stronger than a
+/// row's hover, kept opaque because avatar rings are cut from it.
+fn switcher_selection_bg() -> gpui::Hsla {
+    modal_surface().blend(tint(text_primary(), 0.10))
 }
