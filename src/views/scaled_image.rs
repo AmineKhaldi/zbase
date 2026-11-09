@@ -84,9 +84,9 @@ fn scale_file(source: &ScaledSource) -> Result<RgbaImage, ImageCacheError> {
 
 /// An image source for the file at `path` drawn in a `width` by `height`
 /// point box, or `None` for a `.gif`, whose frames the plain path loader keeps
-/// animating. Until the scaled copy is ready, or for a file this loader leaves
-/// alone (a GIF or WebP without the extension, or one it cannot decode), the
-/// plain loader's image shows instead.
+/// animating. While scaling is pending, this source stays pending. For a file
+/// this loader leaves alone (a GIF or WebP without the extension, or one it
+/// cannot decode), the plain loader handles it after scaling returns an error.
 pub fn scaled_image_source(
     path: PathBuf,
     width: f32,
@@ -111,7 +111,8 @@ pub fn scaled_image_source(
             };
             match window.use_asset::<ScaledImageLoader>(&source, cx) {
                 Some(Ok(image)) => Some(Ok(image)),
-                _ => window.use_asset::<ImageAssetLoader>(&plain, cx),
+                Some(Err(_)) => window.use_asset::<ImageAssetLoader>(&plain, cx),
+                None => None,
             }
         },
     ))

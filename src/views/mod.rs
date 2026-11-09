@@ -1280,10 +1280,18 @@ pub fn attachment_header_row(attachment: &AttachmentSummary) -> AnyElement {
         .items_center()
         .gap_1()
         .child(paperclip_icon_small(text_secondary()))
-        .child(div().text_xs().text_color(rgb(text_primary())).child(name))
+        .child(
+            div()
+                .min_w(px(0.))
+                .truncate()
+                .text_xs()
+                .text_color(rgb(text_primary()))
+                .child(name),
+        )
         .when_some(size, |row, size_label| {
             row.child(
                 div()
+                    .flex_shrink_0()
                     .text_xs()
                     .text_color(rgb(text_secondary()))
                     .child(size_label),

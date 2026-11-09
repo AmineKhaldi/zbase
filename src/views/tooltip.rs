@@ -84,7 +84,11 @@ pub fn shortcut_label(keys: &str) -> String {
         return keys.to_string();
     }
     let mut label = String::new();
-    for (symbol, name) in [('⌘', "Ctrl+"), ('⌥', "Alt+"), ('⇧', "Shift+")] {
+    for (symbol, name) in [
+        ('⌘', crate::app::shortcuts::command_label()),
+        ('⌥', "Alt+"),
+        ('⇧', "Shift+"),
+    ] {
         if keys.contains(symbol) {
             label.push_str(name);
         }

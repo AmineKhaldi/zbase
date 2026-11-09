@@ -1,17 +1,16 @@
 use super::{member_avatar, member_markers, pane_header, pane_with_header, truncate_with_ellipsis};
 use crate::{
     domain::{
-        attachment::AttachmentSource, backend::BackendCapabilities,
-        channel_details::ChannelMemberPreview, conversation::ConversationKind,
+        backend::BackendCapabilities, channel_details::ChannelMemberPreview,
+        conversation::ConversationKind,
     },
     models::{
         conversation_model::ConversationModel,
         timeline_model::{TimelineModel, TimelineRow},
     },
     views::{
-        accent, app_window::AppWindow, attachment_open_target, avatar::Avatar, badge, border,
-        danger, panel_alt_bg, panel_alt_surface, panel_surface, subtle_surface, text_primary,
-        text_secondary,
+        accent, app_window::AppWindow, avatar::Avatar, badge, border, danger, panel_alt_bg,
+        panel_alt_surface, panel_surface, subtle_surface, text_primary, text_secondary,
     },
 };
 use gpui::prelude::FluentBuilder;
@@ -270,27 +269,11 @@ pub(super) fn render_details_panel(
                     })
                     .children(shared_attachments.into_iter().enumerate().map(
                         |(index, attachment)| {
-                            let open_target = attachment_open_target(&attachment);
-                            let fallback_open_target = attachment
-                                .source
-                                .as_ref()
-                                .or_else(|| {
-                                    attachment.preview.as_ref().map(|preview| &preview.source)
-                                })
-                                .and_then(|source| match source {
-                                    AttachmentSource::Url(url) => Some(url.clone()),
-                                    AttachmentSource::LocalPath(_) => None,
-                                });
-                            let save_source = attachment
-                                .source
-                                .as_ref()
-                                .or_else(|| {
-                                    attachment.preview.as_ref().map(|preview| &preview.source)
-                                })
-                                .and_then(|source| match source {
-                                    AttachmentSource::LocalPath(path) => Some(path.clone()),
-                                    _ => None,
-                                });
+                            let download_control = crate::views::app_window::downloads::control(
+                                &attachment,
+                                format!("details-download-{index}"),
+                                cx,
+                            );
                             let file_name = if attachment.name.trim().is_empty() {
                                 "attachment".to_string()
                             } else {
@@ -309,23 +292,7 @@ pub(super) fn render_details_panel(
                                 .cursor(CursorStyle::PointingHand)
                                 .hover(|s| s.bg(subtle_surface()))
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    if let Some(source_path) = save_source.clone() {
-                                        this.save_attachment_copy(&source_path, &file_name, cx);
-                                    } else if let Some(target) =
-                                        open_target.clone().or_else(|| fallback_open_target.clone())
-                                    {
-                                        if target.starts_with("http://")
-                                            || target.starts_with("https://")
-                                        {
-                                            this.download_attachment_and_open(
-                                                &target, &file_name, cx,
-                                            );
-                                        } else {
-                                            this.open_url_or_deep_link(&target, window, cx);
-                                        }
-                                    } else {
-                                        this.notify_attachment_not_ready(cx);
-                                    }
+                                    this.open_files_attachment(&attachment, window, cx);
                                 }))
                                 .child(
                                     div()
@@ -337,6 +304,7 @@ pub(super) fn render_details_panel(
                                         .text_color(rgb(accent()))
                                         .child(truncated_name),
                                 )
+                                .child(download_control)
                                 .into_any_element()
                         },
                     )),

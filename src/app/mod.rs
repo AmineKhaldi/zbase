@@ -7,3 +7,6 @@ pub mod demo;
 pub mod menu_state;
 pub mod theme;
 pub mod window;
+
+mod key_bindings;
+pub mod shortcuts;

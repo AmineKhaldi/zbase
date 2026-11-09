@@ -22,7 +22,7 @@ use crate::{
         CUSTOM_EMOJI_REACTION_SIZE_PX, accent, accent_soft, activity_icon,
         app_window::{AppWindow, video_preview_cache_key},
         arrow_left_icon, arrow_right_icon, attachment_display_label, attachment_header_row,
-        attachment_image_source, attachment_lightbox_source, attachment_local_path,
+        attachment_image_source, attachment_lightbox_source,
         avatar::{Avatar, default_avatar_background},
         border, clipboard_icon, copy_icon, danger, display_image_source, format_duration_ms,
         glass_surface_dark, hash_icon,
@@ -1090,7 +1090,7 @@ impl TimelineList {
                             .enumerate()
                             .map(|(index, attachment)| {
                                 let attachment_label = attachment_display_label(attachment);
-                                let local_path = attachment_local_path(attachment);
+
                                 let has_inline_preview = matches!(
                                     attachment.kind,
                                     AttachmentKind::Image | AttachmentKind::Video
@@ -1105,22 +1105,12 @@ impl TimelineList {
                                         }
                                         None => crate::views::attachment_file_row(attachment),
                                     };
-                                    if let Some(ref path) = local_path {
-                                        let p = path.clone();
-                                        let fname = attachment.name.clone();
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "tl-att-hdr-{}-{index}",
-                                                message.id.0
-                                            )))
-                                            .cursor(gpui::CursorStyle::PointingHand)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.save_attachment_copy(&p, &fname, cx);
-                                            }))
-                                            .child(base)
-                                            .into_any_element()
-                                    } else {
+                                    if upload_progress.is_some() {
                                         base
+                                    } else {
+                                    crate::views::app_window::downloads::row(
+                                        attachment, format!("timeline-download-{}-{index}", message.id.0), base, cx,
+                                    )
                                     }
                                 };
                                 let mut card = div()

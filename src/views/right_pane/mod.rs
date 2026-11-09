@@ -30,7 +30,7 @@ use crate::{
         RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX, accent, accent_soft,
         app_window::{AppWindow, video_preview_cache_key},
         attachment_display_label, attachment_header_row, attachment_image_source,
-        attachment_lightbox_source, attachment_local_path,
+        attachment_lightbox_source,
         avatar::{Avatar, default_avatar_background},
         badge, border, chevron_down_icon, close_icon, danger, danger_soft, display_image_source,
         format_duration_ms,
@@ -495,26 +495,15 @@ fn render_parent_message(
                                 .enumerate()
                                 .map(|(index, attachment)| {
                                     let attachment_label = attachment_display_label(attachment);
-                                    let local_path = attachment_local_path(attachment);
+
                                     let header = {
                                         let base = attachment_header_row(attachment);
-                                        if let Some(ref path) = local_path {
-                                            let p = path.clone();
-                                            let fname = attachment.name.clone();
-                                            div()
-                                                .id(SharedString::from(format!(
-                                                    "rp-att-hdr-{}-{index}",
-                                                    message.id.0
-                                                )))
-                                                .cursor(gpui::CursorStyle::PointingHand)
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.save_attachment_copy(&p, &fname, cx);
-                                                }))
-                                                .child(base)
-                                                .into_any_element()
-                                        } else {
-                                            base
-                                        }
+                                        crate::views::app_window::downloads::row(
+                                            attachment,
+                                            format!("thread-download-{}-{index}", message.id.0),
+                                            base,
+                                            cx,
+                                        )
                                     };
                                     let mut card = div().flex().flex_col().gap_0p5().child(header);
 
