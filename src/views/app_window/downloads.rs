@@ -127,11 +127,7 @@ impl AppWindow {
                     async move {
                         let target = path.clone();
                         let opened = background
-                            .spawn(async move {
-                                default_app_command(&target)
-                                    .status()
-                                    .is_ok_and(|s| s.success())
-                            })
+                            .spawn(async move { crate::app::platform::open_file(&target) })
                             .await;
                         if !opened {
                             let _ = this.update(&mut app, |this, cx| {
@@ -147,15 +143,7 @@ impl AppWindow {
                 return;
             }
             Some(DownloadState::Reveal(path)) => {
-                #[cfg(target_os = "windows")]
-                let _ = std::process::Command::new("explorer")
-                    .arg(format!("/select,{}", path.display()))
-                    .spawn();
-                #[cfg(not(target_os = "windows"))]
-                let _ = std::process::Command::new("open")
-                    .arg("-R")
-                    .arg(path)
-                    .spawn();
+                cx.reveal_path(&path);
                 return;
             }
             _ => {}

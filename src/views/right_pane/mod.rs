@@ -639,9 +639,9 @@ fn render_parent_message(
                                                 .flex_shrink_0()
                                                 .cursor(CursorStyle::PointingHand)
                                                 .when_some(video_path, |el, path| {
-                                                    el.on_click(cx.listener(move |_, _, _, _| {
+                                                    el.on_click(cx.listener(move |_, _, _, cx| {
                                                         AppWindow::open_video_in_native_player(
-                                                            &path,
+                                                            &path, cx,
                                                         );
                                                     }))
                                                 })

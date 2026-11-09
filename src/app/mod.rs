@@ -5,6 +5,7 @@ pub mod commands;
 #[cfg(any(test, feature = "demo-fixtures"))]
 pub mod demo;
 pub mod menu_state;
+pub mod platform;
 pub mod theme;
 pub mod window;
 

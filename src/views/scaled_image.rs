@@ -3,16 +3,16 @@
 //! GPUI samples images bilinearly without mipmaps, so a 192px avatar drawn at
 //! 64 device pixels skips most source pixels and aliases, and a screenshot
 //! shrunk to a thumbnail turns its text grainy. Resampling once on the CPU
-//! with Lanczos, to exactly the drawn size, keeps edges and detail smooth the
+//! with Lanczos, to a nearby size bucket, keeps edges and detail smooth the
 //! way a browser's downscale does.
-use gpui::{
-    App, Asset, ImageAssetLoader, ImageCacheError, ImageSource, RenderImage, Resource, Window,
-};
-use image::{Frame, ImageFormat, ImageReader, RgbaImage, imageops::FilterType};
-use std::{future::Future, path::PathBuf, sync::Arc};
+use gpui::{App, ImageAssetLoader, ImageCacheError, ImageSource, Resource, Window};
+use image::{ImageFormat, ImageReader, RgbaImage, imageops::FilterType};
+use std::path::PathBuf;
+
+mod state;
 
 /// How the image fills its box, matching the `ObjectFit` it is drawn with.
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum Fit {
     /// Fills the box, center-cropping the overflow.
     Cover,
@@ -21,7 +21,7 @@ pub enum Fit {
 }
 
 /// A local image file and the box, in device pixels, to scale it to.
-#[derive(Clone, Hash)]
+#[derive(Clone, PartialEq, Eq)]
 struct ScaledSource {
     path: PathBuf,
     width_px: u32,
@@ -29,25 +29,11 @@ struct ScaledSource {
     fit: Fit,
 }
 
-enum ScaledImageLoader {}
-
-impl Asset for ScaledImageLoader {
-    type Source = ScaledSource;
-    type Output = Result<Arc<RenderImage>, ImageCacheError>;
-
-    #[allow(
-        clippy::manual_async_fn,
-        reason = "an `async fn` would borrow `App`; the trait needs a 'static future"
-    )]
-    fn load(
-        source: ScaledSource,
-        _: &mut App,
-    ) -> impl Future<Output = Self::Output> + Send + 'static {
-        async move {
-            let scaled = scale_file(&source)?;
-            Ok(Arc::new(RenderImage::new(vec![Frame::new(scaled)])))
-        }
-    }
+// A geometric ladder limits the number of resizes. Quantize both box edges;
+// scale_file preserves the source aspect ratio, leaving cropping to ObjectFit.
+fn bucket(pixels: f32) -> u32 {
+    let pixels = pixels.max(1.);
+    2_f32.powf((pixels.log2() * 2.).ceil() / 2.).ceil() as u32
 }
 
 /// Decodes the file and resamples it for its box, as BGRA for GPUI.
@@ -62,17 +48,21 @@ fn scale_file(source: &ScaledSource) -> Result<RgbaImage, ImageCacheError> {
         ));
     }
     let decoded = reader.decode()?;
-    let scaled = match source.fit {
-        Fit::Cover => {
-            decoded.resize_to_fill(source.width_px, source.height_px, FilterType::Lanczos3)
-        }
-        Fit::Contain
-            if decoded.width() > source.width_px || decoded.height() > source.height_px =>
-        {
-            decoded.resize(source.width_px, source.height_px, FilterType::Lanczos3)
-        }
-        // Already small enough: enlarging adds no detail.
-        Fit::Contain => decoded,
+    let x = source.width_px as f64 / decoded.width() as f64;
+    let y = source.height_px as f64 / decoded.height() as f64;
+    let scale = match source.fit {
+        Fit::Cover => x.max(y),
+        Fit::Contain => x.min(y),
+    }
+    .min(1.);
+    let scaled = if scale < 1. {
+        decoded.resize_exact(
+            (decoded.width() as f64 * scale).round().max(1.) as u32,
+            (decoded.height() as f64 * scale).round().max(1.) as u32,
+            FilterType::Lanczos3,
+        )
+    } else {
+        decoded
     };
     let mut scaled = scaled.into_rgba8();
     // GPUI expects BGRA.
@@ -84,7 +74,7 @@ fn scale_file(source: &ScaledSource) -> Result<RgbaImage, ImageCacheError> {
 
 /// An image source for the file at `path` drawn in a `width` by `height`
 /// point box, or `None` for a `.gif`, whose frames the plain path loader keeps
-/// animating. While scaling is pending, this source stays pending. For a file
+/// animating. During resizing, the previous completed image stays visible. For a file
 /// this loader leaves alone (a GIF or WebP without the extension, or one it
 /// cannot decode), the plain loader handles it after scaling returns an error.
 pub fn scaled_image_source(
@@ -105,11 +95,11 @@ pub fn scaled_image_source(
             let scale = window.scale_factor();
             let source = ScaledSource {
                 path: path.clone(),
-                width_px: (width * scale).round().max(1.) as u32,
-                height_px: (height * scale).round().max(1.) as u32,
+                width_px: bucket(width * scale),
+                height_px: bucket(height * scale),
                 fit,
             };
-            match window.use_asset::<ScaledImageLoader>(&source, cx) {
+            match state::image_for(source, window, cx) {
                 Some(Ok(image)) => Some(Ok(image)),
                 Some(Err(_)) => window.use_asset::<ImageAssetLoader>(&plain, cx),
                 None => None,
@@ -131,7 +121,7 @@ pub fn scaled_for_box(source: ImageSource, width: f32, height: f32, fit: Fit) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{Fit, ScaledSource, scale_file};
+    use super::{Fit, ScaledSource, bucket, scale_file};
     use image::{ImageFormat, RgbaImage};
     use std::path::{Path, PathBuf};
 
@@ -173,9 +163,27 @@ mod tests {
     }
 
     #[test]
-    fn cover_fills_the_box_exactly() {
+    fn cover_preserves_aspect_ratio_for_gpu_cropping() {
         let path = attachment("cover", 640, 480, ImageFormat::Png);
-        assert_eq!(scaled(&path, 200, 200, Fit::Cover), Some((200, 200)));
+        assert_eq!(scaled(&path, 200, 200, Fit::Cover), Some((267, 200)));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn resize_ladder_bounds_variants_and_final_downscale() {
+        let sizes: std::collections::HashSet<_> = (72..=280).map(|n| bucket(n as f32)).collect();
+        assert!(sizes.len() <= 5);
+        for n in 1..=4096 {
+            let rounded = bucket(n as f32);
+            assert!(rounded >= n);
+            assert!((rounded as f32) <= n as f32 * std::f32::consts::SQRT_2 + 1.);
+        }
+    }
+
+    #[test]
+    fn cover_never_enlarges_small_sources() {
+        let path = attachment("small-cover", 40, 20, ImageFormat::Png);
+        assert_eq!(scaled(&path, 200, 200, Fit::Cover), Some((40, 20)));
         let _ = std::fs::remove_file(path);
     }
 

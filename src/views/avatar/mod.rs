@@ -2,6 +2,7 @@ use crate::domain::presence::Availability;
 use crate::models::conversation_model::AvatarParticipant;
 use crate::views::scaled_image::{self, Fit};
 use crate::views::{accent, is_dark_theme, panel_surface};
+use gpui::InteractiveElement;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, FontWeight, Hsla, ImageSource, IntoElement, ObjectFit, ParentElement, Styled,
@@ -357,6 +358,7 @@ impl Avatar {
             .bg(panel_surface())
             .child(
                 img(image_source)
+                    .id(gpui::SharedString::from(format!("avatar-image-{size}")))
                     .w(px(size))
                     .h(px(size))
                     .when(circular, |d| d.rounded_full())

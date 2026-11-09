@@ -1295,8 +1295,8 @@ impl TimelineList {
                                                 }
                                             }))
                                             .when_some(video_path, |el, path| {
-                                                el.on_click(cx.listener(move |_, _, _, _| {
-                                                    AppWindow::open_video_in_native_player(&path);
+                                                el.on_click(cx.listener(move |_, _, _, cx| {
+                                                    AppWindow::open_video_in_native_player(&path, cx);
                                                 }))
                                             })
                                             .child(

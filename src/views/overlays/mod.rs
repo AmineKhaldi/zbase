@@ -290,8 +290,8 @@ impl OverlayHost {
                                     .child(
                                         img(scaled_for_box(
                                             image_source,
-                                            frame_width,
-                                            frame_height,
+                                            1120.,
+                                            780.,
                                             Fit::Contain,
                                         ))
                                         .id("lightbox-image")

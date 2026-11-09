@@ -190,15 +190,6 @@ fn quick_switcher_remote_debounce(conversation_count: usize) -> Duration {
     }
 }
 
-fn default_app_command(path: &Path) -> std::process::Command {
-    #[cfg(target_os = "windows")]
-    let mut command = std::process::Command::new("explorer");
-    #[cfg(not(target_os = "windows"))]
-    let mut command = std::process::Command::new("open");
-    command.arg(path);
-    command
-}
-
 fn home_dir() -> Option<std::ffi::OsString> {
     let home = std::env::var_os("HOME");
     #[cfg(target_os = "windows")]
@@ -7221,8 +7212,8 @@ impl AppWindow {
         self.refresh(cx);
     }
 
-    pub(crate) fn open_video_in_native_player(path: &str) {
-        let _ = default_app_command(Path::new(path)).spawn();
+    pub(crate) fn open_video_in_native_player(path: &str, cx: &App) {
+        cx.open_with_system(Path::new(path));
     }
 
     pub(crate) fn save_attachment_copy(
