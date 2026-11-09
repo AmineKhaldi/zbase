@@ -1,7 +1,6 @@
 //! A team's header and its channels in the grouped list.
 use super::{
-    DragPreview, DraggedSection, RowContext, RowLook, Sidebar, SidebarHost, SidebarTooltip,
-    disclosure, team_asset,
+    DragPreview, DraggedSection, RowContext, RowLook, Sidebar, SidebarHost, disclosure, team_asset,
 };
 use crate::{
     domain::{conversation::ConversationGroup, ids::SidebarSectionId},
@@ -75,7 +74,6 @@ impl TeamGroup<'_> {
             .rounded_md()
             .text_xs()
             .text_color(rgb(text_secondary()))
-            .tooltip(SidebarTooltip::builder(self.team.display_name.clone()))
             .cursor_pointer()
             .hover(|style| style.bg(subtle_surface()))
             .on_click(

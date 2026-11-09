@@ -294,7 +294,6 @@ impl CompactRow<'_> {
                         })),
                 )
             })
-            .tooltip(SidebarTooltip::builder(row.full_label()))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 this.sidebar_set_hovered_row(hovered.then(|| hover_id.clone()), cx);
             }))

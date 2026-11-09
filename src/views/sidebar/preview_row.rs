@@ -3,7 +3,7 @@
 //! now: typing, a draft, a failed send) and the unread badge below. Selection,
 //! hover and unread use the compact rows' `RowColors` and `RowActivity`, so
 //! both styles read alike.
-use super::{RowActivity, RowColors, SidebarHost, SidebarTooltip};
+use super::{RowActivity, RowColors, SidebarHost};
 use crate::{
     domain::route::Route,
     models::{sidebar_model::SidebarRow, sidebar_preview::PreviewLive},
@@ -92,7 +92,6 @@ impl PreviewRow<'_> {
             .rounded(px(8.))
             .cursor_pointer()
             .when_some(colors.background, |row, background| row.bg(background))
-            .tooltip(SidebarTooltip::builder(row.full_label()))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 this.sidebar_set_hovered_row(hovered.then(|| hover_id.clone()), cx);
             }))
