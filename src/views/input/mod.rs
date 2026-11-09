@@ -1,3 +1,4 @@
+mod blink;
 mod scrolling;
 
 use gpui::{
@@ -15,10 +16,12 @@ use std::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::views::{accent, selection};
+use crate::views::{selection, text_primary};
 
 const DEFAULT_TEXT_FIELD_PROFILE_MIN_MS: u128 = 2;
 const PLACEHOLDER_OPACITY: f32 = 0.70;
+/// Trimmed off the caret's top and bottom.
+const CARET_VERTICAL_INSET_PX: f32 = 2.;
 const ENV_INPUT_DISABLE_LAYOUT_CACHE: &str = "ZBASE_INPUT_DISABLE_LAYOUT_CACHE";
 const ENV_INPUT_PROFILE_MIN_MS: &str = "ZBASE_INPUT_PROFILE_MIN_MS";
 const ENV_INPUT_USE_LEGACY_REPLACE: &str = "ZBASE_INPUT_USE_LEGACY_REPLACE";
@@ -220,6 +223,7 @@ pub struct TextField {
     last_undo_snapshot_at: Option<Instant>,
     last_undo_edit_kind: Option<UndoEditKind>,
     pending_height_edit_at: Option<Instant>,
+    blink: blink::CaretBlink,
 }
 
 impl TextField {
@@ -315,6 +319,7 @@ impl TextField {
             last_undo_snapshot_at: None,
             last_undo_edit_kind: None,
             pending_height_edit_at: None,
+            blink: blink::CaretBlink::default(),
         }
     }
 
@@ -1325,8 +1330,14 @@ impl Element for TextLineElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        let is_focused = self.input.read(cx).focus_handle.is_focused(window);
+        // Like native fields, the caret hides while the window is in the background.
+        let caret_active = is_focused && window.is_window_active();
+        let window_handle = window.window_handle();
+        let caret_visible = self.input.update(cx, |input, cx| {
+            input.sync_caret_blink(caret_active, window_handle, cx)
+        });
         let input = self.input.read(cx);
-        let is_focused = input.focus_handle.is_focused(window);
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();
         let cursor = input.cursor_offset();
@@ -1450,18 +1461,20 @@ impl Element for TextLineElement {
             layout.selection_quads(selected_range, paint_origin)
         };
 
-        // Like native fields, the caret hides while the window is in the background.
-        let cursor = if is_focused && window.is_window_active() && selection.is_empty() {
+        let cursor = if caret_visible && selection.is_empty() {
             let cursor_pos = layout.position_for_index(cursor).unwrap_or_default();
+            // A little shorter than the line, centered on it, like a native caret.
+            let inset = px(CARET_VERTICAL_INSET_PX);
             Some(fill(
                 Bounds::new(
                     point(
                         bounds.left() + cursor_pos.x,
-                        bounds.top() + cursor_pos.y - scroll_y,
+                        bounds.top() + cursor_pos.y - scroll_y + inset,
                     ),
-                    size(px(2.), layout.line_height),
+                    size(px(1.), (layout.line_height - inset * 2.).max(px(1.))),
                 ),
-                rgb(accent()),
+                // The text color, like a native caret, not the accent.
+                rgb(text_primary()),
             ))
         } else {
             None
@@ -1521,16 +1534,8 @@ impl Element for TextLineElement {
             window.paint_quad(quad);
         }
 
-        // Start a placeholder 3px past the 2px caret so the two never touch.
-        let placeholder_inset = if prepaint.layout.is_placeholder {
-            px(5.)
-        } else {
-            px(0.)
-        };
-        let mut line_origin = point(
-            bounds.origin.x + placeholder_inset,
-            bounds.origin.y - prepaint.scroll_y,
-        );
+        // The placeholder starts where typed text would, under the caret.
+        let mut line_origin = point(bounds.origin.x, bounds.origin.y - prepaint.scroll_y);
         let align = window.text_style().text_align;
         for line in &prepaint.layout.lines {
             let _ = line.paint(
