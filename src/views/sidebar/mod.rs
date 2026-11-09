@@ -16,7 +16,7 @@ use crate::{
         PREVIEWS_SIDEBAR_WIDTH_PX, accent, accent_strong,
         avatar::Avatar,
         chevron_down_icon, chevron_right_icon, hash_icon, icon_asset, is_dark_theme,
-        popup_menu::{PopupMenuEntry, popup_menu},
+        popup_menu::{MenuHighlight, PopupMenuEntry, popup_menu},
         sidebar_bg, sidebar_card_bg, sidebar_card_shadow, sidebar_hover_bg, subtle_surface,
         success_soft, text_primary, text_secondary, tint,
         tooltip::shortcut_label,
@@ -775,6 +775,7 @@ impl Sidebar {
                                 .child(popup_menu(
                                     "sidebar-order-menu",
                                     200.,
+                                    MenuHighlight::Neutral,
                                     entries,
                                     cx.listener(|this, _, _, cx| this.sidebar_close_menu(true, cx)),
                                 )),
@@ -847,6 +848,7 @@ impl Sidebar {
                                 .child(popup_menu(
                                     "sidebar-identity-menu",
                                     200.,
+                                    MenuHighlight::Neutral,
                                     entries,
                                     cx.listener(|this, _, _, cx| this.sidebar_close_menu(true, cx)),
                                 )),
