@@ -264,6 +264,11 @@ fn render_item(
     size: f32,
     cx: &mut Context<AppWindow>,
 ) -> AnyElement {
+    let download_control = crate::views::app_window::downloads::control(
+        item.attachment,
+        format!("files-download-{}-{}", item.message_id.0, item.index),
+        cx,
+    );
     let attachment = item.attachment.clone();
     let name = filename(&attachment.name);
     let full_name = attachment.name.clone();
@@ -352,6 +357,7 @@ fn render_item(
                     .group_hover("files-item", |s| s.opacity(1.))
                     .child(jump_button(message_id, item.index, cx)),
             );
+        content = content.child(div().flex().justify_end().child(download_control));
     } else {
         content = content
             .w_full()
@@ -381,6 +387,7 @@ fn render_item(
                             .child(metadata),
                     ),
             )
+            .child(download_control)
             .child(jump_button(message_id, item.index, cx));
     }
     content.into_any_element()
