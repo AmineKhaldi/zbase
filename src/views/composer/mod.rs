@@ -279,7 +279,7 @@ fn format_tool(
 pub(crate) const COMPOSER_BOTTOM_INSET_PX: f32 = 16.;
 
 /// The row under the conversation composer that says who is typing.
-const TYPING_SLOT_HEIGHT_PX: f32 = 24.;
+const TYPING_SLOT_HEIGHT_PX: f32 = 18.;
 
 /// The composer field's fill: the window's white in light mode, a raised
 /// field in dark mode where the panel is already dark.
