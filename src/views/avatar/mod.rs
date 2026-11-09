@@ -8,6 +8,8 @@ use gpui::{
 };
 use std::path::PathBuf;
 
+mod scaled;
+
 pub const ME_AVATAR_ASSET: &str = "assets/avatars/me.svg";
 
 pub struct Avatar;
@@ -328,7 +330,7 @@ impl Avatar {
         circular: bool,
     ) -> AnyElement {
         match asset {
-            Some(asset_path) => image_source_for_asset(asset_path)
+            Some(asset_path) => sized_image_source_for_asset(asset_path, size)
                 .map(|source| Self::image(name, source, size, background, foreground, circular))
                 .unwrap_or_else(|| Self::fallback(name, size, background, foreground, circular)),
             None => Self::fallback(name, size, background, foreground, circular),
@@ -580,6 +582,31 @@ fn initials_for_name(name: &str) -> String {
     }
 
     parts
+}
+
+/// Like [`image_source_for_asset`], but a local file is pre-scaled to the
+/// pixels a `size`-point square covers (see [`scaled`]).
+fn sized_image_source_for_asset(asset_path: &str, size: f32) -> Option<ImageSource> {
+    match local_asset_path(asset_path) {
+        Some(path) => scaled::scaled_image_source(path.clone(), size)
+            .or_else(|| Some(ImageSource::from(path))),
+        None => image_source_for_asset(asset_path),
+    }
+}
+
+/// The file behind a local avatar path, or `None` for URLs and bundled assets.
+fn local_asset_path(asset_path: &str) -> Option<PathBuf> {
+    let trimmed = asset_path.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if trimmed.is_empty()
+        || lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("assets/")
+    {
+        return None;
+    }
+    let normalized = crate::views::normalize_local_source_path(trimmed);
+    (!normalized.is_empty()).then(|| PathBuf::from(normalized))
 }
 
 pub(crate) fn image_source_for_asset(asset_path: &str) -> Option<ImageSource> {
