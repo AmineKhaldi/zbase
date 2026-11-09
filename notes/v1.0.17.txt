@@ -1,0 +1,6 @@
+## What's Changed
+* Polish the composer, sidebar, avatar sharpness and message hover by @greimela in https://github.com/cameroncooper/zbase/pull/36
+* Keep a thread root's reactions when its reply count refreshes by @greimela in https://github.com/cameroncooper/zbase/pull/37
+
+
+**Full Changelog**: https://github.com/cameroncooper/zbase/compare/v1.0.16...v1.0.17
