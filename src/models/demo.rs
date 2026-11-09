@@ -944,6 +944,22 @@ pub(crate) fn demo_conversation_messages(conversation_id: &ConversationId) -> Ve
     match conversation_id.0.as_str() {
         DEMO_GENERAL_ID => general_messages(),
         DEMO_DESIGN_ID => design_messages(),
+        DEMO_DM_ID
+            if matches!(
+                crate::app::demo::DemoScene::from_env(),
+                crate::app::demo::DemoScene::FilesMedia
+                    | crate::app::demo::DemoScene::FilesDocuments
+            ) =>
+        {
+            demo_files_rows()
+                .into_iter()
+                .filter_map(|row| match row {
+                    TimelineRow::Message(row) => Some(row.message),
+                    _ => None,
+                })
+                .rev()
+                .collect()
+        }
         DEMO_DM_ID => dm_messages(),
         _ => Vec::new(),
     }
@@ -1529,6 +1545,63 @@ fn active_call_participants(conversation: &ConversationSummary) -> Vec<UserSumma
         ConversationKind::DirectMessage => vec![me, alice],
         ConversationKind::Channel | ConversationKind::GroupDirectMessage => vec![me, alice, sam],
     }
+}
+
+/// Fictional attachments for offline Files captures. No user files or network URLs.
+pub(crate) fn demo_files_rows() -> Vec<TimelineRow> {
+    let samples = [
+        ("onboarding-layout.png", AttachmentKind::Image),
+        ("color-study.png", AttachmentKind::Image),
+        ("mobile-layout.png", AttachmentKind::Image),
+        ("navigation-study.png", AttachmentKind::Image),
+        ("release-banner.png", AttachmentKind::Image),
+        ("empty-state.png", AttachmentKind::Image),
+        (
+            "Lighthouse-onboarding-review-with-final-comments.pdf",
+            AttachmentKind::File,
+        ),
+        ("design-tokens.json", AttachmentKind::File),
+        ("prototype-source.zip", AttachmentKind::File),
+        ("research-notes.txt", AttachmentKind::File),
+    ];
+    samples
+        .into_iter()
+        .enumerate()
+        .map(|(i, (name, kind))| {
+            let image = kind == AttachmentKind::Image;
+            let source = image.then(|| {
+                crate::domain::attachment::AttachmentSource::LocalPath(format!(
+                    "{}/assets/demo/files/sample-{}.png",
+                    env!("CARGO_MANIFEST_DIR"),
+                    i % 3
+                ))
+            });
+            let attachment = AttachmentSummary {
+                name: name.into(),
+                kind,
+                size_bytes: 214_000 + i as u64 * 102_400,
+                source,
+                width: image.then_some(480),
+                height: image.then_some(360),
+                ..Default::default()
+            };
+            let mut message = DemoMessage::new(
+                3000 + i as u64,
+                "alicej",
+                (0, 10, 30),
+                vec![Part::Text("Here are the mock onboarding review files.")],
+            )
+            .attach(attachment)
+            .record(DEMO_DM_ID);
+            // Stable month boundaries and ordering in captures.
+            message.timestamp_ms = Some(1794220200000 - i as i64 * 86400000 * 4);
+            TimelineRow::Message(MessageRow {
+                author: demo_user_summary(&UserId::new("alicej")),
+                message,
+                show_header: true,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
