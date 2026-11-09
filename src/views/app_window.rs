@@ -710,9 +710,14 @@ impl SidebarHost for CachedSidebarView {
         });
     }
 
-    fn sidebar_set_hovered_row(&mut self, label: Option<String>, cx: &mut Context<Self>) {
-        if self.hovered_row != label {
-            self.hovered_row = label;
+    fn sidebar_set_row_hovered(&mut self, row_id: String, hovered: bool, cx: &mut Context<Self>) {
+        if hovered {
+            if self.hovered_row.as_ref() != Some(&row_id) {
+                self.hovered_row = Some(row_id);
+                cx.notify();
+            }
+        } else if self.hovered_row.as_ref() == Some(&row_id) {
+            self.hovered_row = None;
             cx.notify();
         }
     }
@@ -796,7 +801,7 @@ impl SidebarHost for AppWindow {
         }
     }
 
-    fn sidebar_set_hovered_row(&mut self, _label: Option<String>, _cx: &mut Context<Self>) {}
+    fn sidebar_set_row_hovered(&mut self, _: String, _: bool, _: &mut Context<Self>) {}
 
     fn sidebar_hovered_row(&self) -> Option<&str> {
         None

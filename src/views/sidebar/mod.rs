@@ -295,7 +295,7 @@ impl CompactRow<'_> {
                 )
             })
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                this.sidebar_set_hovered_row(hovered.then(|| hover_id.clone()), cx);
+                this.sidebar_set_row_hovered(hover_id.clone(), *hovered, cx);
             }))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.sidebar_hide_hover_tooltip(cx);
@@ -467,7 +467,9 @@ pub trait SidebarHost: Sized + 'static {
         window: &mut Window,
         cx: &mut Context<Self>,
     );
-    fn sidebar_set_hovered_row(&mut self, label: Option<String>, cx: &mut Context<Self>);
+    /// Marks `row_id` hovered, or unhovered. Leaving a row clears the hover only
+    /// if it is still that row's: moving down, the next row's enter arrives first.
+    fn sidebar_set_row_hovered(&mut self, row_id: String, hovered: bool, cx: &mut Context<Self>);
     fn sidebar_hovered_row(&self) -> Option<&str>;
 }
 

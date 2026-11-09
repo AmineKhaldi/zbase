@@ -93,7 +93,7 @@ impl PreviewRow<'_> {
             .cursor_pointer()
             .when_some(colors.background, |row, background| row.bg(background))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                this.sidebar_set_hovered_row(hovered.then(|| hover_id.clone()), cx);
+                this.sidebar_set_row_hovered(hover_id.clone(), *hovered, cx);
             }))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.sidebar_hide_hover_tooltip(cx);
