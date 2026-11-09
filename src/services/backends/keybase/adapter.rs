@@ -6122,7 +6122,8 @@ fn run_reply_ancestor_backfill(
     }
 
     if reply_ancestor_chain_cached(&local_store, &conversation_id, &required_parent_id)
-        && let Ok(Some(mut child)) = local_store.get_message(&conversation_id, &child_message_id)
+        && let Ok(Some(mut child)) =
+            local_store.get_message_with_reactions(&conversation_id, &child_message_id)
     {
         ingest_message_record(sender.as_ref(), &local_store, &mut child);
         if let Some(sender_ref) = sender.as_ref() {
@@ -6239,7 +6240,8 @@ fn reconcile_descendant_thread_roots(
         return;
     }
     for descendant_id in descendant_ids {
-        let Ok(Some(mut descendant)) = local_store.get_message(conversation_id, &descendant_id)
+        let Ok(Some(mut descendant)) =
+            local_store.get_message_with_reactions(conversation_id, &descendant_id)
         else {
             continue;
         };
@@ -6271,7 +6273,8 @@ fn refresh_root_descendant_reply_count(
         .ok()
         .map(|descendants| descendants.len() as u32)
         .unwrap_or(0);
-    let Ok(Some(mut root)) = local_store.get_message(conversation_id, root_id) else {
+    let Ok(Some(mut root)) = local_store.get_message_with_reactions(conversation_id, root_id)
+    else {
         return;
     };
     if root.thread_reply_count == descendant_count {
@@ -16487,6 +16490,37 @@ mod tests {
             )]),
             &ConversationId::new("conversation"),
         )
+    }
+
+    #[test]
+    fn reply_count_refresh_keeps_the_root_reactions() {
+        let path = temp_emoji_asset_dir("root-reactions-refresh");
+        let store = Arc::new(LocalStore::open_at(path.clone()).unwrap());
+        let mut root = make_test_message("10");
+        root.thread_reply_count = 3;
+        store.persist_message(&root).unwrap();
+        store
+            .upsert_message_reaction(
+                &root.conversation_id,
+                &root.id,
+                ":+1:",
+                None,
+                &UserId::new("bob"),
+                now_unix_ms(),
+            )
+            .unwrap();
+
+        let (sender, receiver) = mpsc::channel();
+        refresh_root_descendant_reply_count(Some(&sender), &store, &root.conversation_id, &root.id);
+
+        let Ok(BackendEvent::MessageUpserted(upserted)) = receiver.try_recv() else {
+            panic!("a stale reply count should upsert the root");
+        };
+        assert_eq!(upserted.thread_reply_count, 0);
+        assert_eq!(upserted.reactions.len(), 1);
+        assert_eq!(upserted.reactions[0].emoji, ":+1:");
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

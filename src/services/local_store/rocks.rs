@@ -1147,6 +1147,20 @@ impl LocalStore {
             .map_err(io::Error::other)
     }
 
+    /// [`Self::get_message`] with its stored reactions filled in, for a record
+    /// sent back to the UI, where an empty list would clear its reactions.
+    pub fn get_message_with_reactions(
+        &self,
+        conversation_id: &ConversationId,
+        message_id: &MessageId,
+    ) -> io::Result<Option<MessageRecord>> {
+        let Some(mut message) = self.get_message(conversation_id, message_id)? else {
+            return Ok(None);
+        };
+        self.hydrate_message_reactions(conversation_id, std::slice::from_mut(&mut message))?;
+        Ok(Some(message))
+    }
+
     fn hydrate_message_reactions(
         &self,
         conversation_id: &ConversationId,
