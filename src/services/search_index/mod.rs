@@ -663,7 +663,7 @@ mod tests {
             })
             .expect("enqueue upsert");
 
-        std::thread::sleep(Duration::from_millis(700));
+        index.flush().expect("flush enqueued documents");
 
         let hits = index
             .search_workspace("ws_primary", "roadmap", 10)
@@ -707,7 +707,7 @@ mod tests {
             })
             .expect("enqueue conv b");
 
-        std::thread::sleep(Duration::from_millis(700));
+        index.flush().expect("flush enqueued documents");
 
         let conv_a_hits = index
             .search_conversation("conv-a", "release", 10)
@@ -755,7 +755,7 @@ mod tests {
                 timestamp: 7,
             })
             .expect("enqueue upsert after rebuild");
-        std::thread::sleep(Duration::from_millis(700));
+        index.flush().expect("flush enqueued documents");
         let hits = index
             .search_workspace("ws_primary", "legacy-upgraded", 10)
             .expect("search after rebuild");
