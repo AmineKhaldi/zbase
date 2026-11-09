@@ -750,7 +750,7 @@ impl ConversationHeader {
 }
 
 /// "Lena Fischer is typing…" with three pulsing dots (static when reduced
-/// motion is on), in the row the composer reserves above its field.
+/// motion is on), in the row the composer reserves under its field.
 fn typing_indicator(label: String, reduced_motion: bool) -> AnyElement {
     let dots = (0..3).map(|index| {
         let dot = div().size(px(4.)).rounded_full().bg(rgb(text_secondary()));

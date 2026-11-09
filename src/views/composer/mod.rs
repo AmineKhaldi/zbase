@@ -278,8 +278,8 @@ fn format_tool(
 /// Space between the composer field and the bottom of the window or pane.
 pub(crate) const COMPOSER_BOTTOM_INSET_PX: f32 = 16.;
 
-/// The row above the conversation composer that says who is typing.
-const TYPING_SLOT_HEIGHT_PX: f32 = 22.;
+/// The row under the conversation composer that says who is typing.
+const TYPING_SLOT_HEIGHT_PX: f32 = 24.;
 
 /// The composer field's fill: the window's white in light mode, a raised
 /// field in dark mode where the panel is already dark.
@@ -340,21 +340,10 @@ impl ComposerPanel {
 
         div()
             .px_4()
-            .pb(px(COMPOSER_BOTTOM_INSET_PX))
+            .pt_2()
             .flex_shrink_0()
             .flex()
             .flex_col()
-            // Always reserved, so the timeline never shifts when typing starts or stops.
-            .child(
-                div()
-                    .h(px(TYPING_SLOT_HEIGHT_PX))
-                    .mt(px(2.))
-                    // Lines the dots up with the field's text.
-                    .pl(px(13.))
-                    .flex()
-                    .items_center()
-                    .children(typing),
-            )
             .when_some(mode_banner, |div, banner| div.mb_2().child(banner))
             .child(composer_field(
                 ComposerTarget::Conversation,
@@ -363,6 +352,17 @@ impl ComposerPanel {
                 composer_fill(),
                 cx,
             ))
+            // Under the field, as in Keybase. Always reserved, so nothing shifts
+            // when typing starts or stops; it is also the composer's bottom inset.
+            .child(
+                div()
+                    .h(px(TYPING_SLOT_HEIGHT_PX))
+                    // Lines the dots up with the field's text.
+                    .pl(px(13.))
+                    .flex()
+                    .items_center()
+                    .children(typing),
+            )
             .into_any_element()
     }
 }
