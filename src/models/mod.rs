@@ -1787,18 +1787,11 @@ impl AppModels {
         self.overlay.sidebar_hover_tooltip = None;
     }
 
-    pub fn show_reaction_hover_tooltip(
-        &mut self,
-        text: String,
-        anchor_x: f32,
-        anchor_y: f32,
-        width_px: f32,
-    ) {
+    pub fn show_reaction_hover_tooltip(&mut self, text: String, anchor_x: f32, anchor_y: f32) {
         self.overlay.reaction_hover_tooltip = Some(ReactionHoverTooltip {
             text,
             anchor_x,
             anchor_y,
-            width_px,
         });
     }
 
