@@ -163,6 +163,8 @@ pub(super) fn handle_notify(
 mod tests {
     use super::*;
 
+    // Talks to an in-process Unix socket pair; Windows has no equivalent.
+    #[cfg(unix)]
     #[test]
     fn leave_rpc_sends_binary_id_and_requires_online_confirmation() {
         Builder::new_current_thread()
