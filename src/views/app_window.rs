@@ -1,3 +1,4 @@
+pub(crate) mod downloads;
 mod files;
 mod update_notes;
 mod updates;
@@ -7214,56 +7215,7 @@ impl AppWindow {
         suggested_name: &str,
         cx: &mut Context<Self>,
     ) {
-        let normalized = crate::views::normalize_local_source_path(source_path);
-        let source = PathBuf::from(normalized);
-        if !source.exists() {
-            self.models.push_toast("Attachment file is missing", None);
-            self.refresh(cx);
-            return;
-        }
-        let Some(home) = std::env::var_os("HOME") else {
-            self.models
-                .push_toast("Unable to resolve home directory", None);
-            self.refresh(cx);
-            return;
-        };
-        let downloads_dir = PathBuf::from(home).join("Downloads");
-        if let Err(err) = std::fs::create_dir_all(&downloads_dir) {
-            self.models
-                .push_toast(format!("Failed to prepare Downloads: {err}"), None);
-            self.refresh(cx);
-            return;
-        }
-        let source_name = source
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("attachment");
-        let preferred = if suggested_name.trim().is_empty() {
-            source_name
-        } else {
-            suggested_name
-        };
-        let destination = unique_copy_destination(&downloads_dir, preferred);
-        match std::fs::copy(&source, &destination) {
-            Ok(_) => {
-                let _ = std::process::Command::new("open").arg(&destination).spawn();
-                self.models.push_toast(
-                    format!(
-                        "Saved to {}",
-                        destination
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("Downloads")
-                    ),
-                    None,
-                );
-            }
-            Err(err) => {
-                self.models
-                    .push_toast(format!("Failed to save attachment: {err}"), None);
-            }
-        }
-        self.refresh(cx);
+        self.save_or_open_attachment(source_path, suggested_name, cx);
     }
 
     pub(crate) fn download_attachment_and_open(
@@ -7272,55 +7224,7 @@ impl AppWindow {
         suggested_name: &str,
         cx: &mut Context<Self>,
     ) {
-        let Some(home) = std::env::var_os("HOME") else {
-            self.models
-                .push_toast("Unable to resolve home directory", None);
-            self.refresh(cx);
-            return;
-        };
-        let downloads_dir = PathBuf::from(home).join("Downloads");
-        if let Err(err) = std::fs::create_dir_all(&downloads_dir) {
-            self.models
-                .push_toast(format!("Failed to prepare Downloads: {err}"), None);
-            self.refresh(cx);
-            return;
-        }
-        let preferred = if suggested_name.trim().is_empty() {
-            "attachment"
-        } else {
-            suggested_name
-        };
-        let destination = unique_copy_destination(&downloads_dir, preferred);
-        let status = std::process::Command::new("curl")
-            .arg("-L")
-            .arg("--fail")
-            .arg("--silent")
-            .arg("--show-error")
-            .arg("--output")
-            .arg(&destination)
-            .arg(url)
-            .status();
-        match status {
-            Ok(status) if status.success() => {
-                let _ = std::process::Command::new("open").arg(&destination).spawn();
-                self.models.push_toast(
-                    format!(
-                        "Saved to {}",
-                        destination
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("Downloads")
-                    ),
-                    None,
-                );
-            }
-            Ok(_) | Err(_) => {
-                self.models
-                    .push_toast("Direct download failed, opening source instead", None);
-                cx.open_url(url);
-            }
-        }
-        self.refresh(cx);
+        self.save_or_open_attachment(url, suggested_name, cx);
     }
 
     pub(crate) fn notify_attachment_not_ready(&mut self, cx: &mut Context<Self>) {
