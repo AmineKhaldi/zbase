@@ -8,6 +8,8 @@ use gpui::{
 };
 use std::path::PathBuf;
 
+mod scaled;
+
 pub const ME_AVATAR_ASSET: &str = "assets/avatars/me.svg";
 
 pub struct Avatar;
@@ -175,81 +177,6 @@ impl Avatar {
             .into_any_element()
     }
 
-    /// A channel: a neutral tile with `#`, so channels of one team differ from
-    /// its team mark. `team` adds the team's square as a badge where a DM's
-    /// presence dot sits, ringed in `surface`; omit it under the team's header.
-    pub fn render_channel(
-        team: Option<(&str, Option<&str>)>,
-        size: f32,
-        surface: Hsla,
-    ) -> AnyElement {
-        let tile = div()
-            .flex_shrink_0()
-            .w(px(size))
-            .h(px(size))
-            .rounded(px(square_radius(size)))
-            .bg(rgb(if is_dark_theme() { 0x2f2f2f } else { 0xe6e8ec }))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(crate::views::hash_icon(crate::views::text_secondary()));
-        let Some((name, asset)) = team else {
-            return tile.into_any_element();
-        };
-        let badge = (size * 0.44).round();
-        let ring = 2.;
-        div()
-            .relative()
-            .flex_shrink_0()
-            .w(px(size))
-            .h(px(size))
-            .child(tile)
-            .child(
-                div()
-                    .absolute()
-                    .right(px(-ring - 1.))
-                    .bottom(px(-ring - 1.))
-                    .p(px(ring))
-                    .rounded(px(square_radius(badge) + ring))
-                    .bg(surface)
-                    .child(Self::render_team(name, asset, badge)),
-            )
-            .into_any_element()
-    }
-
-    /// Draws a thin light ring around a lead (avatar or mark) on a selected
-    /// row, so colored marks don't sit directly on the selection fill.
-    pub fn with_selection_ring(lead: AnyElement, size: f32, circular: bool) -> AnyElement {
-        let ring = 1.5;
-        div()
-            .relative()
-            .flex_shrink_0()
-            .w(px(size))
-            .h(px(size))
-            // Painted first: the lead covers the ring's inner half, and a
-            // presence dot or team badge stays on top of it.
-            .child(
-                div()
-                    .absolute()
-                    .top(px(-ring))
-                    .left(px(-ring))
-                    .w(px(size + ring * 2.))
-                    .h(px(size + ring * 2.))
-                    .when(circular, |ring| ring.rounded_full())
-                    .when(!circular, |frame| {
-                        frame.rounded(px(square_radius(size) + ring))
-                    })
-                    .border(px(ring))
-                    .border_color(if is_dark_theme() {
-                        crate::views::tint(0xffffff, 0.2)
-                    } else {
-                        crate::views::tint(0xffffff, 1.)
-                    }),
-            )
-            .child(lead)
-            .into_any_element()
-    }
-
     pub fn render_group(names: &[(&str, Option<&str>, u32, u32)], size: f32) -> AnyElement {
         Self::render_group_on(names, size, rgb(crate::views::panel_bg()).into())
     }
@@ -370,7 +297,7 @@ impl Avatar {
         circular: bool,
     ) -> AnyElement {
         match asset {
-            Some(asset_path) => image_source_for_asset(asset_path)
+            Some(asset_path) => sized_image_source_for_asset(asset_path, size)
                 .map(|source| Self::image(name, source, size, background, foreground, circular))
                 .unwrap_or_else(|| Self::fallback(name, size, background, foreground, circular)),
             None => Self::fallback(name, size, background, foreground, circular),
@@ -622,6 +549,31 @@ fn initials_for_name(name: &str) -> String {
     }
 
     parts
+}
+
+/// Like [`image_source_for_asset`], but a local file is pre-scaled to the
+/// pixels a `size`-point square covers (see [`scaled`]).
+fn sized_image_source_for_asset(asset_path: &str, size: f32) -> Option<ImageSource> {
+    match local_asset_path(asset_path) {
+        Some(path) => scaled::scaled_image_source(path.clone(), size)
+            .or_else(|| Some(ImageSource::from(path))),
+        None => image_source_for_asset(asset_path),
+    }
+}
+
+/// The file behind a local avatar path, or `None` for URLs and bundled assets.
+fn local_asset_path(asset_path: &str) -> Option<PathBuf> {
+    let trimmed = asset_path.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if trimmed.is_empty()
+        || lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("assets/")
+    {
+        return None;
+    }
+    let normalized = crate::views::normalize_local_source_path(trimmed);
+    (!normalized.is_empty()).then(|| PathBuf::from(normalized))
 }
 
 pub(crate) fn image_source_for_asset(asset_path: &str) -> Option<ImageSource> {

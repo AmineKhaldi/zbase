@@ -710,9 +710,14 @@ impl SidebarHost for CachedSidebarView {
         });
     }
 
-    fn sidebar_set_hovered_row(&mut self, label: Option<String>, cx: &mut Context<Self>) {
-        if self.hovered_row != label {
-            self.hovered_row = label;
+    fn sidebar_set_row_hovered(&mut self, row_id: String, hovered: bool, cx: &mut Context<Self>) {
+        if hovered {
+            if self.hovered_row.as_ref() != Some(&row_id) {
+                self.hovered_row = Some(row_id);
+                cx.notify();
+            }
+        } else if self.hovered_row.as_ref() == Some(&row_id) {
+            self.hovered_row = None;
             cx.notify();
         }
     }
@@ -796,7 +801,7 @@ impl SidebarHost for AppWindow {
         }
     }
 
-    fn sidebar_set_hovered_row(&mut self, _label: Option<String>, _cx: &mut Context<Self>) {}
+    fn sidebar_set_row_hovered(&mut self, _: String, _: bool, _: &mut Context<Self>) {}
 
     fn sidebar_hovered_row(&self) -> Option<&str> {
         None
@@ -7542,6 +7547,41 @@ impl AppWindow {
         }
     }
 
+    /// Keeps `message_id` hovered (its row stays highlighted) but holds back the
+    /// strip, for a name, quote or reaction inside it that shows its own tooltip.
+    /// Moving back onto the message body re-arms the strip's settle delay.
+    pub(crate) fn hover_message_without_toolbar(
+        &mut self,
+        message_id: MessageId,
+        is_thread: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.timeline_interactions_blocked_by_overlay() {
+            self.clear_hovered_message_immediate(cx);
+            return;
+        }
+        self.cancel_hover_clear();
+        self.hover_settle_seq = self.hover_settle_seq.wrapping_add(1);
+        let timeline = &mut self.models.timeline;
+        let message_changed = timeline.hovered_message_id.as_ref() != Some(&message_id)
+            || timeline.hovered_message_is_thread != Some(is_thread);
+        if !message_changed && !timeline.hover_toolbar_settled {
+            return;
+        }
+        if message_changed {
+            timeline.hovered_message_id = Some(message_id);
+            timeline.hovered_message_is_thread = Some(is_thread);
+            timeline.hovered_message_anchor_x = None;
+            timeline.hovered_message_anchor_y = None;
+            timeline.hovered_message_window_left = None;
+            timeline.hovered_message_window_top = None;
+            timeline.hovered_message_window_width = None;
+            timeline.hovered_message_viewport_size = None;
+        }
+        timeline.hover_toolbar_settled = false;
+        self.refresh(cx);
+    }
+
     pub(crate) fn show_sidebar_hover_tooltip(
         &mut self,
         text: String,
@@ -9446,10 +9486,6 @@ impl Render for AppWindow {
 
         // A background window keeps keyboard focus but shows no focus rings.
         let window_active = window.is_window_active();
-        let composer_input_focused =
-            window_active && self.composer_input.focus_handle(cx).is_focused(window);
-        let thread_input_focused =
-            window_active && self.thread_input.focus_handle(cx).is_focused(window);
         let search_input_focused =
             window_active && self.search_input.focus_handle(cx).is_focused(window);
         let new_chat_input_focused =
@@ -9520,7 +9556,6 @@ impl Render for AppWindow {
                             &mut self.selectable_texts,
                             &self.thread_input,
                             crate::views::composer::ComposerFieldState {
-                                focused: thread_input_focused,
                                 can_send: self.thread_has_text,
                                 send_notice: self.models.app.connectivity.send_notice(),
                                 format_menu_open: self.composer_format_menu
@@ -9741,7 +9776,6 @@ impl Render for AppWindow {
                         &self.find_in_chat_input,
                         &self.composer_input,
                         crate::views::composer::ComposerFieldState {
-                            focused: composer_input_focused,
                             can_send: self.composer_has_text
                                 || !self.models.composer.attachments.is_empty(),
                             send_notice: self.models.app.connectivity.send_notice(),

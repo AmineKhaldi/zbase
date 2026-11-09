@@ -327,7 +327,7 @@ impl ThreadPane {
             .child(
                 div()
                     .px_4()
-                    .pt_1()
+                    .pt_2()
                     .pb(px(crate::views::composer::COMPOSER_BOTTOM_INSET_PX))
                     .flex_shrink_0()
                     .flex()
@@ -336,11 +336,7 @@ impl ThreadPane {
                         crate::views::composer::ComposerTarget::Thread,
                         reply_input,
                         reply_state,
-                        if is_dark_theme() {
-                            rgb(crate::views::field_bg()).into()
-                        } else {
-                            rgb(crate::views::main_bg()).into()
-                        },
+                        crate::views::composer::composer_fill(),
                         cx,
                     )),
             )

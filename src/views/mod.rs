@@ -633,6 +633,34 @@ pub fn shell_border_strong() -> Hsla {
     }
 }
 
+/// The selected sidebar row: a card raised off the sidebar, white in light mode
+/// like the conversation beside it, one step lighter than the sidebar in dark.
+pub fn sidebar_card_bg() -> u32 {
+    if is_dark_theme() { 0x2d2d2d } else { 0xffffff }
+}
+
+pub fn sidebar_card_shadow() -> Vec<BoxShadow> {
+    let edge = |color: Hsla| BoxShadow {
+        color,
+        offset: point(px(0.), px(0.)),
+        blur_radius: px(0.),
+        spread_radius: px(1.),
+    };
+    if is_dark_theme() {
+        vec![edge(tint(0xffffff, 0.06))]
+    } else {
+        vec![
+            BoxShadow {
+                color: tint(0x000000, 0.08),
+                offset: point(px(0.), px(1.)),
+                blur_radius: px(2.),
+                spread_radius: px(0.),
+            },
+            edge(tint(0x000000, 0.04)),
+        ]
+    }
+}
+
 pub fn floating_shadow() -> Vec<BoxShadow> {
     if is_dark_theme() {
         vec![

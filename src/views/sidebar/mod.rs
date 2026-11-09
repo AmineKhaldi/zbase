@@ -17,9 +17,8 @@ use crate::{
         avatar::Avatar,
         chevron_down_icon, chevron_right_icon, hash_icon, icon_asset, is_dark_theme,
         popup_menu::{PopupMenuEntry, popup_menu},
-        sidebar_bg, sidebar_hover_bg, sidebar_selected_bg, sidebar_selected_fg,
-        sidebar_selected_secondary, subtle_surface, success_soft, text_primary, text_secondary,
-        tint,
+        sidebar_bg, sidebar_card_bg, sidebar_card_shadow, sidebar_hover_bg, subtle_surface,
+        success_soft, text_primary, text_secondary, tint,
         tooltip::shortcut_label,
         truncated_line::{Segment, TruncatedLine},
         warning,
@@ -80,7 +79,7 @@ pub enum SidebarMenu {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RowSelection {
     None,
-    /// The one selected row: accent fill.
+    /// The one selected row: a raised card.
     Full,
     /// Another listing of the open conversation (its Unread shortcut): a thin
     /// accent bar only, so the sidebar never shows two selections.
@@ -130,18 +129,21 @@ pub(super) struct RowColors {
     pub background: Option<Hsla>,
     /// What the row sits on: rings around avatars and presence dots use it.
     pub surface: Hsla,
+    /// The selected row is a card with a soft shadow.
+    pub raised: bool,
 }
 
 impl RowColors {
     /// A muted conversation reads in secondary text unless it is selected.
     pub fn new(selected: bool, hovered: bool, muted: bool) -> Self {
         if selected {
-            let background: Hsla = rgb(sidebar_selected_bg()).into();
+            let background: Hsla = rgb(sidebar_card_bg()).into();
             return Self {
-                primary: rgb(sidebar_selected_fg()).into(),
-                secondary: sidebar_selected_secondary(),
+                primary: rgb(text_primary()).into(),
+                secondary: rgb(text_secondary()).into(),
                 background: Some(background),
                 surface: background,
+                raised: true,
             };
         }
         let background = hovered.then(|| rgb(sidebar_hover_bg()).into());
@@ -155,6 +157,7 @@ impl RowColors {
             secondary: rgb(text_secondary()).into(),
             background,
             surface: background.unwrap_or_else(|| rgb(sidebar_bg()).into()),
+            raised: false,
         }
     }
 }
@@ -277,6 +280,7 @@ impl CompactRow<'_> {
             .rounded(px(6.))
             .cursor_pointer()
             .when_some(colors.background, |row, background| row.bg(background))
+            .when(colors.raised, |row| row.shadow(sidebar_card_shadow()))
             .when(selection == RowSelection::Marker, |row| {
                 row.child(
                     div()
@@ -294,9 +298,8 @@ impl CompactRow<'_> {
                         })),
                 )
             })
-            .tooltip(SidebarTooltip::builder(row.full_label()))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                this.sidebar_set_hovered_row(hovered.then(|| hover_id.clone()), cx);
+                this.sidebar_set_row_hovered(hover_id.clone(), *hovered, cx);
             }))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.sidebar_hide_hover_tooltip(cx);
@@ -468,7 +471,9 @@ pub trait SidebarHost: Sized + 'static {
         window: &mut Window,
         cx: &mut Context<Self>,
     );
-    fn sidebar_set_hovered_row(&mut self, label: Option<String>, cx: &mut Context<Self>);
+    /// Marks `row_id` hovered, or unhovered. Leaving a row clears the hover only
+    /// if it is still that row's: moving down, the next row's enter arrives first.
+    fn sidebar_set_row_hovered(&mut self, row_id: String, hovered: bool, cx: &mut Context<Self>);
     fn sidebar_hovered_row(&self) -> Option<&str>;
 }
 
@@ -820,13 +825,18 @@ impl Sidebar {
         ];
         div()
             .flex_shrink_0()
-            .py_2()
+            // Out to the sidebar's edges, so the divider spans its full width.
+            .mx(px(-8.))
+            .px_2()
+            .py(px(6.))
+            .border_t_1()
+            .border_color(rgb(crate::views::border()))
             .flex()
             .items_center()
-            .justify_between()
             .child(
                 div()
                     .relative()
+                    .flex_1()
                     .min_w(px(0.))
                     // Before the button, so the menu's anchor is the button's top edge.
                     .when(menu_open, |identity| {
@@ -850,11 +860,13 @@ impl Sidebar {
                                 this.sidebar_toggle_menu(SidebarMenu::Identity, window, cx);
                             }))
                             .cursor_pointer()
+                            // The whole row opens the menu, not just the name.
+                            .w_full()
                             .flex()
                             .items_center()
                             .gap_2()
                             .rounded_md()
-                            .px_1()
+                            .px(px(6.))
                             .py_1()
                             .when(menu_open, |identity| identity.bg(subtle_surface()))
                             .hover(|s| s.bg(subtle_surface()))
@@ -1067,7 +1079,7 @@ impl Sidebar {
                     context.hovered_row == Some(id.as_str()),
                     row.muted,
                 );
-                let emphasized = selection.is_full() || RowActivity::of(row).is_unread();
+                let emphasized = !selection.is_full() && RowActivity::of(row).is_unread();
                 let (label, suffix, leading) = match &row.team {
                     Some(team) => (
                         format!("#{}", row.label),
@@ -1126,26 +1138,24 @@ impl Sidebar {
             context.hovered_row == Some(row_id.as_str()),
             row.muted,
         );
-        let emphasized = selection.is_full() || activity.is_unread();
+        let emphasized = !selection.is_full() && activity.is_unread();
         let channel_under_team = row.team.is_some() && matches!(row.route, Route::Channel { .. });
         match context.look {
             RowLook::Previews { compact_time } => {
-                // Under its team's header a channel needs no team badge.
-                let (lead, circular) = if channel_under_team {
-                    (
-                        Avatar::render_channel(None, PREVIEW_AVATAR_PX, colors.surface),
-                        false,
+                // A channel shows its team's logo rather than a `#`.
+                let lead = if let Some(team) = row.team.as_ref().filter(|_| channel_under_team) {
+                    Avatar::render_team(
+                        &team.display_name,
+                        team_asset(context.avatars, &team.id),
+                        PREVIEW_AVATAR_PX,
                     )
                 } else {
-                    (
-                        Self::leading_element(
-                            row,
-                            &route_label,
-                            context.avatars,
-                            &colors,
-                            PREVIEW_AVATAR_PX,
-                        ),
-                        matches!(row.route, Route::DirectMessage { .. }),
+                    Self::leading_element(
+                        row,
+                        &route_label,
+                        context.avatars,
+                        &colors,
+                        PREVIEW_AVATAR_PX,
                     )
                 };
                 PreviewRow {
@@ -1153,7 +1163,6 @@ impl Sidebar {
                     id: row_id,
                     title: title_segments(row.label.clone(), None, &colors, emphasized),
                     lead,
-                    lead_circular: circular,
                     colors: &colors,
                     selected: selection.is_full(),
                     live: row

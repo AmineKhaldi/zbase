@@ -1,8 +1,8 @@
 //! A small macOS-style menu that pops up from a control: opaque, rounded,
-//! 24px items that fill with the accent on hover, an optional check-mark
+//! 24px items that fill with a soft grey on hover, an optional check-mark
 //! column, right-aligned shortcuts and separators. The owner keeps the open
 //! state, places the menu with `anchored` and closes it from `on_dismiss`.
-use crate::views::{accent_strong, is_dark_theme, text_primary, text_secondary, tint};
+use crate::views::{is_dark_theme, text_primary, text_secondary, tint};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, BoxShadow, ClickEvent, FontWeight, Hsla, InteractiveElement, IntoElement,
@@ -106,10 +106,8 @@ pub fn popup_menu(
                     shortcut,
                     on_click,
                 } => {
-                    let group = SharedString::from(format!("{id}-item-{index}"));
                     div()
                         .id(SharedString::from(format!("{id}-item-{index}")))
-                        .group(group.clone())
                         .h(px(ITEM_HEIGHT_PX))
                         .pl(px(if has_checks { 4. } else { 10. }))
                         .pr(px(10.))
@@ -119,7 +117,9 @@ pub fn popup_menu(
                         .rounded(px(4.))
                         .cursor_pointer()
                         .whitespace_nowrap()
-                        .hover(|style| style.bg(rgb(accent_strong())).text_color(rgb(0xffffff)))
+                        // Grey with the normal text colors, like the sidebar's
+                        // selection: no accent.
+                        .hover(|style| style.bg(tint(text_primary(), 0.08)))
                         .on_click(on_click)
                         .when(has_checks, |item| {
                             item.child(
@@ -133,10 +133,7 @@ pub fn popup_menu(
                                             svg()
                                                 .path("assets/icons/check.svg")
                                                 .size(px(12.))
-                                                .text_color(rgb(text_primary()))
-                                                .group_hover(group.clone(), |style| {
-                                                    style.text_color(rgb(0xffffff))
-                                                }),
+                                                .text_color(rgb(text_primary())),
                                         )
                                     }),
                             )
@@ -148,9 +145,6 @@ pub fn popup_menu(
                                     .pl(px(24.))
                                     .text_color(rgb(text_secondary()))
                                     .font_weight(FontWeight::NORMAL)
-                                    .group_hover(group, |style| {
-                                        style.text_color(tint(0xffffff, 0.85))
-                                    })
                                     .child(shortcut),
                             )
                         })

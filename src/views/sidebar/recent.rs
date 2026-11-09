@@ -120,30 +120,25 @@ fn render_row<H: SidebarHost>(
     let is_hovered = hovered == Some(row_id.as_str()) || highlighted == Some(&row.route);
     let colors = RowColors::new(selection.is_full(), is_hovered, row.muted);
     let team_label = recent.team_label(ambiguous).map(str::to_owned);
-    let emphasized = activity.is_unread() || selection.is_full();
+    let emphasized = activity.is_unread() && !selection.is_full();
     match look {
         RowLook::Previews { compact_time } => {
-            // A channel is a `#` tile badged with its team; a simple team keeps its mark.
-            let (lead, circular) = match &row.team {
-                Some(team) => (
-                    Avatar::render_channel(
-                        Some((&team.display_name, team_asset(avatars, &team.id))),
-                        PREVIEW_AVATAR_PX,
-                        colors.surface,
-                    ),
-                    false,
+            // A channel shows its team's logo; a simple team keeps its mark.
+            let lead = match &row.team {
+                Some(team) => Avatar::render_team(
+                    &team.display_name,
+                    team_asset(avatars, &team.id),
+                    PREVIEW_AVATAR_PX,
                 ),
-                None => (
-                    Sidebar::leading_element(row, &route_key, avatars, &colors, PREVIEW_AVATAR_PX),
-                    matches!(row.route, Route::DirectMessage { .. }),
-                ),
+                None => {
+                    Sidebar::leading_element(row, &route_key, avatars, &colors, PREVIEW_AVATAR_PX)
+                }
             };
             PreviewRow {
                 row,
                 id: row_id,
                 title: title_segments(row.label.clone(), team_label, &colors, emphasized),
                 lead,
-                lead_circular: circular,
                 colors: &colors,
                 selected: selection.is_full(),
                 live: row.route.conversation_key().and_then(|key| live.get(key)),
