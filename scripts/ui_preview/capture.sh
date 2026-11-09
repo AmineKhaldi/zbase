@@ -18,7 +18,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-ALL_SCENES=(chat chat-grouped chat-previews chat-previews-grouped chat-previews-live identity-menu
+ALL_SCENES=(files-media files-documents files-empty chat chat-grouped chat-previews chat-previews-grouped chat-previews-live identity-menu
   order-menu chat-states thread thread-empty profile preferences quick-switcher
   quick-switcher-search search search-empty dm members members-filter-empty new-chat offline
   inactive composer-format)
@@ -59,7 +59,8 @@ while [[ $# -gt 0 ]]; do
 done
 [[ ${#SCENES[@]} -gt 0 ]] || SCENES=("${ALL_SCENES[@]}")
 
-BIN="$ROOT/target/debug/zbase"
+TARGET_DIR="$(cd "$ROOT" && cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')"
+BIN="$TARGET_DIR/debug/zbase"
 HELPER_DIR="$ROOT/target/ui_preview"
 WINDOW_ID="$HELPER_DIR/window_id"
 WINDOW_ID_SRC="$ROOT/scripts/ui_preview/window_id.swift"

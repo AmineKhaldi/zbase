@@ -47,6 +47,9 @@ pub enum DemoScene {
     SearchEmpty,
     Dm,
     Members,
+    FilesMedia,
+    FilesDocuments,
+    FilesEmpty,
     /// Members pane with a filter that matches nobody.
     MembersFilterEmpty,
     NewChat,
@@ -59,7 +62,7 @@ pub enum DemoScene {
 }
 
 impl DemoScene {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 26] = [
         Self::Chat,
         Self::ChatGrouped,
         Self::ChatPreviews,
@@ -78,6 +81,9 @@ impl DemoScene {
         Self::SearchEmpty,
         Self::Dm,
         Self::Members,
+        Self::FilesMedia,
+        Self::FilesDocuments,
+        Self::FilesEmpty,
         Self::MembersFilterEmpty,
         Self::NewChat,
         Self::Offline,
@@ -105,6 +111,9 @@ impl DemoScene {
             Self::SearchEmpty => "search-empty",
             Self::Dm => "dm",
             Self::Members => "members",
+            Self::FilesMedia => "files-media",
+            Self::FilesDocuments => "files-documents",
+            Self::FilesEmpty => "files-empty",
             Self::MembersFilterEmpty => "members-filter-empty",
             Self::NewChat => "new-chat",
             Self::Offline => "offline",

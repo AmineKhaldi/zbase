@@ -1,3 +1,4 @@
+mod files;
 mod update_notes;
 mod updates;
 use super::pane_window::PaneWindowSizing;
@@ -261,6 +262,7 @@ pub struct AppWindow {
     timeline_list_state: ListState,
     timeline_row_render_cache: crate::views::timeline::TimelineRowRenderCache,
     pub(crate) code_highlight_cache: crate::views::code_highlight::CodeHighlightCache,
+    files_panes: HashMap<ConversationId, crate::views::right_pane::files::FilesPaneState>,
     thread_scroll: ScrollHandle,
     profile_scroll: ScrollHandle,
     profile_social_scroll: ScrollHandle,
@@ -887,6 +889,7 @@ impl AppWindow {
             ),
             timeline_row_render_cache: crate::views::timeline::TimelineRowRenderCache::default(),
             code_highlight_cache: crate::views::code_highlight::CodeHighlightCache::default(),
+            files_panes: HashMap::new(),
             thread_scroll: ScrollHandle::new(),
             profile_scroll: ScrollHandle::new(),
             profile_social_scroll: ScrollHandle::new(),
@@ -2768,7 +2771,13 @@ impl AppWindow {
     ) {
         use crate::{app::demo::DemoScene, models::demo};
         tracing::warn!("demo.scene={}", scene.slug());
-        let conversation = if scene == DemoScene::Dm {
+        let conversation = if matches!(
+            scene,
+            DemoScene::Dm
+                | DemoScene::FilesMedia
+                | DemoScene::FilesDocuments
+                | DemoScene::FilesEmpty
+        ) {
             demo::DEMO_DM_ID
         } else {
             demo::DEMO_GENERAL_ID
@@ -2784,6 +2793,12 @@ impl AppWindow {
             window.activate_window();
         }
         match scene {
+            DemoScene::FilesMedia | DemoScene::FilesDocuments | DemoScene::FilesEmpty => {
+                self.open_files_pane(cx);
+                if scene == DemoScene::FilesDocuments {
+                    self.select_files_tab(crate::views::right_pane::files::FilesTab::Documents, cx);
+                }
+            }
             DemoScene::Chat | DemoScene::ChatPreviews | DemoScene::Dm => {}
             DemoScene::ChatPreviewsLive => {
                 self.apply_typing_indicator_update(
@@ -7870,10 +7885,6 @@ impl AppWindow {
         self.refresh(cx);
     }
 
-    pub(crate) fn open_files_pane(&mut self, cx: &mut Context<Self>) {
-        self.toggle_simple_pane(RightPaneMode::Files, cx);
-    }
-
     pub(crate) fn open_search_pane(&mut self, cx: &mut Context<Self>) {
         self.toggle_simple_pane(RightPaneMode::Search, cx);
     }
@@ -9551,6 +9562,7 @@ impl Render for AppWindow {
                             profile,
                             &self.models.search,
                             &self.models.timeline,
+                            self.files_pane_state(&self.models.timeline.conversation_id),
                             &self.video_render_cache,
                             &mut self.code_highlight_cache,
                             &mut self.selectable_texts,

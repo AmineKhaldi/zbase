@@ -1,4 +1,5 @@
 mod details;
+pub(crate) mod files;
 mod members;
 use details::render_details_panel;
 use members::render_members_panel;
@@ -88,6 +89,7 @@ impl RightPaneHost {
         profile_panel: &ProfilePanelModel,
         search: &SearchModel,
         timeline: &TimelineModel,
+        files_state: files::FilesPaneState,
         video_render_cache: &HashMap<String, Arc<RenderImage>>,
         code_highlight_cache: &mut crate::views::code_highlight::CodeHighlightCache,
         selectable_texts: &mut HashMap<String, Entity<SelectableText>>,
@@ -127,7 +129,9 @@ impl RightPaneHost {
                 members_filter_focused,
                 cx,
             ),
-            RightPaneMode::Files => render_files_panel(timeline, cx),
+            RightPaneMode::Files => {
+                files::render_files_panel(timeline, conversation, thread.width_px, files_state, cx)
+            }
             RightPaneMode::Search => render_search_panel(conversation, search, search_contexts, cx),
             RightPaneMode::Profile(_) => crate::views::profile::render_profile_panel(
                 profile_panel,
@@ -1235,57 +1239,6 @@ fn truncate_with_ellipsis(value: &str, max_chars: usize) -> String {
     let mut truncated = value.chars().take(max_chars).collect::<String>();
     truncated.push('…');
     truncated
-}
-
-fn render_files_panel(timeline: &TimelineModel, cx: &mut Context<AppWindow>) -> AnyElement {
-    let attachments = timeline
-        .rows
-        .iter()
-        .filter_map(|row| match row {
-            TimelineRow::Message(message) => Some(message.message.attachments.iter().cloned()),
-            _ => None,
-        })
-        .flatten()
-        .collect::<Vec<_>>();
-
-    let body = div()
-        .flex_1()
-        .min_h(px(0.))
-        .id("right-pane-files-scroll")
-        .overflow_y_scroll()
-        .scrollbar_width(px(8.))
-        .p_4()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .when(attachments.is_empty(), |container| {
-            container.child(crate::views::empty_state(
-                "assets/icons/files.svg",
-                "No files yet",
-                Some("Files and images shared in this conversation appear here.".to_string()),
-            ))
-        })
-        .children(
-            attachments
-                .into_iter()
-                .enumerate()
-                .map(|(index, attachment)| {
-                    let attachment_label = attachment_display_label(&attachment);
-                    div()
-                        .id(("right-pane-file", index))
-                        .rounded_lg()
-                        .bg(panel_alt_surface())
-                        .px_3()
-                        .py_2()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(attachment_label)
-                        .into_any_element()
-                }),
-        )
-        .into_any_element();
-    pane_with_header(pane_header("Files", None, "files-pane-close", cx), body)
 }
 
 fn render_search_panel(
