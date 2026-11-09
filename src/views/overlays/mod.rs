@@ -19,6 +19,7 @@ use crate::{
         image_source_from_attachment_source,
         input::TextField,
         is_dark_theme, keycap, modal_surface, panel_alt_bg, panel_surface,
+        scaled_image::{Fit, scaled_for_box},
         search::{MessageHit, SWITCHER_HIT, SearchResultContext, snippet_text},
         section_label, shell_border, shell_border_strong, subtle_surface, text_primary,
         text_secondary, tint,
@@ -287,11 +288,17 @@ impl OverlayHost {
                                         cx.listener(|_, _, _, cx| cx.stop_propagation()),
                                     )
                                     .child(
-                                        img(image_source)
-                                            .id("lightbox-image")
-                                            .size_full()
-                                            .object_fit(ObjectFit::Contain)
-                                            .with_fallback(|| {
+                                        img(scaled_for_box(
+                                            image_source,
+                                            frame_width,
+                                            frame_height,
+                                            Fit::Contain,
+                                        ))
+                                        .id("lightbox-image")
+                                        .size_full()
+                                        .object_fit(ObjectFit::Contain)
+                                        .with_fallback(
+                                            || {
                                                 div()
                                                     .size_full()
                                                     .flex()
@@ -301,7 +308,8 @@ impl OverlayHost {
                                                     .text_color(rgb(text_secondary()))
                                                     .child("Image unavailable")
                                                     .into_any_element()
-                                            }),
+                                            },
+                                        ),
                                     ),
                             ),
                     )
@@ -373,21 +381,26 @@ impl OverlayHost {
                         .items_center()
                         .justify_center()
                         .child(
-                            img(preview_source)
-                                .w(px(frame_width))
-                                .h(px(frame_height))
-                                .object_fit(ObjectFit::Contain)
-                                .with_fallback(|| {
-                                    div()
-                                        .size_full()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .text_sm()
-                                        .text_color(rgb(text_secondary()))
-                                        .child("Image unavailable")
-                                        .into_any_element()
-                                }),
+                            img(scaled_for_box(
+                                preview_source,
+                                frame_width,
+                                frame_height,
+                                Fit::Contain,
+                            ))
+                            .w(px(frame_width))
+                            .h(px(frame_height))
+                            .object_fit(ObjectFit::Contain)
+                            .with_fallback(|| {
+                                div()
+                                    .size_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_sm()
+                                    .text_color(rgb(text_secondary()))
+                                    .child("Image unavailable")
+                                    .into_any_element()
+                            }),
                         )
                         .into_any_element()
                 } else {

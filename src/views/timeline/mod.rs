@@ -24,11 +24,12 @@ use crate::{
         arrow_left_icon, arrow_right_icon, attachment_display_label, attachment_header_row,
         attachment_image_source, attachment_lightbox_source, attachment_local_path,
         avatar::{Avatar, default_avatar_background},
-        border, clipboard_icon, copy_icon, danger, format_duration_ms, glass_surface_dark,
-        hash_icon,
+        border, clipboard_icon, copy_icon, danger, display_image_source, format_duration_ms,
+        glass_surface_dark, hash_icon,
         inline_markdown::{InlineMarkdownConfig, apply_inline_markdown, remap_source_byte_range},
         link, mono_font_family, mono_font_size, new_messages, panel_alt_bg, panel_bg, pin_icon,
         play_icon, plus_icon,
+        scaled_image::Fit,
         selectable_text::{
             InlineAttachment, LinkRange, SelectableText, StyledRange, resolve_selectable_text,
             resolve_selectable_text_inline, resolve_selectable_text_with_attachments,
@@ -1202,7 +1203,13 @@ impl TimelineList {
                                                     }))
                                             })
                                             .child(
-                                                img(media_source)
+                                                img(display_image_source(
+                                                    attachment,
+                                                    media_source,
+                                                    media_width,
+                                                    media_height,
+                                                    Fit::Contain,
+                                                ))
                                                     .id(SharedString::from(format!(
                                                         "timeline-img-{}-{index}",
                                                         message.id.0
@@ -1303,9 +1310,15 @@ impl TimelineList {
                                                 }))
                                             })
                                             .child(
-                                                img(thumb_source)
-                                                    .size_full()
-                                                    .object_fit(ObjectFit::Cover),
+                                                img(display_image_source(
+                                                    attachment,
+                                                    thumb_source,
+                                                    media_width,
+                                                    media_height,
+                                                    Fit::Cover,
+                                                ))
+                                                .size_full()
+                                                .object_fit(ObjectFit::Cover),
                                             )
                                             .child(
                                                 div()

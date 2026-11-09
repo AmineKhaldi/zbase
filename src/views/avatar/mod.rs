@@ -1,5 +1,6 @@
 use crate::domain::presence::Availability;
 use crate::models::conversation_model::AvatarParticipant;
+use crate::views::scaled_image::{self, Fit};
 use crate::views::{accent, is_dark_theme, panel_surface};
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -7,8 +8,6 @@ use gpui::{
     StyledImage, div, img, px, rgb,
 };
 use std::path::PathBuf;
-
-mod scaled;
 
 pub const ME_AVATAR_ASSET: &str = "assets/avatars/me.svg";
 
@@ -552,10 +551,10 @@ fn initials_for_name(name: &str) -> String {
 }
 
 /// Like [`image_source_for_asset`], but a local file is pre-scaled to the
-/// pixels a `size`-point square covers (see [`scaled`]).
+/// pixels a `size`-point square covers (see [`scaled_image`]).
 fn sized_image_source_for_asset(asset_path: &str, size: f32) -> Option<ImageSource> {
     match local_asset_path(asset_path) {
-        Some(path) => scaled::scaled_image_source(path.clone(), size)
+        Some(path) => scaled_image::scaled_image_source(path.clone(), size, size, Fit::Cover)
             .or_else(|| Some(ImageSource::from(path))),
         None => image_source_for_asset(asset_path),
     }

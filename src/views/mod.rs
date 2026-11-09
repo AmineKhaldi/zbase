@@ -16,6 +16,7 @@ pub mod preferences;
 pub mod profile;
 mod quick_react_placement;
 pub mod right_pane;
+pub mod scaled_image;
 pub mod search;
 pub mod selectable_text;
 pub mod settings_window;
@@ -839,6 +840,23 @@ pub fn attachment_image_source(attachment: &AttachmentSummary) -> Option<ImageSo
             .map(|preview| preview.source.clone())
             .or_else(|| attachment.source.as_ref().cloned())
             .and_then(|source| image_source_from_attachment_source(&source))
+    }
+}
+
+/// `source` for an attachment drawn in a `width` by `height` point box,
+/// pre-scaled to the device pixels it covers (see [`scaled_image`]). Animated
+/// GIFs keep the plain loader, which animates their frames.
+pub fn display_image_source(
+    attachment: &AttachmentSummary,
+    source: ImageSource,
+    width: f32,
+    height: f32,
+    fit: scaled_image::Fit,
+) -> ImageSource {
+    if attachment_is_animated_gif(attachment) {
+        source
+    } else {
+        scaled_image::scaled_for_box(source, width, height, fit)
     }
 }
 
