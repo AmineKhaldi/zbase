@@ -7542,6 +7542,41 @@ impl AppWindow {
         }
     }
 
+    /// Keeps `message_id` hovered (its row stays highlighted) but holds back the
+    /// strip, for a name, quote or reaction inside it that shows its own tooltip.
+    /// Moving back onto the message body re-arms the strip's settle delay.
+    pub(crate) fn hover_message_without_toolbar(
+        &mut self,
+        message_id: MessageId,
+        is_thread: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.timeline_interactions_blocked_by_overlay() {
+            self.clear_hovered_message_immediate(cx);
+            return;
+        }
+        self.cancel_hover_clear();
+        self.hover_settle_seq = self.hover_settle_seq.wrapping_add(1);
+        let timeline = &mut self.models.timeline;
+        let message_changed = timeline.hovered_message_id.as_ref() != Some(&message_id)
+            || timeline.hovered_message_is_thread != Some(is_thread);
+        if !message_changed && !timeline.hover_toolbar_settled {
+            return;
+        }
+        if message_changed {
+            timeline.hovered_message_id = Some(message_id);
+            timeline.hovered_message_is_thread = Some(is_thread);
+            timeline.hovered_message_anchor_x = None;
+            timeline.hovered_message_anchor_y = None;
+            timeline.hovered_message_window_left = None;
+            timeline.hovered_message_window_top = None;
+            timeline.hovered_message_window_width = None;
+            timeline.hovered_message_viewport_size = None;
+        }
+        timeline.hover_toolbar_settled = false;
+        self.refresh(cx);
+    }
+
     pub(crate) fn show_sidebar_hover_tooltip(
         &mut self,
         text: String,

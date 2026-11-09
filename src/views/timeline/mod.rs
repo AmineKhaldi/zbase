@@ -464,7 +464,7 @@ impl TimelineList {
                                 .items_center()
                                 .hover(|s| s.underline())
                                 .on_mouse_move(cx.listener(|this, _, _, cx| {
-                                    this.clear_hovered_message(cx);
+                                    this.clear_hovered_message_immediate(cx);
                                     cx.stop_propagation();
                                 }))
                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -493,7 +493,7 @@ impl TimelineList {
                                 .cursor(gpui::CursorStyle::PointingHand)
                                 .hover(|s| s.underline())
                                 .on_mouse_move(cx.listener(|this, _, _, cx| {
-                                    this.clear_hovered_message(cx);
+                                    this.clear_hovered_message_immediate(cx);
                                     cx.stop_propagation();
                                 }))
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -651,10 +651,7 @@ impl TimelineList {
                             this.open_user_profile_card(author_user_id.clone(), cx);
                         }
                     }))
-                    .on_mouse_move(cx.listener(|this, _, _, cx| {
-                        this.clear_hovered_message(cx);
-                        cx.stop_propagation();
-                    }))
+                    .on_mouse_move(hold_message_hover(&row.message.id, is_thread, cx))
                     .cursor(gpui::CursorStyle::PointingHand)
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
@@ -727,10 +724,7 @@ impl TimelineList {
                 cx.listener(move |this, _, window, cx| {
                     this.open_thread(thread_target.clone(), window, cx);
                 }),
-                cx.listener(|this, _, _, cx| {
-                    this.clear_hovered_message(cx);
-                    cx.stop_propagation();
-                }),
+                hold_message_hover(&row.message.id, is_thread, cx),
             );
 
             content = content.child(reply_indicator);
@@ -841,10 +835,7 @@ impl TimelineList {
                             row.message.id.0
                         )))
                         .cursor(gpui::CursorStyle::PointingHand)
-                        .on_mouse_move(cx.listener(|this, _, _, cx| {
-                            this.clear_hovered_message(cx);
-                            cx.stop_propagation();
-                        }))
+                        .on_mouse_move(hold_message_hover(&row.message.id, is_thread, cx))
                         .on_click(cx.listener({
                             let author_user_id = author_user_id.clone();
                             move |this, _, _, cx| {
@@ -1480,10 +1471,15 @@ impl TimelineList {
                                 .cursor(gpui::CursorStyle::PointingHand)
                                 .on_mouse_move(cx.listener({
                                     let hover_text = hover_text.clone();
+                                    let hovered_message_id = message.id.clone();
                                     move |this, event: &gpui::MouseMoveEvent, _, cx| {
                                         let cursor_x: f32 = event.position.x.into();
                                         let cursor_y: f32 = event.position.y.into();
-                                        this.clear_hovered_message(cx);
+                                        this.hover_message_without_toolbar(
+                                            hovered_message_id.clone(),
+                                            is_thread,
+                                            cx,
+                                        );
                                         if let Some(hover_text) = hover_text.as_ref() {
                                             this.show_reaction_hover_tooltip(
                                                 hover_text.clone(),
@@ -1731,10 +1727,7 @@ impl TimelineList {
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_thread(thread_root_id.clone(), window, cx);
                             }))
-                            .on_mouse_move(cx.listener(|this, _, _, cx| {
-                                this.clear_hovered_message(cx);
-                                cx.stop_propagation();
-                            })),
+                            .on_mouse_move(hold_message_hover(&message.id, is_thread, cx)),
                         ),
                     )
                 },
@@ -1742,6 +1735,7 @@ impl TimelineList {
             .child(Self::render_send_state(
                 &message.id,
                 &message.send_state,
+                is_thread,
                 cx,
             ))
             .into_any_element()
@@ -3052,6 +3046,7 @@ impl TimelineList {
     fn render_send_state(
         message_id: &crate::domain::ids::MessageId,
         send_state: &MessageSendState,
+        is_thread: bool,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         match send_state {
@@ -3094,10 +3089,7 @@ impl TimelineList {
                             .tooltip(crate::views::tooltip::TextTooltip::single_line(
                                 "Send this message again".to_string(),
                             ))
-                            .on_mouse_move(cx.listener(|this, _, _, cx| {
-                                this.clear_hovered_message(cx);
-                                cx.stop_propagation();
-                            }))
+                            .on_mouse_move(hold_message_hover(message_id, is_thread, cx))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.retry_failed_message_send(retry_message_id.clone(), cx);
                             }))
@@ -3117,10 +3109,7 @@ impl TimelineList {
                             .tooltip(crate::views::tooltip::TextTooltip::single_line(
                                 "Remove this unsent message".to_string(),
                             ))
-                            .on_mouse_move(cx.listener(|this, _, _, cx| {
-                                this.clear_hovered_message(cx);
-                                cx.stop_propagation();
-                            }))
+                            .on_mouse_move(hold_message_hover(message_id, is_thread, cx))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.discard_failed_message(delete_message_id.clone(), cx);
                             }))
@@ -3488,18 +3477,28 @@ fn append_edited_annotation(text: &mut String, styled_ranges: &mut Vec<StyledRan
     });
 }
 
+/// Mouse-move handler for a control inside a message that shows its own
+/// tooltip: the message stays hovered and highlighted, without the strip.
+fn hold_message_hover(
+    message_id: &crate::domain::ids::MessageId,
+    is_thread: bool,
+    cx: &mut Context<AppWindow>,
+) -> impl Fn(&gpui::MouseMoveEvent, &mut Window, &mut gpui::App) + 'static {
+    let message_id = message_id.clone();
+    cx.listener(move |this, _: &gpui::MouseMoveEvent, _, cx| {
+        this.hover_message_without_toolbar(message_id.clone(), is_thread, cx);
+        cx.stop_propagation();
+    })
+}
+
 /// Quote bar above a reply: who it answers and one line of what they said.
-/// Clicking opens the thread; the tooltip shows the excerpt in full.
+/// Clicking opens the thread.
 fn render_reply_quote(
     message_key: &str,
     context: Option<ReplyContext>,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     on_mouse_move: impl Fn(&gpui::MouseMoveEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    let tooltip = context
-        .as_ref()
-        .filter(|context| !context.excerpt.is_empty())
-        .map(|context| format!("{}: {}", context.author, context.excerpt));
     let group = SharedString::from(format!("reply-quote-{message_key}"));
     div()
         .id(SharedString::from(format!("reply-indicator-{message_key}")))
@@ -3516,9 +3515,6 @@ fn render_reply_quote(
         .cursor(gpui::CursorStyle::PointingHand)
         .on_click(on_click)
         .on_mouse_move(on_mouse_move)
-        .when_some(tooltip, |quote, tooltip| {
-            quote.tooltip(crate::views::tooltip::TextTooltip::builder(tooltip))
-        })
         .text_xs()
         .text_color(rgb(text_secondary()))
         .child(TruncatedLine::new(match context {
