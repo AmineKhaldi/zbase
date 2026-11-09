@@ -825,13 +825,18 @@ impl Sidebar {
         ];
         div()
             .flex_shrink_0()
-            .py_2()
+            // Out to the sidebar's edges, so the divider spans its full width.
+            .mx(px(-8.))
+            .px_2()
+            .py(px(6.))
+            .border_t_1()
+            .border_color(rgb(crate::views::border()))
             .flex()
             .items_center()
-            .justify_between()
             .child(
                 div()
                     .relative()
+                    .flex_1()
                     .min_w(px(0.))
                     // Before the button, so the menu's anchor is the button's top edge.
                     .when(menu_open, |identity| {
@@ -855,11 +860,13 @@ impl Sidebar {
                                 this.sidebar_toggle_menu(SidebarMenu::Identity, window, cx);
                             }))
                             .cursor_pointer()
+                            // The whole row opens the menu, not just the name.
+                            .w_full()
                             .flex()
                             .items_center()
                             .gap_2()
                             .rounded_md()
-                            .px_1()
+                            .px(px(6.))
                             .py_1()
                             .when(menu_open, |identity| identity.bg(subtle_surface()))
                             .hover(|s| s.bg(subtle_surface()))
