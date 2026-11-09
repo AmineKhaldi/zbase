@@ -678,7 +678,9 @@ impl Sidebar {
             .flex_shrink_0()
             .flex()
             .items_end()
-            .justify_end()
+            // On macOS the window buttons sit to the left; elsewhere history leads the row.
+            .when(cfg!(target_os = "macos"), |row| row.justify_end())
+            .when(!cfg!(target_os = "macos"), |row| row.justify_between())
             .gap(px(if compact { 4. } else { 8. }))
             // Back and forward are a narrower pair, like Finder's toolbar.
             .child(group(
