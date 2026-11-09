@@ -59,10 +59,12 @@ pub enum DemoScene {
     Inactive,
     /// The composer's format menu open over a draft with a word selected.
     ComposerFormat,
+    ReactionTooltip,
+    ReactionTooltipLong,
 }
 
 impl DemoScene {
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 28] = [
         Self::Chat,
         Self::ChatGrouped,
         Self::ChatPreviews,
@@ -89,6 +91,8 @@ impl DemoScene {
         Self::Offline,
         Self::Inactive,
         Self::ComposerFormat,
+        Self::ReactionTooltip,
+        Self::ReactionTooltipLong,
     ];
 
     pub fn slug(self) -> &'static str {
@@ -119,6 +123,8 @@ impl DemoScene {
             Self::Offline => "offline",
             Self::Inactive => "inactive",
             Self::ComposerFormat => "composer-format",
+            Self::ReactionTooltip => "reaction-tooltip",
+            Self::ReactionTooltipLong => "reaction-tooltip-long",
         }
     }
 

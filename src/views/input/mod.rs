@@ -16,7 +16,7 @@ use std::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::views::{selection, text_primary};
+use crate::views::selection;
 
 const DEFAULT_TEXT_FIELD_PROFILE_MIN_MS: u128 = 2;
 const PLACEHOLDER_OPACITY: f32 = 0.70;
@@ -1473,8 +1473,10 @@ impl Element for TextLineElement {
                     ),
                     size(px(1.), (layout.line_height - inset * 2.).max(px(1.))),
                 ),
-                // The text color, like a native caret, not the accent.
-                rgb(text_primary()),
+                // The inherited text color, like a native caret, not the accent.
+                // Not `text_primary()`: the palette's theme scope has ended by
+                // prepaint, so it would always return the light theme's color.
+                style.color,
             ))
         } else {
             None

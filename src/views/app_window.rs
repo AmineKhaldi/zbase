@@ -2799,6 +2799,18 @@ impl AppWindow {
                     self.select_files_tab(crate::views::right_pane::files::FilesTab::Documents, cx);
                 }
             }
+            DemoScene::ReactionTooltip | DemoScene::ReactionTooltipLong => {
+                let (text, x, y) = if scene == DemoScene::ReactionTooltip {
+                    ("Alex Chen (@alex)".to_string(), 400., 360.)
+                } else {
+                    (
+                        "Alex Chen (@alex), Lena Fischer (@lena_f), Robin Ellis (@robin), Sam Rivera (@samr), Morgan Lee (@morgan), Priya Shah (@priya), 佐藤 陽菜 (@hina), Devon Brooks (@devon)".to_string(),
+                        f32::from(window.viewport_size().width) - 4.,
+                        f32::from(window.viewport_size().height) - 4.,
+                    )
+                };
+                self.show_reaction_hover_tooltip(text, x, y, cx);
+            }
             DemoScene::Chat | DemoScene::ChatPreviews | DemoScene::Dm => {}
             DemoScene::ChatPreviewsLive => {
                 self.apply_typing_indicator_update(
@@ -7645,17 +7657,13 @@ impl AppWindow {
         anchor_y: f32,
         cx: &mut Context<Self>,
     ) {
-        const TOOLTIP_MIN_WIDTH_PX: f32 = 190.0;
-        const TOOLTIP_MAX_WIDTH_PX: f32 = 520.0;
         let next_x = anchor_x + 8.0;
-        let next_y = anchor_y - 28.0;
-        let width_px = estimate_tooltip_width_px(&text, TOOLTIP_MIN_WIDTH_PX, TOOLTIP_MAX_WIDTH_PX);
+        let next_y = anchor_y - 8.0;
         let mut needs_refresh = match self.models.overlay.reaction_hover_tooltip.as_ref() {
             Some(current) => {
                 current.text != text
                     || (current.anchor_x - next_x).abs() > 0.5
                     || (current.anchor_y - next_y).abs() > 0.5
-                    || (current.width_px - width_px).abs() > 0.5
             }
             None => true,
         };
@@ -7667,7 +7675,7 @@ impl AppWindow {
             return;
         }
         self.models
-            .show_reaction_hover_tooltip(text, next_x, next_y, width_px);
+            .show_reaction_hover_tooltip(text, next_x, next_y);
         self.refresh(cx);
     }
 
@@ -9950,33 +9958,27 @@ fn render_reaction_hover_tooltip(
     tooltip: &crate::models::overlay_model::ReactionHoverTooltip,
     window: &Window,
 ) -> AnyElement {
-    let viewport = window.viewport_size();
-    let viewport_width = f32::from(viewport.width);
-    let viewport_height = f32::from(viewport.height);
-    let width_px = tooltip.width_px.max(1.0);
-    let clamped_x = tooltip
-        .anchor_x
-        .min((viewport_width - width_px - 8.0).max(8.0))
-        .max(8.0);
-    let clamped_y = tooltip
-        .anchor_y
-        .min((viewport_height - 28.0).max(8.0))
-        .max(8.0);
-
-    div()
-        .absolute()
-        .left(px(clamped_x))
-        .top(px(clamped_y))
-        .w(px(width_px))
-        .rounded_md()
-        .bg(tint(panel_bg(), 0.92))
-        .border_1()
-        .border_color(shell_border_strong())
-        .px_2()
-        .py_1()
-        .text_xs()
-        .text_color(rgb(text_primary()))
-        .child(tooltip.text.clone())
+    // Let text layout determine the size: character-count estimates get both
+    // proportional fonts and multi-line actor lists wrong. Anchor the bottom
+    // edge above the pointer, then fit the measured bounds inside the window.
+    let max_width = (f32::from(window.viewport_size().width) - 16.).clamp(1., 520.);
+    gpui::anchored()
+        .anchor(gpui::Corner::BottomLeft)
+        .position(gpui::point(px(tooltip.anchor_x), px(tooltip.anchor_y)))
+        .snap_to_window_with_margin(px(8.))
+        .child(
+            div()
+                .max_w(px(max_width))
+                .rounded_md()
+                .bg(tint(panel_bg(), 0.92))
+                .border_1()
+                .border_color(shell_border_strong())
+                .px_2()
+                .py_1()
+                .text_xs()
+                .text_color(rgb(text_primary()))
+                .child(tooltip.text.clone()),
+        )
         .into_any_element()
 }
 

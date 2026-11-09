@@ -15,7 +15,6 @@ pub struct ReactionHoverTooltip {
     pub text: String,
     pub anchor_x: f32,
     pub anchor_y: f32,
-    pub width_px: f32,
 }
 
 #[derive(Clone, Debug)]
