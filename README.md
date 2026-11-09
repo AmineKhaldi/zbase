@@ -24,6 +24,14 @@ The recommended installation is the **signed and notarized macOS app**. You do n
 
 zBase uses the local Keybase service and your existing Keybase account. Keep the Keybase app or `keybase service` running while using zBase. Official DMGs bundle their media libraries; Intel Macs are not supported by these downloads.
 
+### Windows
+
+1. Make sure you have **64-bit Windows 10 (1903) or Windows 11** and [Keybase](https://keybase.io/download) installed and logged in.
+2. Download `zBase-<version>-windows-x64-setup.exe` from the [latest GitHub release](https://github.com/cameroncooper/zbase/releases/latest) and run it. No administrator rights are needed.
+3. The installer is not code-signed yet, so Windows may show "Windows protected your PC": choose **More info → Run anyway**.
+
+Launch zBase from the Start Menu. To uninstall, use **Settings → Apps → Installed apps → zBase**. zBase does not play sounds or show desktop notifications; keep the Keybase app running in the tray if you want them. See [Windows releases](docs/windows-releases.md) for how the installer is built.
+
 ### Optional: Homebrew source installation
 
 Homebrew compiles zBase locally and installs its build dependencies. Use this if you prefer a source installation; it is not required for the DMG.
@@ -179,7 +187,7 @@ This creates a development app at `dist/macos/zBase.app` using your installed me
 cargo run --locked --release --features gpui/runtime_shaders
 ```
 
-To prepare a release, run **Actions → Prepare release** on `main` with the next version. Merge its version-bump PR after CI passes, then create and publish the matching release in GitHub. For self-contained packaging, Developer ID signing, notarization, and the full publishing process, see [macOS releases](docs/macos-releases.md).
+To prepare a release, run **Actions → Prepare release** on `main` with the next version. Merge its version-bump PR after CI passes, then create and publish the matching release in GitHub. For self-contained packaging, Developer ID signing, notarization, and the full publishing process, see [macOS releases](docs/macos-releases.md). The same release also attaches the Windows installer; see [Windows releases](docs/windows-releases.md).
 
 ### Checks before opening a PR
 
