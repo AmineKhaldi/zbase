@@ -37,6 +37,9 @@ pub enum UiAction {
     NewChatSearchUsers {
         query: String,
     },
+    NewChatSearchRemote {
+        query_id: super::ids::QueryId,
+    },
     NewChatAddParticipant {
         user: UserSummary,
     },

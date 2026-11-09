@@ -3,6 +3,7 @@ use crate::domain::message_formatting::{
 };
 mod attachment_hydration;
 mod channel_membership;
+mod user_search;
 use super::history_progress::{EnvelopeDisposition, PageProgress};
 use crate::{
     domain::{
@@ -68,7 +69,7 @@ use std::{
     sync::mpsc::{self, Receiver, Sender},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -104,6 +105,7 @@ pub struct KeybaseBackend {
     inbound_sender: Option<Sender<BackendEvent>>,
     listener_handle: Option<JoinHandle<()>>,
     listener_shutdown: Arc<AtomicBool>,
+    user_search_generation: Arc<AtomicU64>,
     account_id: AccountId,
     sync: Arc<SyncService>,
 }
@@ -159,6 +161,7 @@ impl KeybaseBackend {
             inbound_sender: None,
             listener_handle: None,
             listener_shutdown: Arc::new(AtomicBool::new(false)),
+            user_search_generation: Arc::new(AtomicU64::new(0)),
             account_id: AccountId::new(DEFAULT_ACCOUNT_ID),
             sync: Arc::new(SyncService::default()),
         }
@@ -1534,35 +1537,7 @@ impl ChatBackend for KeybaseBackend {
             }
             RoutedBackendCommand::SearchUsers {
                 query_id, query, ..
-            } => {
-                let query = query.trim().to_string();
-                if query.is_empty() {
-                    return Ok(vec![BackendEvent::UserSearchResults {
-                        query_id,
-                        results: Vec::new(),
-                    }]);
-                }
-                let results;
-                if let Some(path) = socket_path()
-                    && let Ok(runtime) = Builder::new_current_thread().enable_all().build()
-                {
-                    let query_for_call = query.clone();
-                    let search_result = runtime.block_on(async move {
-                        let transport = FramedMsgpackTransport::connect(&path).await?;
-                        let mut client = KeybaseRpcClient::new(transport);
-                        call_user_search(&mut client, &query_for_call).await
-                    });
-                    {
-                        let response = search_result?;
-                        results = parse_user_search_results(&response);
-                    }
-                } else {
-                    return Err(BackendError::OperationFailed(
-                        "Keybase is unavailable. Please try again.".into(),
-                    ));
-                }
-                Ok(vec![BackendEvent::UserSearchResults { query_id, results }])
-            }
+            } => self.schedule_user_search(query_id, query),
             RoutedBackendCommand::CreateConversation {
                 op_id,
                 account_id,

@@ -100,6 +100,8 @@ pub fn render_new_chat_modal(
             ),
         )
         .into_any_element()
+    } else if new_chat.search_results.is_empty() && new_chat.is_searching {
+        empty_state("assets/icons/search.svg", "Searching Keybase…", None).into_any_element()
     } else if new_chat.search_results.is_empty() {
         empty_state(
             "assets/icons/search.svg",
@@ -112,7 +114,15 @@ pub fn render_new_chat_modal(
             .flex()
             .flex_col()
             .gap(px(1.))
-            .child(section_label("People").px(px(8.)).pb(px(4.)))
+            .child(
+                section_label(if new_chat.is_searching {
+                    "People · Searching Keybase…"
+                } else {
+                    "People"
+                })
+                .px(px(8.))
+                .pb(px(4.)),
+            )
             .children(
                 new_chat
                     .search_results

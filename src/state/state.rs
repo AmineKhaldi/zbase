@@ -156,6 +156,9 @@ pub struct UiSearchState {
 
 #[derive(Clone, Debug, Default)]
 pub struct UiNewChatState {
+    pub people: super::new_chat_search::PeopleCorpus,
+    pub people_dirty: bool,
+    pub is_searching: bool,
     pub active_query_id: Option<QueryId>,
     pub open: bool,
     pub search_query: String,
