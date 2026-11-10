@@ -14,6 +14,15 @@ pub const ME_AVATAR_ASSET: &str = "assets/avatars/me.svg";
 
 pub struct Avatar;
 
+/// Every avatar is a rounded square; the kind only decides how its initials read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AvatarKind {
+    /// A person: up to two initials.
+    Person,
+    /// A team or channel: one bold initial.
+    Team,
+}
+
 enum GroupAvatarStyle {
     Faces,
     Count,
@@ -27,24 +36,14 @@ impl Avatar {
         background: u32,
         foreground: u32,
     ) -> AnyElement {
-        Self::render_shaped(name, asset, size, background, foreground, true)
-    }
-
-    pub fn render_square(
-        name: &str,
-        asset: Option<&str>,
-        size: f32,
-        background: u32,
-        foreground: u32,
-    ) -> AnyElement {
-        Self::render_shaped(name, asset, size, background, foreground, false)
+        Self::render_kind(name, asset, size, background, foreground, AvatarKind::Person)
     }
 
     /// Team or channel mark: a rounded square with the team image, or its uppercase
     /// initial on a stable per-team hue that reads in both themes.
     pub fn render_team(name: &str, asset: Option<&str>, size: f32) -> AnyElement {
         let (background, foreground) = team_colors(name);
-        Self::render_shaped(name, asset, size, background, foreground, false)
+        Self::render_kind(name, asset, size, background, foreground, AvatarKind::Team)
     }
 
     pub fn render_participants(
@@ -163,7 +162,7 @@ impl Avatar {
             .flex_shrink_0()
             .w(px(size))
             .h(px(size))
-            .rounded_full()
+            .rounded(px(square_radius(size)))
             .bg(rgb(default_avatar_background("")))
             .text_color(rgb(crate::views::text_primary()))
             .flex()
@@ -212,7 +211,7 @@ impl Avatar {
                     .absolute()
                     .top_0()
                     .left_0()
-                    .child(Self::render_shaped(name1, *asset1, mini, *bg1, *fg1, true)),
+                    .child(Self::render(name1, *asset1, mini, *bg1, *fg1)),
             )
             .child(
                 div()
@@ -221,12 +220,12 @@ impl Avatar {
                     .left(px(offset - ring))
                     .w(px(mini + ring * 2.))
                     .h(px(mini + ring * 2.))
-                    .rounded_full()
+                    .rounded(px(square_radius(mini) + ring))
                     .bg(surface)
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(Self::render_shaped(name2, *asset2, mini, *bg2, *fg2, true)),
+                    .child(Self::render(name2, *asset2, mini, *bg2, *fg2)),
             )
             .into_any_element()
     }
@@ -288,19 +287,19 @@ impl Avatar {
         }
     }
 
-    fn render_shaped(
+    fn render_kind(
         name: &str,
         asset: Option<&str>,
         size: f32,
         background: u32,
         foreground: u32,
-        circular: bool,
+        kind: AvatarKind,
     ) -> AnyElement {
         match asset {
             Some(asset_path) => sized_image_source_for_asset(asset_path, size)
-                .map(|source| Self::image(name, source, size, background, foreground, circular))
-                .unwrap_or_else(|| Self::fallback(name, size, background, foreground, circular)),
-            None => Self::fallback(name, size, background, foreground, circular),
+                .map(|source| Self::image(name, source, size, background, foreground, kind))
+                .unwrap_or_else(|| Self::fallback(name, size, background, foreground, kind)),
+            None => Self::fallback(name, size, background, foreground, kind),
         }
     }
 
@@ -309,10 +308,11 @@ impl Avatar {
         size: f32,
         background: u32,
         foreground: u32,
-        circular: bool,
+        kind: AvatarKind,
     ) -> AnyElement {
-        // Small marks (sidebar, team squares) have room for one letter only.
-        let initials = if size < 22. || !circular {
+        let team = kind == AvatarKind::Team;
+        // Small marks (sidebar) and team marks have room for one letter only.
+        let initials = if size < 22. || team {
             initials_for_name(name).chars().take(1).collect()
         } else {
             initials_for_name(name)
@@ -322,15 +322,14 @@ impl Avatar {
             .flex_shrink_0()
             .w(px(size))
             .h(px(size))
-            .when(circular, |d| d.rounded_full())
-            .when(!circular, |d| d.rounded(px(square_radius(size))))
+            .rounded(px(square_radius(size)))
             .bg(rgb(background))
             .text_color(rgb(foreground))
             .flex()
             .items_center()
             .justify_center()
             .text_size(px(
-                (size * if circular { 0.42 } else { 0.55 }).clamp(7., 15.)
+                (size * if team { 0.55 } else { 0.42 }).clamp(7., 15.)
             ))
             .font_weight(FontWeight::SEMIBOLD)
             .line_height(px(size))
@@ -344,7 +343,7 @@ impl Avatar {
         size: f32,
         background: u32,
         foreground: u32,
-        circular: bool,
+        kind: AvatarKind,
     ) -> AnyElement {
         let fallback_name = name.to_string();
 
@@ -352,8 +351,7 @@ impl Avatar {
             .w(px(size))
             .h(px(size))
             .flex_shrink_0()
-            .when(circular, |d| d.rounded_full())
-            .when(!circular, |d| d.rounded(px(square_radius(size))))
+            .rounded(px(square_radius(size)))
             .overflow_hidden()
             .bg(panel_surface())
             .child(
@@ -361,11 +359,10 @@ impl Avatar {
                     .id(gpui::SharedString::from(format!("avatar-image-{size}")))
                     .w(px(size))
                     .h(px(size))
-                    .when(circular, |d| d.rounded_full())
-                    .when(!circular, |d| d.rounded(px(square_radius(size))))
+                    .rounded(px(square_radius(size)))
                     .object_fit(ObjectFit::Cover)
                     .with_fallback(move || {
-                        Self::fallback(&fallback_name, size, background, foreground, circular)
+                        Self::fallback(&fallback_name, size, background, foreground, kind)
                     }),
             )
             .into_any_element()
@@ -380,7 +377,7 @@ pub fn default_avatar_background(name: &str) -> u32 {
     }
 }
 
-/// Corner radius for square marks: 4px at sidebar size, 6px at header size.
+/// Corner radius for avatars: 4px at sidebar size, 6px at header size.
 fn square_radius(size: f32) -> f32 {
     (size * 0.22).round().clamp(3., 12.)
 }
