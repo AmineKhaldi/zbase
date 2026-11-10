@@ -36,7 +36,14 @@ impl Avatar {
         background: u32,
         foreground: u32,
     ) -> AnyElement {
-        Self::render_kind(name, asset, size, background, foreground, AvatarKind::Person)
+        Self::render_kind(
+            name,
+            asset,
+            size,
+            background,
+            foreground,
+            AvatarKind::Person,
+        )
     }
 
     /// Team or channel mark: a rounded square with the team image, or its uppercase
@@ -328,9 +335,7 @@ impl Avatar {
             .flex()
             .items_center()
             .justify_center()
-            .text_size(px(
-                (size * if team { 0.55 } else { 0.42 }).clamp(7., 15.)
-            ))
+            .text_size(px((size * if team { 0.55 } else { 0.42 }).clamp(7., 15.)))
             .font_weight(FontWeight::SEMIBOLD)
             .line_height(px(size))
             .child(initials)
