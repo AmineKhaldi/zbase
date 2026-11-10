@@ -80,7 +80,14 @@ impl AppWindow {
         let mut snapshot = updates::snapshot();
         let attention = snapshot.attention;
         snapshot.attention = false;
-        let changed = snapshot != self.update_ui.snapshot;
+        let mut changed = snapshot != self.update_ui.snapshot;
+        if self.update_ui.error.as_deref()
+            == Some("Wait for messages and uploads to finish before restarting.")
+            && self.update_restart_blocker().is_none()
+        {
+            self.update_ui.error = None;
+            changed = true;
+        }
         if snapshot.version != self.update_ui.snapshot.version {
             self.update_ui.note_texts.clear();
         }

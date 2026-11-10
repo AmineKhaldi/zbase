@@ -3,6 +3,7 @@ use crate::domain::message_formatting::{
 };
 mod attachment_hydration;
 mod channel_membership;
+mod outbox;
 mod user_search;
 use super::history_progress::{EnvelopeDisposition, PageProgress};
 use crate::{
@@ -58,6 +59,7 @@ use attachment_hydration::{
     message_needs_image_attachment_hydration, message_needs_video_attachment_hydration,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use outbox::PendingOutboxSends;
 use reqwest::{Url, header::CONTENT_TYPE};
 use rmpv::Value;
 use serde::Deserialize;
@@ -100,7 +102,7 @@ pub struct KeybaseBackend {
     backend_id: BackendId,
     local_store: Arc<LocalStore>,
     search_index: Arc<SearchIndex>,
-    pending_outbox_sends: Arc<Mutex<HashMap<String, PendingSendMeta>>>,
+    pending_outbox_sends: Arc<Mutex<PendingOutboxSends>>,
     inbound_events: Option<Receiver<BackendEvent>>,
     inbound_sender: Option<Sender<BackendEvent>>,
     listener_handle: Option<JoinHandle<()>>,
@@ -156,7 +158,7 @@ impl KeybaseBackend {
             backend_id: BackendId::new(KEYBASE_BACKEND_ID),
             local_store,
             search_index,
-            pending_outbox_sends: Arc::new(Mutex::new(HashMap::new())),
+            pending_outbox_sends: Arc::new(Mutex::new(PendingOutboxSends::default())),
             inbound_events: None,
             inbound_sender: None,
             listener_handle: None,
@@ -1067,17 +1069,18 @@ impl ChatBackend for KeybaseBackend {
                     });
                     match send_result {
                         Ok(response) => {
-                            if let Some(outbox_id) = extract_outbox_id_from_post_response(&response)
-                                && let Ok(mut pending) = self.pending_outbox_sends.lock()
-                            {
-                                pending.insert(
-                                    outbox_id,
-                                    PendingSendMeta {
-                                        op_id,
-                                        client_message_id,
-                                        local_attachment_path: None,
-                                    },
-                                );
+                            let meta = PendingSendMeta {
+                                op_id,
+                                client_message_id,
+                                local_attachment_path: None,
+                            };
+                            match self.pending_outbox_sends.lock() {
+                                Ok(mut pending) => emitted.extend(pending.acknowledge(&response, meta)),
+                                Err(_) => emitted.push(BackendEvent::MessageSendFailed {
+                                    op_id: meta.op_id,
+                                    client_message_id: meta.client_message_id,
+                                    error: "Could not track the Keybase send. Check the conversation before retrying.".into(),
+                                }),
                             }
                         }
                         Err(error) => {
@@ -1158,17 +1161,18 @@ impl ChatBackend for KeybaseBackend {
                     });
                     match send_result {
                         Ok(response) => {
-                            if let Some(outbox_id) = extract_outbox_id_from_post_response(&response)
-                                && let Ok(mut pending) = self.pending_outbox_sends.lock()
-                            {
-                                pending.insert(
-                                    outbox_id,
-                                    PendingSendMeta {
-                                        op_id,
-                                        client_message_id,
-                                        local_attachment_path: Some(local_path.clone()),
-                                    },
-                                );
+                            let meta = PendingSendMeta {
+                                op_id,
+                                client_message_id,
+                                local_attachment_path: Some(local_path.clone()),
+                            };
+                            match self.pending_outbox_sends.lock() {
+                                Ok(mut pending) => emitted.extend(pending.acknowledge(&response, meta)),
+                                Err(_) => emitted.push(BackendEvent::MessageSendFailed {
+                                    op_id: meta.op_id,
+                                    client_message_id: meta.client_message_id,
+                                    error: "Could not track the Keybase send. Check the conversation before retrying.".into(),
+                                }),
                             }
                         }
                         Err(error) => {
@@ -1963,7 +1967,7 @@ fn reconnect_delay(attempt: u32) -> Duration {
 fn run_listener(
     sender: Sender<BackendEvent>,
     local_store: Arc<LocalStore>,
-    pending_outbox_sends: Arc<Mutex<HashMap<String, PendingSendMeta>>>,
+    pending_outbox_sends: Arc<Mutex<PendingOutboxSends>>,
     account_id: AccountId,
     shutdown: Arc<AtomicBool>,
 ) {
@@ -1991,7 +1995,7 @@ fn run_listener(
 async fn listen_with_reconnect(
     sender: &Sender<BackendEvent>,
     local_store: &Arc<LocalStore>,
-    pending_outbox_sends: &Arc<Mutex<HashMap<String, PendingSendMeta>>>,
+    pending_outbox_sends: &Arc<Mutex<PendingOutboxSends>>,
     account_id: &AccountId,
     shutdown: &AtomicBool,
     resolve_socket: impl Fn() -> Option<PathBuf>,
@@ -2045,7 +2049,7 @@ async fn run_listener_session(
     path: &Path,
     sender: &Sender<BackendEvent>,
     local_store: &Arc<LocalStore>,
-    pending_outbox_sends: &Arc<Mutex<HashMap<String, PendingSendMeta>>>,
+    pending_outbox_sends: &Arc<Mutex<PendingOutboxSends>>,
     account_id: &AccountId,
     shutdown: &AtomicBool,
 ) -> io::Result<()> {
@@ -2125,6 +2129,7 @@ async fn run_listener_session(
         if let Some(progress) = parse_attachment_upload_progress(&event)
             && let Some(client_message_id) = pending_outbox_sends.lock().ok().and_then(|pending| {
                 pending
+                    .pending
                     .get(&progress.outbox_id)
                     .map(|meta| meta.client_message_id.clone())
             })
@@ -2236,7 +2241,7 @@ async fn run_listener_session(
                         pending_outbox_sends
                             .lock()
                             .ok()
-                            .and_then(|mut pending| pending.remove(&outbox_id))
+                            .and_then(|mut pending| pending.confirm(outbox_id, &live_message))
                     });
                 let live_reaction_map_deltas = parse_live_reaction_map_deltas_from_notify(
                     &event,
@@ -16349,7 +16354,7 @@ mod tests {
                 }
             });
             let store = Arc::new(LocalStore::open_at(path.join("store")).unwrap());
-            let pending = Arc::new(Mutex::new(HashMap::new()));
+            let pending = Arc::new(Mutex::new(PendingOutboxSends::default()));
             let account = AccountId::new("test-account");
             let shutdown = Arc::new(AtomicBool::new(false));
             let (sender, receiver) = mpsc::channel();
@@ -16439,7 +16444,7 @@ mod tests {
                     &socket,
                     &sender,
                     &store,
-                    &Arc::new(Mutex::new(HashMap::new())),
+                    &Arc::new(Mutex::new(PendingOutboxSends::default())),
                     &AccountId::new("test-account"),
                     &AtomicBool::new(false),
                 )
