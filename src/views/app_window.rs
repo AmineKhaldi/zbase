@@ -1891,10 +1891,14 @@ impl AppWindow {
             &self.og_service,
             self.models.thread_pane.replies.iter_mut().collect(),
         );
-        let now = Instant::now();
+        self.apply_github_pr_previews();
+    }
+
+    /// Returns whether any PR preview changed.
+    fn apply_github_pr_previews(&mut self) -> bool {
         apply_github_pr_previews_to_messages(
             &self.github_pr_service,
-            now,
+            Instant::now(),
             self.models
                 .timeline
                 .rows
@@ -1908,7 +1912,7 @@ impl AppWindow {
                 })
                 .chain(self.models.thread_pane.replies.iter_mut())
                 .collect(),
-        );
+        )
     }
 
     fn refresh_link_preview_rows(&mut self) {
@@ -1917,6 +1921,17 @@ impl AppWindow {
         self.anchor_timeline_before_layout();
         self.apply_og_previews_to_timeline();
         self.timeline_row_render_cache.invalidate();
+    }
+
+    /// Like `refresh_link_preview_rows`, but only repaints when a PR preview changed.
+    fn refresh_github_pr_rows(&mut self) -> bool {
+        if !self.apply_github_pr_previews() {
+            return false;
+        }
+        // Reads the previous layout, so it still anchors correctly after the update.
+        self.anchor_timeline_before_layout();
+        self.timeline_row_render_cache.invalidate();
+        true
     }
 
     /// PR links in the open conversation and thread, most recent first.
@@ -1971,10 +1986,7 @@ impl AppWindow {
             now,
             &self.github_pr_result_sender,
         );
-        if changed {
-            self.refresh_link_preview_rows();
-        }
-        changed
+        changed && self.refresh_github_pr_rows()
     }
 
     fn drain_github_pr_results(&mut self) -> bool {
@@ -2003,10 +2015,7 @@ impl AppWindow {
                 self.og_service.schedule_fetch(url, &self.og_result_sender);
             }
         }
-        if changed {
-            self.refresh_link_preview_rows();
-        }
-        changed
+        changed && self.refresh_github_pr_rows()
     }
 
     fn schedule_og_fetches_for_messages(&mut self, messages: &[MessageRecord]) {
@@ -4211,6 +4220,11 @@ impl AppWindow {
         self.models.thread_pane.replies = snapshot.thread.replies.clone();
         self.models.thread_pane.reply_draft = snapshot.thread.reply_draft.clone();
         self.models.thread_pane.loading = snapshot.thread.loading;
+        apply_link_previews_to_thread_replies(
+            &self.og_service,
+            &self.github_pr_service,
+            &mut self.models.thread_pane.replies,
+        );
         if self.pending_thread_scroll_to_bottom
             && self.models.thread_pane.open
             && !self.models.thread_pane.loading
@@ -4654,6 +4668,11 @@ impl AppWindow {
         self.models.thread_pane.replies = snapshot.thread.replies.clone();
         self.models.thread_pane.reply_draft = snapshot.thread.reply_draft.clone();
         self.models.thread_pane.loading = snapshot.thread.loading;
+        apply_link_previews_to_thread_replies(
+            &self.og_service,
+            &self.github_pr_service,
+            &mut self.models.thread_pane.replies,
+        );
     }
 
     fn persist_settings(&mut self) {
@@ -11430,11 +11449,27 @@ fn apply_og_previews_to_messages(og_service: &OgService, messages: Vec<&mut Mess
     }
 }
 
+/// Store syncs replace thread replies with copies that lack fetched previews.
+fn apply_link_previews_to_thread_replies(
+    og_service: &OgService,
+    github_pr_service: &GithubPrService,
+    replies: &mut [MessageRecord],
+) {
+    apply_og_previews_to_messages(og_service, replies.iter_mut().collect());
+    apply_github_pr_previews_to_messages(
+        github_pr_service,
+        Instant::now(),
+        replies.iter_mut().collect(),
+    );
+}
+
+/// Returns whether any preview changed.
 fn apply_github_pr_previews_to_messages(
     service: &GithubPrService,
     now: Instant,
     messages: Vec<&mut MessageRecord>,
-) {
+) -> bool {
+    let mut changed = false;
     for message in messages {
         let urls = extract_link_urls_from_fragments(&message.fragments);
         let mut seen = HashSet::new();
@@ -11454,29 +11489,36 @@ fn apply_github_pr_previews_to_messages(
                     let preview = &mut message.link_previews[index];
                     if preview.github_pr.as_ref() != Some(&pr_preview) {
                         preview.github_pr = Some(pr_preview);
+                        changed = true;
                     }
                 }
-                (None, Some(pr_preview)) => message.link_previews.push(LinkPreview {
-                    url: url.clone(),
-                    site: Some("github.com".to_string()),
-                    github_pr: Some(pr_preview),
-                    ..LinkPreview::default()
-                }),
+                (None, Some(pr_preview)) => {
+                    message.link_previews.push(LinkPreview {
+                        url: url.clone(),
+                        site: Some("github.com".to_string()),
+                        github_pr: Some(pr_preview),
+                        ..LinkPreview::default()
+                    });
+                    changed = true;
+                }
                 (Some(index), None) => {
                     let preview = &mut message.link_previews[index];
-                    preview.github_pr = None;
                     let is_empty_placeholder = preview.title.is_none()
                         && preview.description.is_none()
                         && preview.thumbnail_asset.is_none()
                         && !preview.is_media;
                     if is_empty_placeholder {
                         message.link_previews.remove(index);
+                        changed = true;
+                    } else if preview.github_pr.take().is_some() {
+                        changed = true;
                     }
                 }
                 (None, None) => {}
             }
         }
     }
+    changed
 }
 
 pub(crate) fn urls_match(a: &str, b: &str) -> bool {

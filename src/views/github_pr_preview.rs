@@ -147,10 +147,7 @@ fn status_chips(row: Div, status: &GithubPrStatus, refreshing: bool) -> Div {
         GithubPrState::Open | GithubPrState::Draft => row
             .when_some(checks_chip(&status.checks), ParentElement::child)
             .child(review_chip(status.review))
-            .child(comments_chip(
-                status.unresolved_threads,
-                status.total_threads,
-            )),
+            .child(comments_chip(status)),
     };
     row.child(diff_stat(status.additions, status.deletions))
         .when(refreshing, |row| {
@@ -203,14 +200,22 @@ fn review_chip(review: GithubReviewState) -> Div {
     }
 }
 
-fn comments_chip(unresolved: u32, total: u32) -> Div {
+fn comments_chip(status: &GithubPrStatus) -> Div {
+    let unresolved = status.unresolved_threads;
+    let more = if status.threads_complete { "" } else { "+" };
     if unresolved > 0 {
         chip(
             COMMENT_ICON,
-            format!("{unresolved} unresolved"),
+            format!("{unresolved}{more} unresolved"),
             Tone::Waiting,
         )
-    } else if total > 0 {
+    } else if !status.threads_complete {
+        chip(
+            COMMENT_ICON,
+            format!("{} threads", status.total_threads),
+            Tone::Neutral,
+        )
+    } else if status.total_threads > 0 {
         chip(COMMENT_ICON, "All resolved", Tone::Neutral)
     } else {
         chip(COMMENT_ICON, "No comments", Tone::Neutral)

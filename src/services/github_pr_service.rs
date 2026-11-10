@@ -8,6 +8,8 @@ use crate::domain::github_pr::{
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::fmt;
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
@@ -28,7 +30,19 @@ const BASE_BACKOFF: Duration = Duration::from_secs(15);
 const MAX_BACKOFF: Duration = Duration::from_secs(600);
 const DEFAULT_RATE_LIMIT_WAIT: Duration = Duration::from_secs(60);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
+/// `gh auth token` can hang on a keychain or secret-service prompt.
+const GH_TIMEOUT: Duration = Duration::from_secs(5);
 const GRAPHQL_URL: &str = "https://api.github.com/graphql";
+
+/// A GitHub token. `Debug` never prints the secret.
+#[derive(Clone)]
+struct Token(String);
+
+impl fmt::Debug for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Token(<redacted>)")
+    }
+}
 
 #[derive(Debug)]
 pub struct GithubPrFetchResult {
@@ -44,11 +58,19 @@ enum FetchOutcome {
         retry_after: Duration,
     },
     Failed,
-    /// `None` means the PR does not exist or this token cannot see it.
     Fetched {
-        token: String,
-        statuses: Vec<(GithubPrRef, Option<GithubPrStatus>)>,
+        token: Token,
+        statuses: Vec<(GithubPrRef, PrFetch)>,
     },
+}
+
+#[derive(Debug)]
+enum PrFetch {
+    Found(GithubPrStatus),
+    /// The PR does not exist or this token cannot see it.
+    Inaccessible,
+    /// GitHub failed on this PR only; try again later.
+    Transient,
 }
 
 #[derive(Default)]
@@ -56,14 +78,13 @@ struct Entry {
     status: Option<GithubPrStatus>,
     fetched_at: Option<Instant>,
     in_flight: bool,
-    needs_auth: bool,
     no_access: bool,
     failed: bool,
 }
 
 pub struct GithubPrService {
     entries: HashMap<GithubPrRef, Entry>,
-    token: Option<String>,
+    token: Option<Token>,
     token_retry_at: Option<Instant>,
     backoff_until: Option<Instant>,
     failures: u32,
@@ -100,13 +121,18 @@ impl GithubPrService {
         GithubPrRef::parse(url).is_some_and(|pr| self.preview(&pr, now).is_some())
     }
 
+    /// Token lookup failed and is waiting to be retried.
+    fn token_missing(&self) -> bool {
+        self.token.is_none() && self.token_retry_at.is_some()
+    }
+
     /// `None` means fall back to the ordinary link preview.
     pub fn preview(&self, pr: &GithubPrRef, now: Instant) -> Option<GithubPrPreview> {
         let Some(entry) = self.entries.get(pr) else {
             return Some(GithubPrPreview {
                 pr: pr.clone(),
                 status: None,
-                needs_auth: false,
+                needs_auth: self.token_missing(),
                 refreshing: false,
             });
         };
@@ -119,7 +145,7 @@ impl GithubPrService {
         Some(GithubPrPreview {
             pr: pr.clone(),
             status: entry.status.clone(),
-            needs_auth: entry.needs_auth && entry.status.is_none(),
+            needs_auth: entry.status.is_none() && self.token_missing(),
             refreshing: entry.in_flight && entry.status.is_some() && stale,
         })
     }
@@ -134,14 +160,9 @@ impl GithubPrService {
         sender: &Sender<GithubPrFetchResult>,
     ) -> bool {
         let mut changed = false;
-        let known_missing_token = self.token.is_none() && self.token_retry_at.is_some();
         for pr in refs {
             if !self.entries.contains_key(pr) {
-                let entry = Entry {
-                    needs_auth: known_missing_token,
-                    ..Entry::default()
-                };
-                self.entries.insert(pr.clone(), entry);
+                self.entries.insert(pr.clone(), Entry::default());
                 changed = true;
             }
         }
@@ -213,58 +234,72 @@ impl GithubPrService {
                 entry.in_flight = false;
             }
         }
-        let mut fallback = Vec::new();
         match result.outcome {
             FetchOutcome::NoToken | FetchOutcome::Unauthorized => {
                 self.token = None;
                 self.token_retry_at = Some(now + TOKEN_RETRY);
-                for pr in &result.refs {
-                    if let Some(entry) = self.entries.get_mut(pr) {
-                        entry.needs_auth = true;
-                    }
-                }
+                Vec::new()
             }
             FetchOutcome::RateLimited { retry_after } => {
                 self.backoff_until = Some(now + retry_after);
+                self.mark_failed(&result.refs)
             }
             FetchOutcome::Failed => {
-                self.failures = self.failures.saturating_add(1);
-                let backoff = BASE_BACKOFF
-                    .saturating_mul(1 << self.failures.saturating_sub(1).min(10))
-                    .min(MAX_BACKOFF);
-                self.backoff_until = Some(now + backoff);
-                for pr in &result.refs {
-                    if let Some(entry) = self.entries.get_mut(pr)
-                        && entry.status.is_none()
-                        && !entry.failed
-                    {
-                        entry.failed = true;
-                        fallback.push(pr.clone());
-                    }
-                }
+                self.note_failure(now);
+                self.mark_failed(&result.refs)
             }
             FetchOutcome::Fetched { token, statuses } => {
                 self.token = Some(token);
                 self.token_retry_at = None;
-                self.backoff_until = None;
-                self.failures = 0;
-                for (pr, status) in statuses {
+                let mut fallback = Vec::new();
+                let mut transient = Vec::new();
+                for (pr, fetch) in statuses {
                     let Some(entry) = self.entries.get_mut(&pr) else {
                         continue;
                     };
-                    entry.needs_auth = false;
-                    entry.failed = false;
-                    match status {
-                        Some(status) => {
+                    match fetch {
+                        PrFetch::Found(status) => {
+                            entry.failed = false;
                             entry.status = Some(status);
                             entry.fetched_at = Some(now);
                         }
-                        None => {
+                        PrFetch::Inaccessible => {
                             entry.no_access = true;
                             fallback.push(pr);
                         }
+                        PrFetch::Transient => transient.push(pr),
                     }
                 }
+                if transient.is_empty() {
+                    self.backoff_until = None;
+                    self.failures = 0;
+                } else {
+                    self.note_failure(now);
+                    fallback.extend(self.mark_failed(&transient));
+                }
+                fallback
+            }
+        }
+    }
+
+    fn note_failure(&mut self, now: Instant) {
+        self.failures = self.failures.saturating_add(1);
+        let backoff = BASE_BACKOFF
+            .saturating_mul(1 << self.failures.saturating_sub(1).min(10))
+            .min(MAX_BACKOFF);
+        self.backoff_until = Some(now + backoff);
+    }
+
+    /// PRs that never loaded fall back to the ordinary preview until a retry succeeds.
+    fn mark_failed(&mut self, refs: &[GithubPrRef]) -> Vec<GithubPrRef> {
+        let mut fallback = Vec::new();
+        for pr in refs {
+            if let Some(entry) = self.entries.get_mut(pr)
+                && entry.status.is_none()
+                && !entry.failed
+            {
+                entry.failed = true;
+                fallback.push(pr.clone());
             }
         }
         fallback
@@ -286,8 +321,8 @@ fn refresh_due(status: &GithubPrStatus, age: Duration, attention: bool) -> bool 
     age >= interval
 }
 
-fn fetch_batch(token: Option<String>, refs: &[GithubPrRef]) -> FetchOutcome {
-    let Some(token) = token.or_else(resolve_token) else {
+fn fetch_batch(token: Option<Token>, refs: &[GithubPrRef]) -> FetchOutcome {
+    let Some(token) = token.or_else(|| resolve_token().map(Token)) else {
         return FetchOutcome::NoToken;
     };
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
@@ -299,14 +334,14 @@ fn fetch_batch(token: Option<String>, refs: &[GithubPrRef]) -> FetchOutcome {
     runtime.block_on(fetch_batch_async(token, refs))
 }
 
-async fn fetch_batch_async(token: String, refs: &[GithubPrRef]) -> FetchOutcome {
+async fn fetch_batch_async(token: Token, refs: &[GithubPrRef]) -> FetchOutcome {
     let Ok(client) = reqwest::Client::builder().timeout(FETCH_TIMEOUT).build() else {
         return FetchOutcome::Failed;
     };
     let body = build_batch_query(refs).to_string();
     let response = match client
         .post(GRAPHQL_URL)
-        .header("Authorization", format!("bearer {token}"))
+        .header("Authorization", format!("bearer {}", token.0))
         .header("User-Agent", "zBase")
         .header("Content-Type", "application/json")
         .body(body)
@@ -326,6 +361,7 @@ async fn fetch_batch_async(token: String, refs: &[GithubPrRef]) -> FetchOutcome 
     if let Some(retry_after) = rate_limit_wait(&response) {
         return FetchOutcome::RateLimited { retry_after };
     }
+    let reset_wait = rate_limit_reset_wait(response.headers());
     if !status.is_success() {
         tracing::debug!("github pr fetch returned {status}");
         return FetchOutcome::Failed;
@@ -336,7 +372,7 @@ async fn fetch_batch_async(token: String, refs: &[GithubPrRef]) -> FetchOutcome 
     let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
         return FetchOutcome::Failed;
     };
-    parse_batch_response(&value, refs, token)
+    parse_batch_response(&value, refs, token, reset_wait)
 }
 
 fn rate_limit_wait(response: &reqwest::Response) -> Option<Duration> {
@@ -356,17 +392,26 @@ fn rate_limit_wait(response: &reqwest::Response) -> Option<Duration> {
         return Some(Duration::from_secs(seconds.max(1)));
     }
     if header("x-ratelimit-remaining") == Some(0) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or_default();
-        let wait = header("x-ratelimit-reset")
-            .map(|reset| Duration::from_secs(reset.saturating_sub(now).max(1)))
-            .unwrap_or(DEFAULT_RATE_LIMIT_WAIT);
-        return Some(wait);
+        return Some(rate_limit_reset_wait(response.headers()).unwrap_or(DEFAULT_RATE_LIMIT_WAIT));
     }
     // Secondary rate limits are 403/429 without the headers above.
     (status == reqwest::StatusCode::TOO_MANY_REQUESTS).then_some(DEFAULT_RATE_LIMIT_WAIT)
+}
+
+/// Time until `x-ratelimit-reset`, the epoch second when the quota refills.
+fn rate_limit_reset_wait(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let reset = headers
+        .get("x-ratelimit-reset")?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    Some(Duration::from_secs(reset.saturating_sub(now).max(1)))
 }
 
 const PR_FRAGMENT: &str = "fragment Pr on PullRequest {
@@ -400,18 +445,26 @@ fn build_batch_query(refs: &[GithubPrRef]) -> Value {
     json!({ "query": query, "variables": variables })
 }
 
-fn parse_batch_response(value: &Value, refs: &[GithubPrRef], token: String) -> FetchOutcome {
+fn parse_batch_response(
+    value: &Value,
+    refs: &[GithubPrRef],
+    token: Token,
+    reset_wait: Option<Duration>,
+) -> FetchOutcome {
     let errors = value
         .get("errors")
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or_default();
+    fn error_type(error: &Value) -> Option<&str> {
+        error.get("type").and_then(Value::as_str)
+    }
     if errors
         .iter()
-        .any(|error| error.get("type").and_then(Value::as_str) == Some("RATE_LIMITED"))
+        .any(|error| error_type(error) == Some("RATE_LIMITED"))
     {
         return FetchOutcome::RateLimited {
-            retry_after: DEFAULT_RATE_LIMIT_WAIT,
+            retry_after: reset_wait.unwrap_or(DEFAULT_RATE_LIMIT_WAIT),
         };
     }
     let Some(data) = value.get("data").filter(|data| data.is_object()) else {
@@ -422,12 +475,28 @@ fn parse_batch_response(value: &Value, refs: &[GithubPrRef], token: String) -> F
         .iter()
         .enumerate()
         .map(|(index, pr)| {
-            let status = data
-                .get(format!("p{index}"))
+            let alias = format!("p{index}");
+            let fetch = match data
+                .get(&alias)
                 .and_then(|repo| repo.get("pullRequest"))
                 .filter(|pr| pr.is_object())
-                .and_then(parse_pr_status);
-            (pr.clone(), status)
+            {
+                Some(pr) => parse_pr_status(pr).map_or(PrFetch::Transient, PrFetch::Found),
+                None => {
+                    // Only a not-found or forbidden error for this alias means no access;
+                    // anything else (timeouts, server errors) is worth retrying.
+                    let denied = errors.iter().any(|error| {
+                        error.pointer("/path/0").and_then(Value::as_str) == Some(alias.as_str())
+                            && matches!(error_type(error), Some("NOT_FOUND" | "FORBIDDEN"))
+                    });
+                    if denied {
+                        PrFetch::Inaccessible
+                    } else {
+                        PrFetch::Transient
+                    }
+                }
+            };
+            (pr.clone(), fetch)
         })
         .collect();
     FetchOutcome::Fetched { token, statuses }
@@ -462,6 +531,7 @@ fn parse_pr_status(pr: &Value) -> Option<GithubPrStatus> {
         .and_then(Value::as_u64)
         .map(|n| n as u32)
         .unwrap_or(threads.len() as u32);
+    let threads_complete = total_threads as usize <= threads.len();
 
     Some(GithubPrStatus {
         title,
@@ -473,6 +543,7 @@ fn parse_pr_status(pr: &Value) -> Option<GithubPrStatus> {
         review: parse_review(pr),
         unresolved_threads,
         total_threads,
+        threads_complete,
     })
 }
 
@@ -585,11 +656,29 @@ fn gh_auth_token(program: PathBuf) -> Option<String> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = command.output().ok()?;
-    if !output.status.success() {
+    let mut child = command.stdout(Stdio::piped()).spawn().ok()?;
+    let deadline = Instant::now() + GH_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                tracing::debug!("gh auth token did not finish in time");
+                return None;
+            }
+        }
+    };
+    if !status.success() {
         return None;
     }
-    let token = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    // The token is a single short line, so it fits in the pipe buffer while we wait.
+    let mut stdout = String::new();
+    child.stdout.take()?.read_to_string(&mut stdout).ok()?;
+    let token = stdout.trim().to_string();
     (!token.is_empty()).then_some(token)
 }
 
@@ -621,6 +710,7 @@ mod tests {
             review: GithubReviewState::NoReviews,
             unresolved_threads: 0,
             total_threads: 0,
+            threads_complete: true,
         }
     }
 
@@ -637,8 +727,11 @@ mod tests {
             GithubPrFetchResult {
                 refs: refs.to_vec(),
                 outcome: FetchOutcome::Fetched {
-                    token: "t".into(),
-                    statuses: refs.iter().map(|r| (r.clone(), Some(s.clone()))).collect(),
+                    token: Token("t".into()),
+                    statuses: refs
+                        .iter()
+                        .map(|r| (r.clone(), PrFetch::Found(s.clone())))
+                        .collect(),
                 },
             },
             now,
@@ -675,6 +768,7 @@ mod tests {
             }
         );
         assert_eq!((status.unresolved_threads, status.total_threads), (2, 3));
+        assert!(status.threads_complete);
         assert_eq!((status.additions, status.deletions), (1552, 551));
     }
 
@@ -700,19 +794,19 @@ mod tests {
             "errors": [{ "type": "NOT_FOUND", "path": ["p1"] }]
         });
         let FetchOutcome::Fetched { statuses, .. } =
-            parse_batch_response(&value, &refs, "t".into())
+            parse_batch_response(&value, &refs, Token("t".into()), None)
         else {
             panic!("expected fetched");
         };
-        assert_eq!(statuses[0].1.as_ref().unwrap().state, GithubPrState::Merged);
-        assert!(statuses[1].1.is_none());
+        assert!(matches!(&statuses[0].1, PrFetch::Found(s) if s.state == GithubPrState::Merged));
+        assert!(matches!(statuses[1].1, PrFetch::Inaccessible));
     }
 
     #[test]
     fn rate_limited_graphql_error() {
         let value = json!({ "data": null, "errors": [{ "type": "RATE_LIMITED" }] });
         assert!(matches!(
-            parse_batch_response(&value, &[pr(1)], "t".into()),
+            parse_batch_response(&value, &[pr(1)], Token("t".into()), None),
             FetchOutcome::RateLimited { .. }
         ));
     }
@@ -798,8 +892,8 @@ mod tests {
             GithubPrFetchResult {
                 refs: vec![pr(1)],
                 outcome: FetchOutcome::Fetched {
-                    token: "t".into(),
-                    statuses: vec![(pr(1), None)],
+                    token: Token("t".into()),
+                    statuses: vec![(pr(1), PrFetch::Inaccessible)],
                 },
             },
             now,
@@ -836,12 +930,14 @@ mod tests {
         let FetchOutcome::Fetched { statuses, .. } = outcome else {
             panic!("unexpected outcome: {outcome:?}");
         };
-        let status = statuses[0].1.as_ref().expect("PR #44 status");
+        let PrFetch::Found(status) = &statuses[0].1 else {
+            panic!("PR #44: {:?}", statuses[0].1);
+        };
         eprintln!("{status:#?}");
         assert_eq!(status.state, GithubPrState::Merged);
         assert_eq!(status.title, "Add Windows support");
         assert!(status.checks.passed > 0);
-        assert!(statuses[1].1.is_none());
+        assert!(matches!(statuses[1].1, PrFetch::Inaccessible));
     }
 
     #[test]
@@ -862,5 +958,102 @@ mod tests {
                 .unwrap()
                 .refreshing
         );
+    }
+
+    #[test]
+    fn transient_alias_errors_retry_instead_of_disabling() {
+        let refs = [pr(1), pr(2)];
+        let value = json!({
+            "data": { "p0": { "pullRequest": null }, "p1": { "pullRequest": null } },
+            "errors": [
+                { "type": "INTERNAL", "path": ["p0", "pullRequest", "reviewThreads"] },
+                { "type": "NOT_FOUND", "path": ["p1", "pullRequest"] }
+            ]
+        });
+        let outcome = parse_batch_response(&value, &refs, Token("t".into()), None);
+        let FetchOutcome::Fetched { statuses, .. } = &outcome else {
+            panic!("expected fetched");
+        };
+        assert!(matches!(statuses[0].1, PrFetch::Transient));
+        assert!(matches!(statuses[1].1, PrFetch::Inaccessible));
+
+        let mut service = GithubPrService::new();
+        let now = Instant::now();
+        fetched(&mut service, &[pr(1)], status(GithubPrState::Open, 0), now);
+        service.entries.insert(pr(2), Entry::default());
+        let fallback = service.apply_result(
+            GithubPrFetchResult {
+                refs: refs.to_vec(),
+                outcome,
+            },
+            now,
+        );
+        assert_eq!(fallback, vec![pr(2)]);
+        // The PR that errored keeps its last status and is retried after the backoff.
+        assert!(service.preview(&pr(1), now).unwrap().status.is_some());
+        assert!(!service.entries[&pr(1)].no_access);
+        assert!(service.backoff_until.is_some());
+    }
+
+    #[test]
+    fn truncated_threads_are_not_complete() {
+        let nodes: Vec<_> = (0..100).map(|_| json!({ "isResolved": true })).collect();
+        let value = json!({
+            "title": "x", "state": "OPEN",
+            "reviewThreads": { "totalCount": 101, "nodes": nodes }
+        });
+        let status = parse_pr_status(&value).unwrap();
+        assert_eq!(status.unresolved_threads, 0);
+        assert!(!status.threads_complete);
+    }
+
+    #[test]
+    fn missing_token_shows_auth_hint_for_every_unloaded_pr() {
+        let mut service = GithubPrService::new();
+        let (sender, _receiver) = mpsc::channel();
+        let now = Instant::now();
+        let refs: Vec<_> = (1..=30).map(pr).collect();
+        for r in &refs {
+            service.entries.insert(r.clone(), Entry::default());
+        }
+        service.in_flight = true;
+        service.apply_result(
+            GithubPrFetchResult {
+                refs: refs[..25].to_vec(),
+                outcome: FetchOutcome::NoToken,
+            },
+            now,
+        );
+        assert!(service.preview(&pr(30), now).unwrap().needs_auth);
+        // Links that show up later get the hint without waiting for the retry.
+        service.poll(&[pr(31)], true, now, &sender);
+        assert!(service.preview(&pr(31), now).unwrap().needs_auth);
+    }
+
+    #[test]
+    fn rate_limit_falls_back_for_unloaded_prs() {
+        let mut service = GithubPrService::new();
+        let now = Instant::now();
+        service.entries.insert(pr(1), Entry::default());
+        let fallback = service.apply_result(
+            GithubPrFetchResult {
+                refs: vec![pr(1)],
+                outcome: FetchOutcome::RateLimited {
+                    retry_after: Duration::from_secs(600),
+                },
+            },
+            now,
+        );
+        assert_eq!(fallback, vec![pr(1)]);
+        assert!(service.preview(&pr(1), now).is_none());
+    }
+
+    #[test]
+    fn token_is_redacted_in_debug_output() {
+        let outcome = FetchOutcome::Fetched {
+            token: Token("ghp_secret".into()),
+            statuses: Vec::new(),
+        };
+        assert!(!format!("{outcome:?}").contains("ghp_secret"));
     }
 }

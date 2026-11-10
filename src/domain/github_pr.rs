@@ -33,7 +33,8 @@ impl GithubPrRef {
             .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))?
             .parse::<u64>()
             .ok()
-            .filter(|n| *n > 0)?;
+            // GraphQL `Int` is 32-bit; a larger number would fail the whole batch.
+            .filter(|n| *n > 0 && *n <= i32::MAX as u64)?;
         Some(Self {
             owner: owner.to_string(),
             repo: repo.to_string(),
@@ -91,8 +92,11 @@ pub struct GithubPrStatus {
     pub deletions: u32,
     pub checks: GithubCheckCounts,
     pub review: GithubReviewState,
+    /// Counted among the first page of review threads only.
     pub unresolved_threads: u32,
     pub total_threads: u32,
+    /// Whether every review thread was counted, so "all resolved" can be trusted.
+    pub threads_complete: bool,
 }
 
 /// What a PR link preview shows right now. Fetched per viewer and never persisted.
@@ -145,6 +149,7 @@ mod tests {
             "https://github.com/o/r/pull/",
             "https://github.com/o/r/pull/0",
             "https://github.com/o/r/pull/12abc",
+            "https://github.com/o/r/pull/99999999999",
             "https://github.com/o/r/issues/12",
             "https://gist.github.com/o/r/pull/12",
             "https://github.com.evil.io/o/r/pull/12",
