@@ -822,7 +822,10 @@ impl TimelineList {
                 .flex()
                 .gap_3()
                 .items_start()
-                .pt_0p5()
+                // A new author block: the gap above the name is what separates
+                // one turn from the last, so it is several times the gap
+                // between lines inside a block.
+                .pt(px(10.))
                 .when(
                     is_hovered
                         && !is_highlighted
@@ -844,6 +847,9 @@ impl TimelineList {
                             }
                         }))
                         .flex_shrink_0()
+                        // Down to the cap height of the author name, so the
+                        // square's top edge lines up with the top of the text.
+                        .mt(px(6.))
                         .child(Avatar::render(
                             &row.author.display_name,
                             row.author.avatar_asset.as_deref(),
@@ -897,6 +903,8 @@ impl TimelineList {
                 .flex()
                 .gap_3()
                 .items_start()
+                // Same author, moments later: a hairline of air, not a new turn.
+                .pt(px(2.))
                 .when(
                     is_hovered
                         && !is_highlighted
@@ -3586,8 +3594,10 @@ fn day_divider(label: &str, compact: bool) -> AnyElement {
     div()
         .w_full()
         .px_4()
-        .pt(px(if compact { 8. } else { 16. }))
-        .pb(px(if compact { 4. } else { 8. }))
+        // The author block below brings its own 10px, so the rule sits centred
+        // between the last message and the next name.
+        .pt(px(if compact { 8. } else { 14. }))
+        .pb(px(if compact { 0. } else { 6. }))
         .flex()
         .items_center()
         .gap_3()
@@ -3610,7 +3620,9 @@ fn new_messages_divider(label: &str, compact: bool) -> AnyElement {
     div()
         .w_full()
         .px_4()
-        .py(px(if compact { 4. } else { 8. }))
+        // Balanced against the 10px the first unread author block adds below.
+        .pt(px(if compact { 6. } else { 10. }))
+        .pb(px(if compact { 0. } else { 2. }))
         .flex()
         .items_center()
         .gap_2()
