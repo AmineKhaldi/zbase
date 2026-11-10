@@ -1,0 +1,7 @@
+## What's Changed
+* Show live GitHub PR status in link previews by @greimela in https://github.com/cameroncooper/zbase/pull/47
+* Polish the timeline: rounded-square avatars, bold names, quieter reactions by @greimela in https://github.com/cameroncooper/zbase/pull/48
+* Fix stale pending sends blocking updater restart by @cameroncooper in https://github.com/cameroncooper/zbase/pull/46
+
+
+**Full Changelog**: https://github.com/cameroncooper/zbase/compare/v1.0.18...v1.0.19

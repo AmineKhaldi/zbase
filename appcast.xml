@@ -5,6 +5,15 @@
     <link>https://github.com/cameroncooper/zbase/releases</link>
     <description>Verified stable macOS updates</description>
     <item>
+      <title>zBase 1.0.19</title>
+      <sparkle:version>1.0.19</sparkle:version>
+      <sparkle:shortVersionString>1.0.19</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <link>https://github.com/cameroncooper/zbase/releases/tag/v1.0.19</link>
+      <sparkle:releaseNotesLink>https://raw.githubusercontent.com/cameroncooper/zbase/updates/notes/v1.0.19.txt</sparkle:releaseNotesLink>
+      <enclosure url="https://github.com/cameroncooper/zbase/releases/download/v1.0.19/zBase-1.0.19-macos-arm64.dmg" length="34392092" type="application/octet-stream" sparkle:edSignature="drElH43ihpF9S+QtxSqtQyfvulrf3FpAXZrk+8pe7hlpdNqvPqwI50tDcJNORm2QaN13gACiZYocxzxVpByEDw==" />
+    </item>
+    <item>
       <title>zBase 1.0.18</title>
       <sparkle:version>1.0.18</sparkle:version>
       <sparkle:shortVersionString>1.0.18</sparkle:shortVersionString>
