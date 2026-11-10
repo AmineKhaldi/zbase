@@ -201,9 +201,18 @@ pub struct AccountState {
     pub capabilities: BackendCapabilities,
 }
 
+/// Keybase uses increasing numeric message IDs. Keep the last visible position
+/// separately so older inbox summaries cannot rewind it.
+#[derive(Clone, Debug, Default)]
+pub struct ConfirmedReadPosition {
+    pub read: u64,
+    pub latest_visible: u64,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct BackendRuntimeState {
     pub conversation_badges: HashMap<BackendId, ConversationBadgeState>,
+    pub confirmed_read_positions: HashMap<ConversationId, ConfirmedReadPosition>,
     pub hydrated_accounts: HashSet<AccountId>,
     pub deleted_messages: HashSet<(ConversationId, MessageId)>,
     pub pending_reactions: HashMap<OpId, PendingReaction>,
