@@ -134,8 +134,10 @@ pub(super) struct RowColors {
 }
 
 impl RowColors {
-    /// A muted conversation reads in secondary text unless it is selected.
-    pub fn new(selected: bool, hovered: bool, muted: bool) -> Self {
+    /// Only unread conversations read in full contrast, so they stand out from
+    /// the rest: read rows recede to secondary text and muted ones further still.
+    /// Hover and selection bring a row back to full contrast.
+    pub fn new(selected: bool, hovered: bool, activity: &RowActivity) -> Self {
         if selected {
             let background: Hsla = rgb(sidebar_card_bg()).into();
             return Self {
@@ -147,14 +149,18 @@ impl RowColors {
             };
         }
         let background = hovered.then(|| rgb(sidebar_hover_bg()).into());
+        let secondary: Hsla = rgb(text_secondary()).into();
+        let (primary, secondary) = if hovered || activity.is_unread() {
+            (rgb(text_primary()).into(), secondary)
+        } else if activity.muted {
+            let faded = tint(text_secondary(), 0.6);
+            (faded, faded)
+        } else {
+            (secondary, secondary)
+        };
         Self {
-            primary: rgb(if muted {
-                text_secondary()
-            } else {
-                text_primary()
-            })
-            .into(),
-            secondary: rgb(text_secondary()).into(),
+            primary,
+            secondary,
             background,
             surface: background.unwrap_or_else(|| rgb(sidebar_bg()).into()),
             raised: false,
@@ -1076,12 +1082,13 @@ impl Sidebar {
                 );
                 let route_label = row.route.label();
                 let id = format!("sidebar-{}-{route_label}", section.id.0);
+                let activity = RowActivity::of(row);
                 let colors = RowColors::new(
                     selection.is_full(),
                     context.hovered_row == Some(id.as_str()),
-                    row.muted,
+                    &activity,
                 );
-                let emphasized = !selection.is_full() && RowActivity::of(row).is_unread();
+                let emphasized = !selection.is_full() && activity.is_unread();
                 let (label, suffix, leading) = match &row.team {
                     Some(team) => (
                         format!("#{}", row.label),
@@ -1138,7 +1145,7 @@ impl Sidebar {
         let colors = RowColors::new(
             selection.is_full(),
             context.hovered_row == Some(row_id.as_str()),
-            row.muted,
+            &activity,
         );
         let emphasized = !selection.is_full() && activity.is_unread();
         let channel_under_team = row.team.is_some() && matches!(row.route, Route::Channel { .. });
