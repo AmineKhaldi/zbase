@@ -118,7 +118,7 @@ fn render_row<H: SidebarHost>(
     let route_key = row.route.label();
     let row_id = format!("sidebar-recent-{route_key}");
     let is_hovered = hovered == Some(row_id.as_str()) || highlighted == Some(&row.route);
-    let colors = RowColors::new(selection.is_full(), is_hovered, row.muted);
+    let colors = RowColors::new(selection.is_full(), is_hovered, &activity);
     let team_label = recent.team_label(ambiguous).map(str::to_owned);
     let emphasized = activity.is_unread() && !selection.is_full();
     match look {
