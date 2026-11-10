@@ -190,6 +190,13 @@ fn quick_switcher_remote_debounce(conversation_count: usize) -> Duration {
     }
 }
 
+fn home_dir() -> Option<std::ffi::OsString> {
+    let home = std::env::var_os("HOME");
+    #[cfg(target_os = "windows")]
+    let home = home.or_else(|| std::env::var_os("USERPROFILE"));
+    home
+}
+
 fn unique_copy_destination(downloads_dir: &Path, preferred_name: &str) -> PathBuf {
     let candidate = downloads_dir.join(preferred_name);
     if !candidate.exists() {
@@ -7205,8 +7212,8 @@ impl AppWindow {
         self.refresh(cx);
     }
 
-    pub(crate) fn open_video_in_native_player(path: &str) {
-        let _ = std::process::Command::new("open").arg(path).spawn();
+    pub(crate) fn open_video_in_native_player(path: &str, cx: &App) {
+        cx.open_with_system(Path::new(path));
     }
 
     pub(crate) fn save_attachment_copy(

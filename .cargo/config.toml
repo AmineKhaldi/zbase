@@ -1,0 +1,4 @@
+# Link the C and C++ runtimes statically on Windows, so zbase.exe runs without
+# the Visual C++ Redistributable installed.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

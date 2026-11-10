@@ -16,6 +16,7 @@ pub mod preferences;
 pub mod profile;
 mod quick_react_placement;
 pub mod right_pane;
+pub mod scaled_image;
 pub mod search;
 pub mod selectable_text;
 pub mod settings_window;
@@ -842,6 +843,23 @@ pub fn attachment_image_source(attachment: &AttachmentSummary) -> Option<ImageSo
     }
 }
 
+/// `source` for an attachment drawn in a `width` by `height` point box,
+/// pre-scaled to the device pixels it covers (see [`scaled_image`]). Animated
+/// GIFs keep the plain loader, which animates their frames.
+pub fn display_image_source(
+    attachment: &AttachmentSummary,
+    source: ImageSource,
+    width: f32,
+    height: f32,
+    fit: scaled_image::Fit,
+) -> ImageSource {
+    if attachment_is_animated_gif(attachment) {
+        source
+    } else {
+        scaled_image::scaled_for_box(source, width, height, fit)
+    }
+}
+
 pub fn attachment_lightbox_source(attachment: &AttachmentSummary) -> Option<AttachmentSource> {
     attachment
         .source
@@ -1036,6 +1054,10 @@ pub fn copy_icon(color: u32) -> AnyElement {
 
 pub fn clipboard_icon(color: u32) -> AnyElement {
     icon_asset("assets/icons/clipboard.svg", 18., color)
+}
+
+pub fn pencil_icon(color: u32) -> AnyElement {
+    icon_asset("assets/icons/pencil.svg", 18., color)
 }
 
 pub fn trash_icon(color: u32) -> AnyElement {

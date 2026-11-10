@@ -6660,6 +6660,7 @@ dependencies = [
  "base64",
  "chrono",
  "directories",
+ "embed-resource",
  "emojis",
  "ffmpeg-next",
  "gpui",
@@ -6690,6 +6691,7 @@ dependencies = [
  "tree-sitter-typescript",
  "tree-sitter-yaml",
  "unicode-segmentation",
+ "windows",
 ]
 
 [[package]]

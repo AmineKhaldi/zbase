@@ -127,12 +127,7 @@ impl AppWindow {
                     async move {
                         let target = path.clone();
                         let opened = background
-                            .spawn(async move {
-                                std::process::Command::new("open")
-                                    .arg(target)
-                                    .status()
-                                    .is_ok_and(|s| s.success())
-                            })
+                            .spawn(async move { crate::app::platform::open_file(&target) })
                             .await;
                         if !opened {
                             let _ = this.update(&mut app, |this, cx| {
@@ -148,10 +143,7 @@ impl AppWindow {
                 return;
             }
             Some(DownloadState::Reveal(path)) => {
-                let _ = std::process::Command::new("open")
-                    .arg("-R")
-                    .arg(path)
-                    .spawn();
+                cx.reveal_path(&path);
                 return;
             }
             _ => {}
@@ -190,7 +182,7 @@ impl AppWindow {
 }
 
 fn save_copy(source: &str, name: &str) -> Result<PathBuf, String> {
-    let home = env::var_os("HOME").ok_or("Unable to locate Downloads")?;
+    let home = home_dir().ok_or("Unable to locate Downloads")?;
     let directory = PathBuf::from(home).join("Downloads");
     save_copy_to(source, name, &directory)
 }

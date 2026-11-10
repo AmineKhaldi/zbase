@@ -64,7 +64,7 @@ impl AppWindow {
         } else if let Some(path) = crate::views::attachment_local_path(attachment) {
             if attachment.kind == AttachmentKind::Video || attachment.kind == AttachmentKind::Audio
             {
-                Self::open_video_in_native_player(&path);
+                Self::open_video_in_native_player(&path, cx);
             } else {
                 self.save_attachment_copy(&path, &attachment.name, cx);
             }

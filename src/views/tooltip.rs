@@ -77,11 +77,22 @@ impl Render for TextTooltip {
     }
 }
 
-/// Platform label for a command shortcut: "⌘K" on macOS, "Ctrl+K" elsewhere.
+/// Platform label for a command shortcut: "⇧⌘D" on macOS, "Ctrl+Shift+D"
+/// elsewhere. Other text passes through unchanged.
 pub fn shortcut_label(keys: &str) -> String {
     if cfg!(target_os = "macos") {
-        keys.to_string()
-    } else {
-        keys.replace('⇧', "Shift+").replace('⌘', "Ctrl+")
+        return keys.to_string();
     }
+    let mut label = String::new();
+    for (symbol, name) in [
+        ('⌘', crate::app::shortcuts::command_label()),
+        ('⌥', "Alt+"),
+        ('⇧', "Shift+"),
+    ] {
+        if keys.contains(symbol) {
+            label.push_str(name);
+        }
+    }
+    label.extend(keys.chars().filter(|c| !matches!(c, '⌘' | '⌥' | '⇧')));
+    label
 }

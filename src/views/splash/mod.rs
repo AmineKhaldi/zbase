@@ -82,7 +82,16 @@ impl SplashView {
                                     .flex()
                                     .items_center()
                                     .gap_1p5()
-                                    .child(keycap("⌘", kbd_bg, kbd_border, kbd_shadow))
+                                    .child(keycap(
+                                        if cfg!(target_os = "macos") {
+                                            "⌘"
+                                        } else {
+                                            "Ctrl"
+                                        },
+                                        kbd_bg,
+                                        kbd_border,
+                                        kbd_shadow,
+                                    ))
                                     .child(keycap("K", kbd_bg, kbd_border, kbd_shadow)),
                             )
                             .child(

@@ -6,8 +6,9 @@ use gpui::{Bounds, Point, Size, point, size};
 pub(super) const BUTTON_SIZE: f32 = 26.0;
 const GAP: f32 = 14.0;
 
-pub(super) fn toolbar_size(stock_buttons: usize, recent: bool, own_message: bool) -> Size<f32> {
-    let buttons = stock_buttons + 4 + usize::from(recent) + usize::from(own_message);
+/// `own_buttons` counts the buttons only your own messages get (edit, delete).
+pub(super) fn toolbar_size(stock_buttons: usize, recent: bool, own_buttons: usize) -> Size<f32> {
+    let buttons = stock_buttons + 4 + usize::from(recent) + own_buttons;
     let separators = 1 + usize::from(recent);
     let gaps = buttons + separators - 1;
     size(
@@ -88,10 +89,12 @@ mod tests {
 
     #[test]
     fn stock_recent_and_own_message_strips_never_cover_the_pointer_at_edges() {
-        for (left, width) in [(200., 560.), (1080., 340.)] {
+        // A timeline-width strip, and a thread-width one, where messages offer
+        // delete but not edit.
+        for (left, width, max_own) in [(200., 560., 2), (1080., 340., 1)] {
             let area = Bounds::new(point(left, 56.), size(width, 700.));
             for recent in [false, true] {
-                for own in [false, true] {
+                for own in 0..=max_own {
                     let toolbar = toolbar_size(5, recent, own);
                     for x in [left + 1., left + width / 2., left + width - 1.] {
                         for y in [57., 400., 755.] {
@@ -123,7 +126,7 @@ mod tests {
             container_width: 244.,
             viewport: size(1440., 920.),
         };
-        let toolbar = toolbar_size(5, true, true);
+        let toolbar = toolbar_size(5, true, 1);
         let local = geometry.local_placement(toolbar).unwrap();
         let global = geometry.container_origin + local;
         assert!(global.x >= 8. && global.x + toolbar.width <= 1432.);
@@ -136,7 +139,7 @@ mod tests {
     #[test]
     fn constrained_right_edge_uses_above_or_below_instead_of_clamping_under_cursor() {
         let area = Bounds::new(point(0., 0.), size(340., 600.));
-        let toolbar = toolbar_size(5, true, true);
+        let toolbar = toolbar_size(5, true, 1);
         let above = place_toolbar(point(160., 300.), area, toolbar).unwrap();
         assert!(above.y + toolbar.height < 300.);
         let below = place_toolbar(point(160., 5.), area, toolbar).unwrap();

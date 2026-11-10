@@ -149,6 +149,11 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/zbase-signing/release.keychain-db" 2>/dev/null || true
           rm -rf "$RUNNER_TEMP/zbase-signing"
 
+  build-windows:
+    uses: ./.github/workflows/windows-build.yml
+    with:
+      artifact-name: windows-release
+
   attach:
     needs: build
     if: github.event_name == 'release'
@@ -176,6 +181,33 @@ jobs:
           python3 scripts/publish_update_feed.py --release release-state.json --metadata dist/release/update.json --repository "$GH_REPO" --verify-existing-archive
           tar -czf dist/release/media-build-info.tar.gz -C dist/release media-build-info
           gh release upload "$TAG" dist/release/*.dmg dist/release/*.sha256 dist/release/*.tar.* --clobber
+
+  # Separate from the macOS attach job, so a Windows failure never holds up the
+  # DMG, the Homebrew formula or the update feed.
+  attach-windows:
+    needs: build-windows
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.build-windows.outputs.version }}
+      RELEASE_ID: ${{ github.event.release.id }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-release
+          path: dist/release
+      - name: Attach the Windows installer to the published release
+        run: |
+          TAG="v${VERSION}"
+          # Check the original release still exists and accepts asset uploads.
+          gh api "repos/$GH_REPO/releases/tags/$TAG" > release-state.json
+          jq -e --argjson id "$RELEASE_ID" \
+            '.id == $id and .draft == false and .immutable != true' release-state.json
+          gh release upload "$TAG" dist/release/*-windows-x64-setup.exe dist/release/*-windows-x64-setup.exe.sha256 --clobber
 
   update-homebrew:
     needs: [build, attach]

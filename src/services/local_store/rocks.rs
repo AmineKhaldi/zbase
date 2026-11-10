@@ -2794,10 +2794,10 @@ mod tests {
         }
         let reordered = store.upsert_message(&incoming).unwrap().unwrap();
         assert!(
-            matches!(&reordered.attachments[0].source, Some(AttachmentSource::LocalPath(path)) if path.ends_with("/second"))
+            matches!(&reordered.attachments[0].source, Some(AttachmentSource::LocalPath(path)) if std::path::Path::new(path).ends_with("second"))
         );
         assert!(
-            matches!(&reordered.attachments[1].preview.as_ref().unwrap().source, AttachmentSource::LocalPath(path) if path.ends_with("/first-preview"))
+            matches!(&reordered.attachments[1].preview.as_ref().unwrap().source, AttachmentSource::LocalPath(path) if std::path::Path::new(path).ends_with("first-preview"))
         );
         incoming.attachments[0].name = "replacement.txt".into();
         incoming.attachments[0].size_bytes = 42;
@@ -2808,7 +2808,7 @@ mod tests {
         assert!(replaced.attachments[0].source.is_none());
         assert!(replaced.attachments[0].preview.is_none());
         assert!(
-            matches!(&replaced.attachments[1].source, Some(AttachmentSource::LocalPath(path)) if path.ends_with("/new-first"))
+            matches!(&replaced.attachments[1].source, Some(AttachmentSource::LocalPath(path)) if std::path::Path::new(path).ends_with("new-first"))
         );
         // A late download for the replaced identity cannot attach its old file.
         let patched = store
@@ -2821,7 +2821,7 @@ mod tests {
             .unwrap();
         assert!(patched.attachments[0].source.is_none());
         assert!(
-            matches!(&patched.attachments[1].source, Some(AttachmentSource::LocalPath(path)) if path.ends_with("/new-first"))
+            matches!(&patched.attachments[1].source, Some(AttachmentSource::LocalPath(path)) if std::path::Path::new(path).ends_with("new-first"))
         );
         drop(store);
         std::fs::remove_dir_all(path).unwrap();

@@ -32,11 +32,13 @@ use crate::{
         attachment_display_label, attachment_header_row, attachment_image_source,
         attachment_lightbox_source,
         avatar::{Avatar, default_avatar_background},
-        badge, border, chevron_down_icon, close_icon, danger, danger_soft, format_duration_ms,
+        badge, border, chevron_down_icon, close_icon, danger, danger_soft, display_image_source,
+        format_duration_ms,
         inline_markdown::{InlineMarkdownConfig, apply_inline_markdown, remap_source_byte_range},
         input::TextField,
         is_dark_theme, mention_colors_for_user, mono_font_family, mono_font_size, panel_alt_bg,
         panel_alt_surface, play_icon,
+        scaled_image::Fit,
         selectable_text::{
             InlineAttachment, LinkRange, SelectableText, StyledRange, resolve_selectable_text,
             resolve_selectable_text_inline, resolve_selectable_text_with_attachments,
@@ -558,30 +560,34 @@ fn render_parent_message(
                                                     },
                                                 )
                                                 .child(
-                                                    img(media_source)
-                                                        .id(SharedString::from(format!(
-                                                            "rp-img-{}-{index}",
-                                                            message.id.0
-                                                        )))
-                                                        .w(px(media_width))
-                                                        .h(px(media_height))
-                                                        .rounded_md()
-                                                        .object_fit(ObjectFit::Contain)
-                                                        .flex_shrink_0()
-                                                        .min_w(px(16.))
-                                                        .min_h(px(16.))
-                                                        .with_fallback({
-                                                            let label = attachment_label.clone();
-                                                            move || {
-                                                                div()
-                                                                    .text_xs()
-                                                                    .text_color(rgb(
-                                                                        text_secondary(),
-                                                                    ))
-                                                                    .child(label.clone())
-                                                                    .into_any_element()
-                                                            }
-                                                        }),
+                                                    img(display_image_source(
+                                                        attachment,
+                                                        media_source,
+                                                        media_width,
+                                                        media_height,
+                                                        Fit::Contain,
+                                                    ))
+                                                    .id(SharedString::from(format!(
+                                                        "rp-img-{}-{index}",
+                                                        message.id.0
+                                                    )))
+                                                    .w(px(media_width))
+                                                    .h(px(media_height))
+                                                    .rounded_md()
+                                                    .object_fit(ObjectFit::Contain)
+                                                    .flex_shrink_0()
+                                                    .min_w(px(16.))
+                                                    .min_h(px(16.))
+                                                    .with_fallback({
+                                                        let label = attachment_label.clone();
+                                                        move || {
+                                                            div()
+                                                                .text_xs()
+                                                                .text_color(rgb(text_secondary()))
+                                                                .child(label.clone())
+                                                                .into_any_element()
+                                                        }
+                                                    }),
                                                 ),
                                         );
                                         if let Some(ref caption) = caption_text {
@@ -633,16 +639,22 @@ fn render_parent_message(
                                                 .flex_shrink_0()
                                                 .cursor(CursorStyle::PointingHand)
                                                 .when_some(video_path, |el, path| {
-                                                    el.on_click(cx.listener(move |_, _, _, _| {
+                                                    el.on_click(cx.listener(move |_, _, _, cx| {
                                                         AppWindow::open_video_in_native_player(
-                                                            &path,
+                                                            &path, cx,
                                                         );
                                                     }))
                                                 })
                                                 .child(
-                                                    img(thumb_source)
-                                                        .size_full()
-                                                        .object_fit(ObjectFit::Cover),
+                                                    img(display_image_source(
+                                                        attachment,
+                                                        thumb_source,
+                                                        media_width,
+                                                        media_height,
+                                                        Fit::Cover,
+                                                    ))
+                                                    .size_full()
+                                                    .object_fit(ObjectFit::Cover),
                                                 )
                                                 .child(
                                                     div()

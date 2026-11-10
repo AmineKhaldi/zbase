@@ -16295,6 +16295,8 @@ mod tests {
         }
     }
 
+    // Serves a Unix socket; Windows has no equivalent.
+    #[cfg(unix)]
     #[test]
     fn notification_disconnect_reconnects_and_subscribes_again() {
         let path = temp_emoji_asset_dir("listener-reconnect");
@@ -16398,6 +16400,8 @@ mod tests {
         std::fs::remove_dir_all(path).unwrap();
     }
 
+    // Serves a Unix socket; Windows has no equivalent.
+    #[cfg(unix)]
     #[test]
     fn failed_subscription_never_reports_connected() {
         let path = temp_emoji_asset_dir("listener-rejected");

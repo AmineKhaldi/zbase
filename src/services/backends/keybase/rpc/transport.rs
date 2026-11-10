@@ -1,24 +1,48 @@
 use std::io;
 
 use rmpv::{Value, decode::read_value, encode::write_value};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[cfg(unix)]
+type Stream = tokio::net::UnixStream;
+// The Keybase service listens on a named pipe on Windows.
+#[cfg(windows)]
+type Stream = tokio::net::windows::named_pipe::NamedPipeClient;
 
 pub struct FramedMsgpackTransport {
-    stream: UnixStream,
+    stream: Stream,
 }
 
 impl FramedMsgpackTransport {
     #[cfg(test)]
-    pub(crate) fn from_stream(stream: UnixStream) -> Self {
+    pub(crate) fn from_stream(stream: Stream) -> Self {
         Self { stream }
     }
 
+    #[cfg(unix)]
     pub async fn connect(path: &std::path::Path) -> io::Result<Self> {
-        let stream = UnixStream::connect(path).await?;
+        let stream = Stream::connect(path).await?;
         Ok(Self { stream })
+    }
+
+    #[cfg(windows)]
+    pub async fn connect(path: &std::path::Path) -> io::Result<Self> {
+        use tokio::net::windows::named_pipe::ClientOptions;
+        const ERROR_PIPE_BUSY: i32 = 231;
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match ClientOptions::new().open(path) {
+                    Ok(stream) => return Ok(Self { stream }),
+                    // Every pipe instance is in use; wait for the service to create another.
+                    Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        })
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Keybase named pipe remained busy"))?
     }
 
     pub async fn read_value(&mut self) -> io::Result<Value> {

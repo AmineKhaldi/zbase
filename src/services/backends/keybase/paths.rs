@@ -71,9 +71,38 @@ fn socket_path_linux() -> Option<PathBuf> {
     )
 }
 
+/// The Windows service listens on a named pipe derived from its socket file
+/// path, `\\.\pipe\kbservice` followed by the path without the drive.
 #[cfg(target_os = "windows")]
 fn socket_path_windows() -> Option<PathBuf> {
-    None
+    let local_app_data = env::var("LOCALAPPDATA").ok()?;
+    let socket_file = PathBuf::from(local_app_data)
+        .join(app_name())
+        .join(SOCKET_FILE);
+    let socket_file = socket_file.to_str()?;
+    let without_drive = socket_file
+        .split_once(':')
+        .map_or(socket_file, |(_, rest)| rest);
+    Some(PathBuf::from(format!(r"\\.\pipe\kbservice{without_drive}")))
+}
+
+/// Whether the service socket is present. On Windows, opening a pipe to check
+/// would connect to the service, so look it up in the pipe listing instead.
+fn socket_exists(path: &std::path::Path) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let Ok(entries) = std::fs::read_dir(r"\\.\pipe\") else {
+            return false;
+        };
+        let wanted = path.to_string_lossy().to_ascii_lowercase();
+        entries
+            .flatten()
+            .any(|entry| entry.path().to_string_lossy().to_ascii_lowercase() == wanted)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        path.exists()
+    }
 }
 
 fn app_name() -> String {
@@ -120,7 +149,7 @@ pub fn ensure_service_running() -> bool {
         return false;
     };
 
-    if path.exists() {
+    if socket_exists(&path) {
         return true;
     }
 
@@ -137,7 +166,7 @@ pub fn ensure_service_running() -> bool {
     let started = Instant::now();
     while started.elapsed() < SERVICE_START_TIMEOUT {
         thread::sleep(SERVICE_START_POLL_INTERVAL);
-        if path.exists() {
+        if socket_exists(&path) {
             info!(
                 target: "zbase.service",
                 elapsed_ms = started.elapsed().as_millis(),
@@ -228,13 +257,11 @@ fn find_run_keybase_script() -> Option<PathBuf> {
 
 #[cfg(target_os = "windows")]
 fn try_start_service() -> bool {
-    warn!(target: "zbase.service", "automatic service start not yet supported on Windows");
-    false
+    try_start_service_direct()
 }
 
-/// Spawn `keybase service` as a detached background process. Works on both
-/// macOS and Linux as a last-resort fallback.
-#[cfg(not(target_os = "windows"))]
+/// Spawn `keybase service` as a detached background process. The only
+/// mechanism on Windows, and a last-resort fallback on macOS and Linux.
 fn try_start_service_direct() -> bool {
     let binary = find_keybase_binary();
     let Some(binary) = binary else {
@@ -243,13 +270,19 @@ fn try_start_service_direct() -> bool {
     };
 
     info!(target: "zbase.service", binary = %binary.display(), "spawning keybase service directly");
-    match Command::new(&binary)
+    let mut command = Command::new(&binary);
+    command
         .args(["service"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    match command.spawn() {
         Ok(_child) => true,
         Err(error) => {
             warn!(target: "zbase.service", %error, "failed to spawn keybase service");
@@ -268,12 +301,24 @@ fn find_keybase_binary() -> Option<PathBuf> {
         }
     }
 
-    for dir in env::var("PATH")
-        .unwrap_or_default()
-        .split(':')
-        .filter(|d| !d.is_empty())
-    {
-        let candidate = PathBuf::from(dir).join("keybase");
+    #[cfg(target_os = "windows")]
+    if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
+        let app_binary = PathBuf::from(local_app_data)
+            .join("Keybase")
+            .join("keybase.exe");
+        if app_binary.exists() {
+            return Some(app_binary);
+        }
+    }
+
+    let binary_name = if cfg!(target_os = "windows") {
+        "keybase.exe"
+    } else {
+        "keybase"
+    };
+    let path = env::var_os("PATH").unwrap_or_default();
+    for dir in env::split_paths(&path).filter(|d| !d.as_os_str().is_empty()) {
+        let candidate = dir.join(binary_name);
         if candidate.exists() {
             return Some(candidate);
         }
