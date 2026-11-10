@@ -3394,7 +3394,8 @@ mod tests {
         let id = ConversationId::new("kb_conv:abcd");
         let mut summary = channel_summary(&id.0, "random");
         summary.last_message = MessagePreview::from_message(&message(&id, "43", 100));
-        state.workspace.channels.push(summary);
+        state.workspace.channels.push(summary.clone());
+        state.timeline.conversation_id = Some(id.clone());
         state.backend.conversation_bindings.insert(
             id.clone(),
             ConversationBinding {
@@ -3428,6 +3429,28 @@ mod tests {
             state.workspace.channels[0].unread_count, 0,
             "confirmed read must clear the sidebar too"
         );
+        let other = ConversationId::new("kb_conv:other");
+        reduce_ui_action(
+            &mut state,
+            UiAction::Navigate(Route::DirectMessage {
+                workspace_id: WorkspaceId::new("workspace"),
+                dm_id: crate::domain::ids::DmId::new(&other.0),
+            }),
+        );
+        assert_eq!(state.timeline.conversation_id.as_ref(), Some(&other));
+        // A background inbox refresh and badge snapshot can arrive much later,
+        // while this channel is no longer selected. Neither is a new message.
+        summary.unread_count = 12;
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::WorkspaceConversationsExtended {
+                workspace_id: WorkspaceId::new("workspace"),
+                channels: vec![summary.clone()],
+                direct_messages: vec![],
+                conversation_bindings: vec![],
+            },
+        );
+        assert_eq!(state.workspace.channels[0].unread_count, 0);
         reduce_backend_event(&mut state, badge());
         assert_eq!(
             state.workspace.channels[0].unread_count, 0,
@@ -3459,6 +3482,17 @@ mod tests {
             "a message beyond the read position must remain unread"
         );
         assert!(state.sidebar.sections.iter().any(|s| s.title == "Unread"));
+        // A subsequent older inbox page cannot conceal the newer unread message.
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::WorkspaceConversationsExtended {
+                workspace_id: WorkspaceId::new("workspace"),
+                channels: vec![summary],
+                direct_messages: vec![],
+                conversation_bindings: vec![],
+            },
+        );
+        assert!(state.workspace.channels[0].unread_count > 0);
     }
 
     #[test]
