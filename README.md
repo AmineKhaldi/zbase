@@ -187,7 +187,7 @@ This creates a development app at `dist/macos/zBase.app` using your installed me
 cargo run --locked --release --features gpui/runtime_shaders
 ```
 
-To prepare a release, run **Actions → Prepare release** on `main` with the next version. Merge its version-bump PR after CI passes, then create and publish the matching release in GitHub. For self-contained packaging, Developer ID signing, notarization, and the full publishing process, see [macOS releases](docs/macos-releases.md). The same release also attaches the Windows installer; see [Windows releases](docs/windows-releases.md).
+To publish a release, run **Actions → Release** on `main` with the next version. It bumps the package version, pushes the tag, generates release notes, and builds and attaches both installers. Leave the version blank for a build-only test. For signing, configuration and retries, see [macOS releases](docs/macos-releases.md) and [Windows releases](docs/windows-releases.md).
 
 ### Checks before opening a PR
 

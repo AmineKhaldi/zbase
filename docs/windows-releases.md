@@ -12,7 +12,7 @@ The `build-windows` job runs on `windows-2025` and calls `scripts/windows/build_
 4. Stages `zbase.exe`, the FFmpeg DLLs and a `licenses` folder (Keybase emoji, FFmpeg LGPL text and a note naming the exact FFmpeg build).
 5. Packages them with Inno Setup (`scripts/windows/zbase.iss`) into a per-user installer: no administrator prompt, installed under `%LOCALAPPDATA%\Programs\zBase`, with a Start Menu entry and an uninstaller under **Settings → Apps**.
 
-The `attach-windows` job then uploads the installer and checksum to the published release. It is separate from the macOS jobs, so a Windows failure does not hold up the DMG, the Homebrew formula or the update feed. Manual runs of the workflow upload a `windows-release` artifact and never touch a release.
+The `attach-windows` job then uploads the installer and checksum to the published release. It is separate from the macOS jobs, so a Windows failure does not hold up the DMG, the Homebrew formula or the update feed. Manual runs with a version publish and attach installers automatically. Leave the version blank for a build-only run that uploads a `windows-release` artifact without changing a release.
 
 There is no automatic updater on Windows; users install each new version over the old one.
 
