@@ -246,6 +246,8 @@ pub struct AppWindow {
     sidebar_fit_pending: bool,
     /// The sidebar order the View menu's check mark shows.
     view_menu_mode: Option<SidebarMode>,
+    /// The count the Dock icon's badge shows.
+    dock_badge_count: Option<u32>,
     closing_pane: Option<ClosingPane>,
     window_preferences: Option<WindowPreferences>,
     observed_window_bounds: Option<WindowPreferences>,
@@ -876,6 +878,7 @@ impl AppWindow {
             pane_window_sizing: PaneWindowSizing::default(),
             sidebar_fit_pending: true,
             view_menu_mode: None,
+            dock_badge_count: None,
             closing_pane: None,
             window_preferences: None,
             observed_window_bounds: None,
@@ -3259,6 +3262,7 @@ impl AppWindow {
         }
         self.sync_sidebar_live_previews();
         self.sync_view_menu();
+        self.sync_dock_badge();
         self.sync_sidebar_view_state(cx);
         self.sync_composer_placeholder(cx);
         self.sync_timeline_list_state_len(self.models.timeline.rows.len());
@@ -8999,6 +9003,23 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         self.set_sidebar_mode(SidebarMode::Grouped, cx);
+    }
+
+    /// Puts the sum of the sidebar's badges on the Dock icon: unread messages
+    /// for DMs, Keybase's badge count for channels.
+    fn sync_dock_badge(&mut self) {
+        let workspace = &self.app_store.snapshot().workspace;
+        let channels = workspace.channels.iter().map(|c| c.mention_count);
+        let dms = workspace
+            .direct_messages
+            .iter()
+            .map(|c| c.unread_count.max(c.mention_count));
+        let count: u32 = channels.chain(dms).sum();
+        if self.dock_badge_count == Some(count) {
+            return;
+        }
+        self.dock_badge_count = Some(count);
+        crate::app::dock_badge::set_count(count);
     }
 
     /// Moves the View menu's check mark to the current sidebar order.
