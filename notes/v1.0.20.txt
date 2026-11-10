@@ -1,0 +1,8 @@
+## What's Changed
+* Show the unread badge count on the Dock icon by @emlowe in https://github.com/cameroncooper/zbase/pull/50
+* Simplify releases into one manual workflow by @cameroncooper in https://github.com/cameroncooper/zbase/pull/51
+
+## New Contributors
+* @emlowe made their first contribution in https://github.com/cameroncooper/zbase/pull/50
+
+**Full Changelog**: https://github.com/cameroncooper/zbase/compare/v1.0.19...v1.0.20
