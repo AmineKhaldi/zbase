@@ -1,0 +1,12 @@
+## What's Changed
+* Fix reaction name tooltip sizing and window containment by @cameroncooper in https://github.com/cameroncooper/zbase/pull/41
+* Show the text caret in dark mode by @greimela in https://github.com/cameroncooper/zbase/pull/39
+* Replace the Files sidebar with a visual attachment browser by @cameroncooper in https://github.com/cameroncooper/zbase/pull/40
+* Make new-conversation search local-first and nonblocking by @cameroncooper in https://github.com/cameroncooper/zbase/pull/42
+* Add inline attachment download progress and Open controls by @cameroncooper in https://github.com/cameroncooper/zbase/pull/43
+* Add Windows support by @BrandtH22 in https://github.com/cameroncooper/zbase/pull/44
+
+## New Contributors
+* @BrandtH22 made their first contribution in https://github.com/cameroncooper/zbase/pull/44
+
+**Full Changelog**: https://github.com/cameroncooper/zbase/compare/v1.0.17...v1.0.18
