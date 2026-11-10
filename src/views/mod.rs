@@ -4,6 +4,7 @@ pub mod calls;
 pub mod code_highlight;
 pub mod composer;
 pub mod conversation;
+pub mod github_pr_preview;
 pub mod home;
 pub mod inbox;
 pub mod inline_markdown;

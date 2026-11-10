@@ -4,6 +4,7 @@ pub mod backend;
 pub mod call;
 pub mod channel_details;
 pub mod conversation;
+pub mod github_pr;
 pub mod ids;
 pub mod message;
 pub mod message_formatting;

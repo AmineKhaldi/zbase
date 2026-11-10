@@ -1,6 +1,7 @@
 use crate::domain::{
     attachment::AttachmentSummary,
     backend::BackendId,
+    github_pr::GithubPrPreview,
     ids::{ConversationId, MessageId, UserId},
 };
 
@@ -16,6 +17,8 @@ pub struct LinkPreview {
     pub media_width: Option<u32>,
     pub media_height: Option<u32>,
     pub is_video: bool,
+    /// Live PR status for GitHub pull request links. Never persisted.
+    pub github_pr: Option<GithubPrPreview>,
 }
 
 #[derive(Clone, Debug)]

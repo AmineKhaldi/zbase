@@ -160,6 +160,7 @@ async fn fetch_og_preview_async(url: &str) -> Option<LinkPreview> {
         media_width,
         media_height,
         is_video: false,
+        github_pr: None,
     })
 }
 
