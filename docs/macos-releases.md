@@ -25,27 +25,22 @@ Merge the workflow to the default branch first so GitHub exposes its manual Run 
 
 ## Publish
 
-1. Merge these workflows to `main` first. In **Actions → Prepare release → Run workflow**, select `main` and enter a new stable version without `v` (for example, `1.0.14`).
-2. Open the version-bump PR linked in the workflow summary. It updates only the app version in `Cargo.toml` and `Cargo.lock`, preserving dependency versions. CI starts automatically on its branch. Review the changes, wait for checks, and merge the PR.
-3. In GitHub, open **Releases → Draft a new release**. Choose **Create new tag**, enter the matching tag (for example, `v1.0.14`), and target the merged release-preparation commit on `main`.
-4. Write your title and release notes. Save the draft while editing; click **Publish release** when ready.
-5. The `release: published` event starts the workflow. It builds, signs and notarizes the app and DMG, then attaches the DMG, checksum, corresponding media sources and build information to that same release. Your title, notes, latest selection and prerelease status are preserved. The Homebrew source formula is updated after attachment for stable releases only.
+1. Open **Actions → Release → Run workflow**, select `main`, and enter the next stable version without `v` (for example, `1.0.14`).
+2. Run the workflow. It bumps `Cargo.toml` and `Cargo.lock`, commits the bump to `main`, pushes the matching annotated tag, and publishes a GitHub release with automatically generated notes. It then builds both platforms and attaches their installers and checksums. macOS signing, notarization, Homebrew and update-feed publication remain automatic.
 
-Prepare release accepts patch, minor, or major version increases. It rejects malformed, unchanged, older, or already-tagged versions. It creates neither a tag nor a release, and does not merge its PR. A rerun reuses an existing open preparation PR for that version without overwriting its branch. If a branch exists without an open PR, inspect it and open the PR manually or delete the abandoned branch before retrying.
+Leave **version** blank to run the full build/signing pipeline without creating a release, attaching assets, or updating Homebrew/the feed. Branch build tests are allowed; publishing requires `main`.
 
-The repository setting **Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests** must be enabled. The workflow uses the built-in `GITHUB_TOKEN`; no additional secret is required. GitHub can require approval for PR-event workflows created by this token, so Prepare release explicitly dispatches `CI` on the preparation branch. See [GitHub's token-trigger rules](https://docs.github.com/en/actions/concepts/security/github_token#when-github_token-triggers-workflow-runs). It does not approve or merge PRs.
+Version input accepts patch, minor, or major increases and rejects malformed, unchanged, older, or already-tagged versions. Dependencies remain unchanged. The version commit and tag are pushed atomically: if `main` rejects the commit, neither ref is changed. The built-in `GITHUB_TOKEN` needs contents-write access, and repository branch/tag rules must allow this workflow to push. No PR creation permission or extra token is needed. Merge the workflow changes before using the new input.
 
-You can also update the two Cargo files in an ordinary PR instead of using Prepare release. Either way, the published tag must match the version committed at its target.
+Both platform builds check out the exact release commit. Builds run in the same workflow because events created with `GITHUB_TOKEN` do not start another release workflow. See [GitHub's token-trigger rules](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows).
 
-The release is public immediately; its DMG becomes available once the workflow succeeds. Saving a draft, editing notes, pushing a tag, or merging to `main` does not start a release build. There is no automatic tagging or version bump on merge. Manual workflow runs remain available for testing without changing any release.
+The release is public immediately, with generated notes; installers appear as each platform finishes. You can edit the notes afterward in GitHub. Existing externally published releases still trigger the build, provided their tags match the committed package version. Immutable releases must remain disabled because assets are attached after publication.
 
-This process requires **immutable releases to be disabled**, since assets are attached after publication. The workflow rejects an immutable release before compiling.
+The optional CLI helper `scripts/release.sh VERSION` starts this same workflow on `main`.
 
-The optional CLI helper `scripts/release.sh VERSION` validates the committed version, pushes its tag, and creates a draft with generated notes. Edit and publish that draft in GitHub to start the build. The script is not required for the browser-based process.
+If a build, signing, upload, Homebrew, or feed job fails, use **Re-run failed jobs** on the original run. Do not rerun successful preparation or move the tag. Upload retries preserve release metadata. Rebuilding an already attached macOS version with different bytes is rejected; publish a new version instead. If preparation fails after the atomic push (for example, GitHub's release API is unavailable), create and publish the release for the existing tag in GitHub to trigger the builds; do not move or recreate that tag.
 
-If building or notarization fails, the public release remains available with its notes, but the new DMG is not attached. For transient failures or corrected Actions secrets/variables, use **Re-run failed jobs** on that release's workflow run to retry; do not create a replacement release or move its tag. Asset upload retries replace matching generated asset names and preserve your release metadata and other assets. If only the Homebrew step fails, rerunning the attachment job is safe. Manual workflow runs do not attach assets, so use the original release-triggered run when retrying attachment.
-
-Reruns use the workflow and scripts from the original tag. If a fix changes those files, validate it with a manual Release run on the fixed branch, then publish a new version containing the fix. Rerunning an older tag cannot pick up changes from `main`.
+Reruns use the workflow from the original run. To include workflow/script fixes, validate them with a blank-version build and publish a new version.
 
 Ticket stapling and validation retry transient Apple service failures up to four times with 10, 20, and 40 second delays. Every check must still succeed; invalid, missing, or revoked tickets fail immediately. Persistent service outages fail the build and require a rerun.
 
@@ -108,7 +103,7 @@ Published installer bytes must remain immutable. Retrying attachment with the
 same artifact is safe; rebuilding a previously attached version with different
 bytes is rejected. Publish a new version instead. Retrying only the feed job
 is safe while its build artifact is retained. Feed publication is intentionally
-not attempted by manual workflow runs. Release notes are captured when the
+not attempted by build-only workflow runs. Release notes are captured when the
 feed job runs; rerun it to republish edited notes while the artifact is available.
 
 The updater uses Sparkle for checks, downloads, pre-extraction signature

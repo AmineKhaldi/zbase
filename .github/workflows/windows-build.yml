@@ -3,6 +3,11 @@ name: Windows build and installer
 on:
   workflow_call:
     inputs:
+      ref:
+        description: Exact commit to build (defaults to the calling workflow ref)
+        required: false
+        type: string
+        default: ''
       artifact-name:
         description: Name of the downloadable installer artifact
         required: true
@@ -32,6 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
       - name: Validate release version
         id: version
