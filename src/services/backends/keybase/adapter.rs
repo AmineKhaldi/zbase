@@ -15468,6 +15468,7 @@ fn extract_link_preview_from_result(result: &Value) -> Option<LinkPreview> {
         media_width,
         media_height,
         is_video,
+        github_pr: None,
     })
 }
 

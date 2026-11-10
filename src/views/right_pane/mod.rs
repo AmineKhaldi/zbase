@@ -874,6 +874,16 @@ fn render_link_previews(
                 lower.contains("giphy.com") || lower.contains("gph.is")
             };
 
+            if let Some(pr_preview) = preview.github_pr.as_ref() {
+                return crate::views::github_pr_preview::render_github_pr_preview(pr_preview)
+                    .id(element_id)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_url_or_deep_link(&url, window, cx);
+                    }))
+                    .cursor(CursorStyle::PointingHand)
+                    .into_any_element();
+            }
+
             if preview.is_media {
                 let media_source = preview
                     .thumbnail_asset

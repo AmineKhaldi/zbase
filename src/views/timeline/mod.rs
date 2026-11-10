@@ -25,6 +25,7 @@ use crate::{
         attachment_image_source, attachment_lightbox_source,
         avatar::{Avatar, default_avatar_background},
         border, clipboard_icon, copy_icon, danger, display_image_source, format_duration_ms,
+        github_pr_preview::render_github_pr_preview,
         glass_surface_dark, hash_icon,
         inline_markdown::{InlineMarkdownConfig, apply_inline_markdown, remap_source_byte_range},
         link, mono_font_family, mono_font_size, new_messages, panel_alt_bg, panel_bg, pencil_icon,
@@ -1982,6 +1983,31 @@ impl TimelineList {
                             let lower = preview.url.to_ascii_lowercase();
                             lower.contains("giphy.com") || lower.contains("gph.is")
                         };
+
+                        if let Some(pr_preview) = preview.github_pr.as_ref() {
+                            return render_github_pr_preview(pr_preview)
+                                .id(element_id)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_url_or_deep_link(&url, window, cx);
+                                }))
+                                .on_mouse_move(cx.listener(
+                                    move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                                        let cursor_x: f32 = event.position.x.into();
+                                        let cursor_y: f32 = event.position.y.into();
+                                        this.clear_reaction_hover_tooltip(cx);
+                                        this.set_hovered_message_with_cursor_anchor(
+                                            message_id.clone(),
+                                            cursor_x,
+                                            cursor_y,
+                                            is_thread,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                    },
+                                ))
+                                .cursor(gpui::CursorStyle::PointingHand)
+                                .into_any_element();
+                        }
 
                         if preview.is_media {
                             let media_source = preview

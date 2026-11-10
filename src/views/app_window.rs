@@ -4,6 +4,7 @@ mod update_notes;
 mod updates;
 use super::pane_window::PaneWindowSizing;
 use crate::models::conversation_model::AvatarParticipant;
+use crate::services::github_pr_service::{GithubPrFetchResult, GithubPrService};
 use crate::services::og_service::{OgFetchResult, OgService};
 use crate::state::state::{BootPhase, TimelineKey};
 use crate::{
@@ -14,6 +15,7 @@ use crate::{
         backend::{BackendCapabilities, ProviderMessageRef},
         channel_details::{ChannelDetails, ChannelMemberPreview, NotificationLevel},
         conversation::{ConversationKind, ConversationSummary},
+        github_pr::GithubPrRef,
         ids::{ConversationId, MessageId, SidebarSectionId, UserId, WorkspaceId},
         message::{ChatEvent, LinkPreview, MessageFragment, MessageRecord, MessageSendState},
         profile::SocialGraphListType,
@@ -102,6 +104,7 @@ const ENV_BENCH_EXIT_ON_STOP: &str = "ZBASE_BENCH_EXIT_ON_STOP";
 const ENV_THREAD_OPEN_PROFILE: &str = "ZBASE_THREAD_OPEN_PROFILE";
 const BACKEND_POLL_BOOT_INTERVAL: Duration = Duration::from_millis(16);
 const BACKEND_POLL_READY_INTERVAL: Duration = Duration::from_millis(200);
+const GITHUB_PR_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const QUICK_SWITCHER_REMOTE_MIN_QUERY_CHARS: usize = 2;
 const QUICK_SWITCHER_CORPUS_REBUILD_COALESCE: Duration = Duration::from_millis(180);
 const TEXT_INPUT_SYNC_DEFER_WINDOW: Duration = Duration::from_millis(280);
@@ -321,6 +324,11 @@ pub struct AppWindow {
     og_service: OgService,
     og_result_sender: Sender<OgFetchResult>,
     og_result_receiver: Receiver<OgFetchResult>,
+    github_pr_service: GithubPrService,
+    github_pr_result_sender: Sender<GithubPrFetchResult>,
+    github_pr_result_receiver: Receiver<GithubPrFetchResult>,
+    github_pr_last_poll: Option<Instant>,
+    github_pr_attention_key: Option<(ConversationId, bool)>,
     last_mark_read_attempt: HashMap<String, (String, Instant)>,
     window_is_focused: bool,
     settings_window: Option<gpui::WindowHandle<crate::views::settings_window::SettingsWindow>>,
@@ -860,6 +868,7 @@ impl AppWindow {
             .unwrap_or_default();
         let (video_result_sender, video_result_receiver) = mpsc::channel();
         let (og_result_sender, og_result_receiver) = mpsc::channel();
+        let (github_pr_result_sender, github_pr_result_receiver) = mpsc::channel();
 
         Self {
             update_ui: updates::UpdateUi::new(),
@@ -942,6 +951,11 @@ impl AppWindow {
             og_service: OgService::new(local_store),
             og_result_sender,
             og_result_receiver,
+            github_pr_service: GithubPrService::new(),
+            github_pr_result_sender,
+            github_pr_result_receiver,
+            github_pr_last_poll: None,
+            github_pr_attention_key: None,
             last_mark_read_attempt: HashMap::new(),
             window_is_focused: false,
             settings_window: None,
@@ -1430,6 +1444,8 @@ impl AppWindow {
         }
         let mut needs_refresh = self.drain_video_decode_results();
         needs_refresh |= self.drain_og_fetch_results();
+        needs_refresh |= self.drain_github_pr_results();
+        needs_refresh |= self.poll_github_prs();
         let quick_switcher_typing = self.models.overlay.quick_switcher_open
             && !self.models.quick_switcher.query.trim().is_empty()
             && self.text_input_activity_recent();
@@ -1850,11 +1866,7 @@ impl AppWindow {
             self.og_service.apply_result(result);
         }
         if changed {
-            // Preserve the old layout's bottom position before a fetched preview
-            // changes row heights, even when no backend event/model sync follows.
-            self.anchor_timeline_before_layout();
-            self.apply_og_previews_to_timeline();
-            self.timeline_row_render_cache.invalidate();
+            self.refresh_link_preview_rows();
         }
         changed
     }
@@ -1879,12 +1891,132 @@ impl AppWindow {
             &self.og_service,
             self.models.thread_pane.replies.iter_mut().collect(),
         );
+        let now = Instant::now();
+        apply_github_pr_previews_to_messages(
+            &self.github_pr_service,
+            now,
+            self.models
+                .timeline
+                .rows
+                .iter_mut()
+                .filter_map(|row| {
+                    if let crate::models::timeline_model::TimelineRow::Message(message_row) = row {
+                        Some(&mut message_row.message)
+                    } else {
+                        None
+                    }
+                })
+                .chain(self.models.thread_pane.replies.iter_mut())
+                .collect(),
+        );
+    }
+
+    fn refresh_link_preview_rows(&mut self) {
+        // Preserve the old layout's bottom position before a fetched preview
+        // changes row heights, even when no backend event/model sync follows.
+        self.anchor_timeline_before_layout();
+        self.apply_og_previews_to_timeline();
+        self.timeline_row_render_cache.invalidate();
+    }
+
+    /// PR links in the open conversation and thread, most recent first.
+    fn visible_github_pr_refs(&self) -> Vec<GithubPrRef> {
+        let timeline = self.models.timeline.rows.iter().rev().filter_map(|row| {
+            if let crate::models::timeline_model::TimelineRow::Message(message_row) = row {
+                Some(&message_row.message)
+            } else {
+                None
+            }
+        });
+        let mut seen = HashSet::new();
+        let mut refs = Vec::new();
+        for message in self.models.thread_pane.replies.iter().rev().chain(timeline) {
+            for url in extract_link_urls_from_fragments(&message.fragments) {
+                if let Some(pr) = GithubPrRef::parse(&url)
+                    && seen.insert(pr.clone())
+                {
+                    refs.push(pr);
+                }
+            }
+        }
+        refs
+    }
+
+    fn poll_github_prs(&mut self) -> bool {
+        let now = Instant::now();
+        if self
+            .github_pr_last_poll
+            .is_some_and(|at| now.duration_since(at) < GITHUB_PR_POLL_INTERVAL)
+        {
+            return false;
+        }
+        self.github_pr_last_poll = Some(now);
+        let attention_key = (
+            self.models.timeline.conversation_id.clone(),
+            self.window_is_focused,
+        );
+        if self.github_pr_attention_key.as_ref() != Some(&attention_key) {
+            if self.window_is_focused {
+                self.github_pr_service.note_attention();
+            }
+            self.github_pr_attention_key = Some(attention_key);
+        }
+        let refs = self.visible_github_pr_refs();
+        if refs.is_empty() {
+            return false;
+        }
+        let changed = self.github_pr_service.poll(
+            &refs,
+            self.window_is_focused,
+            now,
+            &self.github_pr_result_sender,
+        );
+        if changed {
+            self.refresh_link_preview_rows();
+        }
+        changed
+    }
+
+    fn drain_github_pr_results(&mut self) -> bool {
+        let now = Instant::now();
+        let mut changed = false;
+        let mut fallback = HashSet::new();
+        while let Ok(result) = self.github_pr_result_receiver.try_recv() {
+            fallback.extend(self.github_pr_service.apply_result(result, now));
+            changed = true;
+        }
+        if !fallback.is_empty() {
+            // These PRs now use the ordinary link preview, which was skipped so far.
+            let timeline = self.models.timeline.rows.iter().filter_map(|row| {
+                if let crate::models::timeline_model::TimelineRow::Message(message_row) = row {
+                    Some(&message_row.message)
+                } else {
+                    None
+                }
+            });
+            let urls = timeline
+                .chain(self.models.thread_pane.replies.iter())
+                .flat_map(|message| extract_link_urls_from_fragments(&message.fragments))
+                .filter(|url| GithubPrRef::parse(url).is_some_and(|pr| fallback.contains(&pr)))
+                .collect::<Vec<_>>();
+            for url in &urls {
+                self.og_service.schedule_fetch(url, &self.og_result_sender);
+            }
+        }
+        if changed {
+            self.refresh_link_preview_rows();
+        }
+        changed
     }
 
     fn schedule_og_fetches_for_messages(&mut self, messages: &[MessageRecord]) {
+        let now = Instant::now();
         for message in messages {
             let urls = extract_link_urls_from_fragments(&message.fragments);
             for url in &urls {
+                if self.github_pr_service.handles_url(url, now) {
+                    continue;
+                }
                 self.og_service.schedule_fetch(url, &self.og_result_sender);
             }
         }
@@ -11293,6 +11425,55 @@ fn apply_og_previews_to_messages(og_service: &OgService, messages: Vec<&mut Mess
                 }
             } else {
                 message.link_previews.push(og.clone());
+            }
+        }
+    }
+}
+
+fn apply_github_pr_previews_to_messages(
+    service: &GithubPrService,
+    now: Instant,
+    messages: Vec<&mut MessageRecord>,
+) {
+    for message in messages {
+        let urls = extract_link_urls_from_fragments(&message.fragments);
+        let mut seen = HashSet::new();
+        for url in &urls {
+            let Some(pr) = GithubPrRef::parse(url) else {
+                continue;
+            };
+            if !seen.insert(pr.clone()) {
+                continue;
+            }
+            let existing = message
+                .link_previews
+                .iter()
+                .position(|preview| GithubPrRef::parse(&preview.url).as_ref() == Some(&pr));
+            match (existing, service.preview(&pr, now)) {
+                (Some(index), Some(pr_preview)) => {
+                    let preview = &mut message.link_previews[index];
+                    if preview.github_pr.as_ref() != Some(&pr_preview) {
+                        preview.github_pr = Some(pr_preview);
+                    }
+                }
+                (None, Some(pr_preview)) => message.link_previews.push(LinkPreview {
+                    url: url.clone(),
+                    site: Some("github.com".to_string()),
+                    github_pr: Some(pr_preview),
+                    ..LinkPreview::default()
+                }),
+                (Some(index), None) => {
+                    let preview = &mut message.link_previews[index];
+                    preview.github_pr = None;
+                    let is_empty_placeholder = preview.title.is_none()
+                        && preview.description.is_none()
+                        && preview.thumbnail_asset.is_none()
+                        && !preview.is_media;
+                    if is_empty_placeholder {
+                        message.link_previews.remove(index);
+                    }
+                }
+                (None, None) => {}
             }
         }
     }
