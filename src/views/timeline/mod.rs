@@ -655,7 +655,9 @@ impl TimelineList {
                     .on_mouse_move(hold_message_hover(&row.message.id, is_thread, cx))
                     .cursor(gpui::CursorStyle::PointingHand)
                     .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
+                    // Bold, so each turn is anchored by its name rather than
+                    // by whitespace alone.
+                    .font_weight(FontWeight::BOLD)
                     .text_color(rgb(text_primary()))
                     .child(row.author.display_name.clone())
                     .into_any_element(),
@@ -705,6 +707,9 @@ impl TimelineList {
                     .flex()
                     .items_center()
                     .gap_2()
+                    // Tighter than the default, so the name sits close to the
+                    // message under it.
+                    .line_height(px(18.))
                     .children(header_children),
             );
         }
@@ -820,12 +825,11 @@ impl TimelineList {
                 .min_w(px(0.))
                 .px_4()
                 .flex()
-                .gap_3()
+                .gap(px(AVATAR_TEXT_GAP_PX))
                 .items_start()
-                // A new author block: the gap above the name is what separates
-                // one turn from the last, so it is several times the gap
-                // between lines inside a block.
-                .pt(px(10.))
+                // A new author block: air above the name separates one turn
+                // from the last; the bold name does the rest.
+                .pt(px(TURN_GAP_PX))
                 .when(
                     is_hovered
                         && !is_highlighted
@@ -847,9 +851,9 @@ impl TimelineList {
                             }
                         }))
                         .flex_shrink_0()
-                        // Down to the cap height of the author name, so the
-                        // square's top edge lines up with the top of the text.
-                        .mt(px(6.))
+                        // Just above the cap height of the author name: a flat
+                        // edge level with the glyphs reads as sitting too low.
+                        .mt(px(2.))
                         .child(Avatar::render(
                             &row.author.display_name,
                             row.author.avatar_asset.as_deref(),
@@ -901,10 +905,8 @@ impl TimelineList {
                 .min_w(px(0.))
                 .px_4()
                 .flex()
-                .gap_3()
+                .gap(px(AVATAR_TEXT_GAP_PX))
                 .items_start()
-                // Same author, moments later: a hairline of air, not a new turn.
-                .pt(px(2.))
                 .when(
                     is_hovered
                         && !is_highlighted
@@ -1408,7 +1410,7 @@ impl TimelineList {
 
                             let emoji_element: AnyElement = if let Some(render) = resolved {
                                 if let Some(unicode) = &render.unicode {
-                                    div().text_sm().child(unicode.clone()).into_any_element()
+                                    reaction_glyph(unicode.clone())
                                 } else if let Some(asset_path) = &render.asset_path {
                                     div()
                                         .w(px(CUSTOM_EMOJI_REACTION_SIZE_PX))
@@ -1443,10 +1445,7 @@ impl TimelineList {
                                         .into_any_element()
                                 }
                             } else if let Some(standard) = standard_emoji_for_alias(&alias) {
-                                div()
-                                    .text_sm()
-                                    .child(standard.to_string())
-                                    .into_any_element()
+                                reaction_glyph(standard.to_string())
                             } else {
                                 div()
                                     .text_xs()
@@ -1454,27 +1453,46 @@ impl TimelineList {
                                     .into_any_element()
                             };
 
+                            // A soft tile with the avatars' rounded-square shape;
+                            // your own reaction is tinted with the accent.
+                            let mine = reaction.reacted_by_me;
                             let chip = div()
-                                .px_1p5()
-                                .py_0p5()
-                                .rounded_full()
+                                .h(px(REACTION_TILE_PX))
+                                // The count's digit carries its own side bearing.
+                                .pl(px(8.))
+                                .pr(px(6.))
+                                .rounded(px(6.))
                                 .border_1()
-                                .border_color(if reaction.reacted_by_me {
-                                    tint(accent(), 1.0)
+                                .border_color(if mine {
+                                    tint(accent(), 0.35)
                                 } else {
-                                    shell_border()
+                                    gpui::transparent_black()
                                 })
-                                .when(reaction.reacted_by_me, |chip| {
-                                    chip.bg(tint(accent_soft(), 0.35))
+                                .bg(if mine {
+                                    tint(accent(), 0.14)
+                                } else {
+                                    tint(text_primary(), 0.06)
+                                })
+                                .hover(move |chip| {
+                                    chip.bg(if mine {
+                                        tint(accent(), 0.22)
+                                    } else {
+                                        tint(text_primary(), 0.1)
+                                    })
                                 })
                                 .flex()
                                 .items_center()
-                                .gap_1()
+                                .gap(px(5.))
                                 .child(emoji_element)
                                 .child(
                                     div()
                                         .text_xs()
-                                        .text_color(rgb(text_secondary()))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(rgb(if mine {
+                                            accent()
+                                        } else {
+                                            text_primary()
+                                        }))
                                         .child(format!("{}", reaction.count)),
                                 );
                             let chip_with_hover = div()
@@ -1520,6 +1538,7 @@ impl TimelineList {
                 };
 
                 if has_reactions {
+                    let message_id_for_add = message.id.clone();
                     div()
                         .flex()
                         .flex_wrap()
@@ -1527,6 +1546,32 @@ impl TimelineList {
                         .gap_1()
                         .pt_1()
                         .children(reaction_chips)
+                        // While the message is hovered, a matching tile adds one more.
+                        .when(hover_geometry.is_some(), |row| {
+                            row.child(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "reaction-add-{}",
+                                        message.id.0
+                                    )))
+                                    .tooltip(crate::views::tooltip::TextTooltip::single_line(
+                                        "Add reaction".to_string(),
+                                    ))
+                                    .size(px(REACTION_TILE_PX))
+                                    .rounded(px(6.))
+                                    .bg(tint(text_primary(), 0.06))
+                                    .hover(|tile| tile.bg(tint(text_primary(), 0.1)))
+                                    .cursor(gpui::CursorStyle::PointingHand)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(plus_icon(text_secondary()))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.clear_hovered_message_immediate(cx);
+                                        this.react_to_message(message_id_for_add.clone(), cx);
+                                    })),
+                            )
+                        })
                         .into_any_element()
                 } else {
                     div().into_any_element()
@@ -3488,6 +3533,25 @@ fn inline_text_segments(text: &str) -> Vec<InlineTextSegment> {
 }
 
 const EDITED_LABEL: &str = " (edited)";
+/// Padding above a message that starts a new author block.
+const TURN_GAP_PX: f32 = 8.;
+/// Between the avatar column and the message text.
+const AVATAR_TEXT_GAP_PX: f32 = 10.;
+/// Height of a reaction tile and side of the add-reaction tile.
+const REACTION_TILE_PX: f32 = 24.;
+
+/// A Unicode reaction emoji, the size of a custom one, so it fills its tile.
+/// Color emoji carry wide side bearings; centring the glyph in a box as wide
+/// as it looks keeps the tile's padding honest.
+fn reaction_glyph(emoji: String) -> AnyElement {
+    div()
+        .w(px(CUSTOM_EMOJI_REACTION_SIZE_PX))
+        .text_center()
+        .text_size(px(CUSTOM_EMOJI_REACTION_SIZE_PX))
+        .line_height(px(CUSTOM_EMOJI_REACTION_SIZE_PX))
+        .child(emoji)
+        .into_any_element()
+}
 
 fn is_inline_fragment(fragment: &MessageFragment) -> bool {
     matches!(
@@ -3594,10 +3658,10 @@ fn day_divider(label: &str, compact: bool) -> AnyElement {
     div()
         .w_full()
         .px_4()
-        // The author block below brings its own 10px, so the rule sits centred
-        // between the last message and the next name.
+        // The author block below brings its own TURN_GAP_PX, so the rule sits
+        // centred between the last message and the next name.
         .pt(px(if compact { 8. } else { 14. }))
-        .pb(px(if compact { 0. } else { 6. }))
+        .pb(px(if compact { 2. } else { 8. }))
         .flex()
         .items_center()
         .gap_3()
@@ -3620,9 +3684,9 @@ fn new_messages_divider(label: &str, compact: bool) -> AnyElement {
     div()
         .w_full()
         .px_4()
-        // Balanced against the 10px the first unread author block adds below.
+        // Balanced against the TURN_GAP_PX the first unread author block adds.
         .pt(px(if compact { 6. } else { 10. }))
-        .pb(px(if compact { 0. } else { 2. }))
+        .pb(px(if compact { 2. } else { 4. }))
         .flex()
         .items_center()
         .gap_2()
@@ -3714,7 +3778,7 @@ fn thread_summary_row(
                         Avatar::render(
                             &replier.display_name,
                             replier.avatar_asset.as_deref(),
-                            16.,
+                            20.,
                             default_avatar_background(&replier.display_name),
                             text_primary(),
                         )
