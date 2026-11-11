@@ -13,6 +13,7 @@ use crate::{
     services::{
         backends::{keybase::KeybaseBackend, router::BackendRouter},
         local_store::LocalStore,
+        notifications_service::ClickedNotification,
         settings_store::SettingsStore,
         window_preferences::WindowPreferences,
     },
@@ -26,8 +27,8 @@ use crate::{
     },
 };
 use gpui_kit::{
-    App, AppContext, Bounds, Focusable, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
-    WindowOptions, point, px, size,
+    AnyWindowHandle, App, AppContext, Bounds, Focusable, Global, TitlebarOptions, WeakEntity,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, point, px, size,
 };
 use std::env;
 use std::sync::Arc;
@@ -61,7 +62,7 @@ fn load_settings() -> SettingsModel {
 }
 const ENV_BENCH_SKIP_BACKEND: &str = "ZBASE_BENCH_SKIP_BACKEND";
 
-pub fn open_main_window(cx: &mut App) {
+pub fn open_main_window(cx: &mut App) -> MainWindow {
     let settings = load_settings();
     crate::domain::user::set_name_style(settings.name_style);
     // A first window leaves the conversation its full minimum width beside a
@@ -114,7 +115,7 @@ pub fn open_main_window(cx: &mut App) {
         ..Default::default()
     };
 
-    gpui_kit::open_window(options, cx, |window, cx| {
+    let main = gpui_kit::open_window(options, cx, |window, cx| {
         let models = if env_flag(ENV_BENCH_USE_DEMO) {
             #[cfg(any(test, feature = "demo-fixtures"))]
             {
@@ -228,7 +229,40 @@ pub fn open_main_window(cx: &mut App) {
         window.focus(&root.focus_handle(cx), cx);
         root
     })
+    .map(|(handle, view)| MainWindow {
+        handle,
+        view: view.downgrade(),
+    })
     .expect("failed to open zbase window");
+    cx.set_global(main.clone());
+    main
+}
+
+/// The open main window. GPUI Kit wraps its root view, so it is kept here
+/// rather than found by downcasting the window.
+#[derive(Clone)]
+pub struct MainWindow {
+    handle: AnyWindowHandle,
+    view: WeakEntity<AppWindow>,
+}
+
+impl Global for MainWindow {}
+
+/// Brings zBase forward on the message a clicked banner points at, reopening
+/// the main window if it was closed.
+pub fn open_clicked_notification(click: ClickedNotification, cx: &mut App) {
+    cx.activate(true);
+    let main = cx
+        .try_global::<MainWindow>()
+        .filter(|main| main.view.upgrade().is_some() && cx.windows().contains(&main.handle))
+        .cloned()
+        .unwrap_or_else(|| open_main_window(cx));
+    let _ = main.handle.update(cx, |_, window, cx| {
+        window.activate_window();
+        main.view.update(cx, |this, cx| {
+            this.open_message(&click.conversation_id, click.message_id, window, cx);
+        })
+    });
 }
 
 fn env_flag(name: &str) -> bool {

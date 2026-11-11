@@ -1,6 +1,6 @@
 use crate::app::assets::KbuiAssets;
 use crate::app::commands;
-use crate::app::window::open_main_window;
+use crate::app::window::{open_clicked_notification, open_main_window};
 use gpui_kit::{Menu, MenuItem, SystemMenuType};
 
 pub fn run() {
@@ -29,6 +29,14 @@ pub fn run() {
         super::key_bindings::install(cx);
         cx.set_menus(app_menus());
         open_main_window(cx);
+        if let Some(mut clicks) = crate::services::notifications_service::start() {
+            cx.spawn(async move |cx| {
+                while let Some(click) = clicks.recv().await {
+                    cx.update(|cx| open_clicked_notification(click, cx));
+                }
+            })
+            .detach();
+        }
     });
 }
 

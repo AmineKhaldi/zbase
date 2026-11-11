@@ -1763,7 +1763,9 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
         BackendEvent::BootStatus(status) => {
             state.app.boot_status = status.clone();
         }
-        BackendEvent::KeybaseNotifyStub { .. } | BackendEvent::BenchmarkPulse(_) => {}
+        BackendEvent::KeybaseNotifyStub { .. }
+        | BackendEvent::BenchmarkPulse(_)
+        | BackendEvent::DesktopNotification(_) => {}
     }
 
     ReducerOutput::default()

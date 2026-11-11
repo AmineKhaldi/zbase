@@ -2,6 +2,7 @@
 //! macOS System Settings. Only settings that change the app are listed. Shown in
 //! its own window (see `settings_window`); every control writes back through the
 //! main window, which owns and persists the settings.
+use crate::services::notifications_service::{self, NotificationPermission};
 use crate::views::typography;
 use crate::{
     domain::user::NameStyle,
@@ -11,7 +12,8 @@ use crate::{
     },
     views::{
         accent, accent_strong, app_window::AppWindow, avatar::Avatar, field_border, is_dark_theme,
-        section_label, shell_border, success, text_primary, text_secondary, tint, warning,
+        secondary_button, section_label, shell_border, success, text_primary, text_secondary, tint,
+        warning,
     },
 };
 use gpui_kit::prelude::FluentBuilder;
@@ -34,6 +36,7 @@ pub struct PreferencesView;
 pub struct PreferencesContext {
     pub sidebar_mode: SidebarMode,
     pub updates: crate::services::updates::UpdateSnapshot,
+    pub notification_permission: NotificationPermission,
     pub account: Option<AccountSummary>,
 }
 
@@ -228,6 +231,10 @@ impl PreferencesView {
                         "Layout",
                         vec![order_row, sidebar_row, side_panel_row],
                     ))
+                    .when_some(
+                        notifications_row(context.notification_permission),
+                        |content, row| content.child(section("Notifications", vec![row])),
+                    )
                     .child(section("Accessibility", vec![motion_row]))
                     .child(section(
                         "Updates",
@@ -246,6 +253,38 @@ impl PreferencesView {
             )
             .into_any_element()
     }
+}
+
+/// Whether macOS shows zBase's banners, with the way to change it. `None` when
+/// this build cannot post notifications.
+fn notifications_row(permission: NotificationPermission) -> Option<AnyElement> {
+    let (description, label, act): (&'static str, &'static str, fn()) = match permission {
+        NotificationPermission::Unavailable => return None,
+        NotificationPermission::Allowed => (
+            "On. Each conversation's Keybase notification level decides which messages notify.",
+            "Open System Settings…",
+            notifications_service::open_settings,
+        ),
+        NotificationPermission::NotAsked => (
+            "Off. zBase hasn't asked macOS for permission yet.",
+            "Turn On…",
+            notifications_service::request_permission,
+        ),
+        NotificationPermission::Denied => (
+            "Off. macOS isn't allowing notifications from zBase.",
+            "Open System Settings…",
+            notifications_service::open_settings,
+        ),
+        NotificationPermission::Silenced => (
+            "Off. zBase's alert style in System Settings is None.",
+            "Open System Settings…",
+            notifications_service::open_settings,
+        ),
+    };
+    let button = secondary_button("settings-notifications-action", label)
+        .on_click(move |_, _, _| act())
+        .into_any_element();
+    Some(setting_row("Desktop notifications", description, button))
 }
 
 /// The sample uses the same inherited scale as the rest of Settings.
@@ -756,11 +795,7 @@ fn update_settings_rows(
     let mut rows = vec![setting_row(
         "Software updates",
         "Check for the latest version of zBase.",
-        div()
-            .id("settings-check-updates")
-            .cursor_pointer()
-            .text_color(rgb(accent()))
-            .child("Check now")
+        secondary_button("settings-check-updates", "Check Now")
             .on_click(move |_, window, cx| {
                 window.dispatch_action(Box::new(crate::app::commands::CheckForUpdates), cx)
             })
