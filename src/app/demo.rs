@@ -25,6 +25,7 @@ pub enum DemoScene {
     Chat,
     /// Chat with the sidebar in Grouped (teams and DMs) mode.
     ChatGrouped,
+    TeamDetails,
     /// Chat with the Previews sidebar style (latest message under each row).
     ChatPreviews,
     /// Previews sidebar style in Grouped mode.
@@ -68,9 +69,10 @@ pub enum DemoScene {
 }
 
 impl DemoScene {
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 32] = [
         Self::Chat,
         Self::ChatGrouped,
+        Self::TeamDetails,
         Self::ChatPreviews,
         Self::ChatPreviewsGrouped,
         Self::ChatGroupedCollapsed,
@@ -106,6 +108,7 @@ impl DemoScene {
         match self {
             Self::Chat => "chat",
             Self::ChatGrouped => "chat-grouped",
+            Self::TeamDetails => "team-details",
             Self::ChatPreviews => "chat-previews",
             Self::ChatPreviewsGrouped => "chat-previews-grouped",
             Self::ChatGroupedCollapsed => "chat-grouped-collapsed",

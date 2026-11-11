@@ -1889,6 +1889,7 @@ impl AppWindow {
 
                 pending_effects.clear();
                 for event in events {
+                    self.register_bindings_from_backend_event(&event);
                     pending_effects.extend(self.app_store.dispatch_backend(event));
                 }
             }
@@ -3152,6 +3153,12 @@ impl AppWindow {
                     sidebar.update(cx, |sidebar, cx| sidebar.open_menu(Some(menu), cx));
                 }
             }
+            DemoScene::TeamDetails => {
+                self.set_sidebar_mode(crate::models::settings_model::SidebarMode::Grouped, cx);
+                if let Some(team) = self.models.conversation.summary.group.clone() {
+                    self.open_team_details(team, cx);
+                }
+            }
             DemoScene::ChatGrouped | DemoScene::ChatPreviewsGrouped => {
                 self.set_sidebar_mode(crate::models::settings_model::SidebarMode::Grouped, cx);
             }
@@ -3829,6 +3836,7 @@ impl AppWindow {
                     }
                 }
                 let reduce_started_at = profile_open_thread.then(Instant::now);
+                self.register_bindings_from_backend_event(&event);
                 pending_effects.extend(self.app_store.dispatch_backend(event));
                 if let Some(reduce_started_at) = reduce_started_at {
                     backend_reduce_elapsed += reduce_started_at.elapsed();
