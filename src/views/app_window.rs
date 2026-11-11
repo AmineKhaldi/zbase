@@ -5470,9 +5470,7 @@ impl AppWindow {
         }
         let viewport = window.viewport_size();
         let width = f32::from(viewport.width);
-        let required = self.models.sidebar.width_px
-            + RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX
-            + crate::views::MAIN_PANEL_MIN_WIDTH_PX;
+        let required = self.models.sidebar.width_px + crate::views::MAIN_PANEL_MIN_WIDTH_PX;
         if width + 1. >= required {
             return;
         }
@@ -5488,8 +5486,7 @@ impl AppWindow {
             });
         } else {
             let fitted =
-                (width - RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX - crate::views::MAIN_PANEL_MIN_WIDTH_PX)
-                    .max(crate::views::SIDEBAR_WIDTH_PX);
+                (width - crate::views::MAIN_PANEL_MIN_WIDTH_PX).max(crate::views::SIDEBAR_WIDTH_PX);
             if fitted < self.models.sidebar.width_px {
                 self.models.set_sidebar_width(fitted);
                 self.sync_sidebar_view_state(cx);
@@ -8798,7 +8795,7 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let viewport_width = f32::from(window.viewport_size().width);
-        let sidebar_total_width = self.models.sidebar.width_px + RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX;
+        let sidebar_total_width = self.models.sidebar.width_px;
         let right_pane_width = if shell_layout.show_right_pane
             && !matches!(self.models.navigation.right_pane, RightPaneMode::Hidden)
         {
@@ -9796,7 +9793,6 @@ impl Render for AppWindow {
                 let closing_main_width = self.pane_window_sizing.closing_width().map(|width| {
                     (width
                         - self.models.sidebar.width_px
-                        - RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX
                         - SHELL_HORIZONTAL_PADDING_PX
                         - SHELL_GAP_PX)
                         .max(MAIN_PANEL_MIN_WIDTH_PX)
@@ -10016,38 +10012,38 @@ impl Render for AppWindow {
                                 self.models.sidebar.sections.len()
                             );
                         }
-                        el
+                        div().relative().flex_shrink_0().h_full().child(el).child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .right_0()
+                                .w(px(RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX))
+                                .h_full()
+                                // 1px hairline where the sidebar meets the conversation.
+                                .border_r_1()
+                                .border_color(shell_border())
+                                .cursor(CursorStyle::ResizeColumn)
+                                .id("sidebar-resize-handle")
+                                .flex_shrink_0()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(Self::begin_sidebar_resize),
+                                )
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .group("resize-handle-sidebar")
+                                .child(
+                                    div()
+                                        .w(px(2.))
+                                        .h(px(640.))
+                                        .rounded_full()
+                                        .opacity(0.)
+                                        .group_hover("resize-handle-sidebar", |s| s.opacity(1.))
+                                        .bg(rgb(border())),
+                                ),
+                        )
                     })
-                    .child(
-                        div()
-                            .w(px(RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX))
-                            .flex_shrink_0()
-                            .h_full()
-                            .bg(crate::views::sidebar_surface())
-                            // 1px hairline where the sidebar meets the conversation.
-                            .border_r_1()
-                            .border_color(shell_border())
-                            .cursor(CursorStyle::ResizeColumn)
-                            .id("sidebar-resize-handle")
-                            .flex_shrink_0()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(Self::begin_sidebar_resize),
-                            )
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .group("resize-handle-sidebar")
-                            .child(
-                                div()
-                                    .w(px(2.))
-                                    .h(px(640.))
-                                    .rounded_full()
-                                    .opacity(0.)
-                                    .group_hover("resize-handle-sidebar", |s| s.opacity(1.))
-                                    .bg(rgb(border())),
-                            ),
-                    )
                     .child({
                         let t = Instant::now();
                         let el = MainPanelHost.render(
@@ -10287,7 +10283,6 @@ fn constrained_right_pane_width(
     let available_width = viewport_width_px
         - SHELL_HORIZONTAL_PADDING_PX
         - sidebar_width_px
-        - RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX
         - MAIN_PANEL_MIN_WIDTH_PX
         - 2.0 * SHELL_GAP_PX;
     requested_width_px.clamp(280.0, available_width.clamp(280.0, 520.0))
@@ -10299,11 +10294,8 @@ fn shell_layout(
     sidebar_width_px: f32,
     viewport_width_px: f32,
 ) -> ShellLayout {
-    let base_shell_width = SHELL_HORIZONTAL_PADDING_PX
-        + sidebar_width_px
-        + RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX
-        + MAIN_PANEL_MIN_WIDTH_PX
-        + SHELL_GAP_PX;
+    let base_shell_width =
+        SHELL_HORIZONTAL_PADDING_PX + sidebar_width_px + MAIN_PANEL_MIN_WIDTH_PX + SHELL_GAP_PX;
 
     let right_pane_width = match right_pane_mode {
         RightPaneMode::Hidden => 0.0,
@@ -12144,7 +12136,7 @@ mod tests {
         ] {
             let small = super::shell_layout(&mode, 360., 200., 780.);
             assert!(small.show_right_pane && small.overlay_right_pane);
-            assert_eq!(small.min_shell_width, 1124.);
+            assert_eq!(small.min_shell_width, 1120.);
             let wide = super::shell_layout(&mode, 360., 200., 1400.);
             assert!(wide.show_right_pane && !wide.overlay_right_pane);
         }
