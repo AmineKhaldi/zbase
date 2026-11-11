@@ -21,7 +21,7 @@ The signing certificate must be Developer ID **Application**, not Apple Developm
 
 ## Test before publishing
 
-Merge the workflow to the default branch first so GitHub exposes its manual Run workflow control. Run **Release** from the desired branch. Manual runs only build artifacts; they never attach assets to a release. This performs the full signing and notarization pipeline and uploads a `macos-release` artifact, without creating a GitHub release or changing the Homebrew tap. Download the DMG from that workflow run and test it on a Mac without development dependencies installed.
+Merge the workflow to the default branch first so GitHub exposes its manual Run workflow control. Run **Release** from the desired branch with **version left blank** to build artifacts only. This performs the full signing and notarization pipeline and uploads a `macos-release` artifact, without creating a GitHub release or changing the Homebrew tap. Download the DMG from that workflow run and test it on a Mac without development dependencies installed.
 
 ## Publish
 
@@ -34,7 +34,9 @@ Version input accepts patch, minor, or major increases and rejects malformed, un
 
 Both platform builds check out the exact release commit. Builds run in the same workflow because events created with `GITHUB_TOKEN` do not start another release workflow. See [GitHub's token-trigger rules](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows).
 
-The release is public immediately, with generated notes; installers appear as each platform finishes. You can edit the notes afterward in GitHub. Existing externally published releases still trigger the build, provided their tags match the committed package version. Immutable releases must remain disabled because assets are attached after publication.
+Alternatively, use **Releases → Draft a new release**, create the next `vX.Y.Z` tag at the current `main` commit, and publish it. The workflow reads the version from the tag, bumps `Cargo.toml` and `Cargo.lock`, and atomically pushes the bump to `main` and moves the tag to that commit before building. Your release title, notes, and prerelease setting are preserved. Repository tag rules must allow the workflow to update that tag. Automatic bumps require a newer stable `X.Y.Z` version, a tag at the current `main` tip, no existing release assets, and mutable releases. A tag that already matches its committed package version is built as-is, including on retries.
+
+The release is public immediately; installers appear as each platform finishes. You can edit the notes afterward in GitHub. Immutable releases must remain disabled because assets are attached after publication.
 
 The optional CLI helper `scripts/release.sh VERSION` starts this same workflow on `main`.
 
