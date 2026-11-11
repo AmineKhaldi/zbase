@@ -157,11 +157,11 @@ pub fn popup_menu(
 }
 
 /// Opaque menu fill, a step above the window in dark like AppKit menus.
-fn menu_bg() -> u32 {
+pub(super) fn menu_bg() -> u32 {
     if is_dark_theme() { 0x2c2c2c } else { 0xffffff }
 }
 
-fn menu_border() -> Hsla {
+pub(super) fn menu_border() -> Hsla {
     if is_dark_theme() {
         tint(0xffffff, 0.12)
     } else {
@@ -169,7 +169,7 @@ fn menu_border() -> Hsla {
     }
 }
 
-fn menu_shadow() -> Vec<BoxShadow> {
+pub(super) fn menu_shadow() -> Vec<BoxShadow> {
     vec![BoxShadow {
         inset: false,
         color: tint(0x000000, if is_dark_theme() { 0.45 } else { 0.16 }),

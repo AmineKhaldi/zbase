@@ -4,6 +4,7 @@ use crate::{
             AccountId, BackendCapabilities, BackendId, ProviderConversationRef, ProviderMessageRef,
             ProviderWorkspaceRef,
         },
+        channel_details::NotificationLevel,
         conversation::ConversationSummary,
     },
     models::{
@@ -23,7 +24,7 @@ use crate::{
     },
     views::{
         WINDOW_MIN_HEIGHT_PX, WINDOW_MIN_WIDTH_PX, app_window::AppWindow, input::TextField,
-        sidebar_width_for_style,
+        select::StyledSelect, sidebar_width_for_style,
     },
 };
 use gpui_kit::{
@@ -206,6 +207,10 @@ pub fn open_main_window(cx: &mut App) -> MainWindow {
                 TextField::new(cx.focus_handle(), "Filter members", String::new())
             });
 
+            let notification_selects = ["Desktop notifications", "Mobile notifications"].map(|label| {
+                cx.new(|cx| StyledSelect::new(label,
+                    NotificationLevel::ALL.into_iter().map(|level| level.label().into()).collect(), cx))
+            });
             let mut root = AppWindow::new(
                 models,
                 app_store,
@@ -222,6 +227,7 @@ pub fn open_main_window(cx: &mut App) -> MainWindow {
                 thread_input,
                 sidebar_filter_input,
                 members_filter_input,
+                notification_selects,
             );
             root.init(window, cx);
             root

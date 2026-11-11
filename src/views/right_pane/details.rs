@@ -51,6 +51,7 @@ fn section_heading(title: &str) -> AnyElement {
 fn notification_settings_card(
     conversation_id: &crate::domain::ids::ConversationId,
     notifications: ConversationNotificationSettings,
+    selects: &[gpui_kit::Entity<crate::views::select::StyledSelect>; 2],
     cx: &mut Context<AppWindow>,
 ) -> AnyElement {
     let base = notifications;
@@ -85,56 +86,25 @@ fn notification_settings_card(
         },
     ));
 
-    rows.push(notification_group_heading("Desktop notifications"));
-    for level in [
-        NotificationLevel::All,
-        NotificationLevel::MentionsOnly,
-        NotificationLevel::Nothing,
+    for (select, label, level) in [
+        (&selects[0], "Desktop notifications", notifications.desktop),
+        (&selects[1], "Mobile notifications", notifications.mobile),
     ] {
-        rows.push(notification_radio_row(
-            match level {
-                NotificationLevel::All => "details-notifications-desktop-all",
-                NotificationLevel::MentionsOnly => "details-notifications-desktop-mentions",
-                NotificationLevel::Nothing => "details-notifications-desktop-never",
-            },
-            level.label(),
-            notifications.desktop == level,
-            cx,
-            {
-                let conversation_id = conversation_id.clone();
-                move |this: &mut AppWindow, cx| {
-                    let mut next = base;
-                    next.desktop = level;
-                    this.set_conversation_notification_settings(conversation_id.clone(), next, cx);
-                }
-            },
-        ));
-    }
-
-    rows.push(notification_group_heading("Mobile notifications"));
-    for level in [
-        NotificationLevel::All,
-        NotificationLevel::MentionsOnly,
-        NotificationLevel::Nothing,
-    ] {
-        rows.push(notification_radio_row(
-            match level {
-                NotificationLevel::All => "details-notifications-mobile-all",
-                NotificationLevel::MentionsOnly => "details-notifications-mobile-mentions",
-                NotificationLevel::Nothing => "details-notifications-mobile-never",
-            },
-            level.label(),
-            notifications.mobile == level,
-            cx,
-            {
-                let conversation_id = conversation_id.clone();
-                move |this: &mut AppWindow, cx| {
-                    let mut next = base;
-                    next.mobile = level;
-                    this.set_conversation_notification_settings(conversation_id.clone(), next, cx);
-                }
-            },
-        ));
+        let selected = match level {
+            NotificationLevel::All => 0,
+            NotificationLevel::MentionsOnly => 1,
+            NotificationLevel::Nothing => 2,
+        };
+        select.update(cx, |select, cx| {
+            select.set_value(
+                &conversation_id.0,
+                selected,
+                crate::views::current_theme(),
+                cx,
+            )
+        });
+        rows.push(notification_group_heading(label));
+        rows.push(div().px_2().pb_1().child(select.clone()).into_any_element());
     }
 
     details_card()
@@ -163,34 +133,6 @@ fn notification_check_row(
         .hover(|style| style.bg(subtle_surface()))
         .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
         .child(notification_check_mark(checked))
-        .child(
-            div()
-                .text_size(typography::body())
-                .text_color(rgb(text_primary()))
-                .child(label),
-        )
-        .into_any_element()
-}
-
-fn notification_radio_row(
-    id: &'static str,
-    label: &'static str,
-    selected: bool,
-    cx: &mut Context<AppWindow>,
-    on_click: impl Fn(&mut AppWindow, &mut Context<AppWindow>) + 'static,
-) -> AnyElement {
-    div()
-        .id(id)
-        .flex()
-        .items_center()
-        .gap_2()
-        .px_2()
-        .py_1p5()
-        .rounded_md()
-        .cursor(CursorStyle::PointingHand)
-        .hover(|style| style.bg(subtle_surface()))
-        .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
-        .child(notification_radio_mark(selected))
         .child(
             div()
                 .text_size(typography::body())
@@ -230,22 +172,6 @@ fn notification_check_mark(checked: bool) -> AnyElement {
                     .size(px(11.))
                     .text_color(rgb(0xffffff)),
             )
-        })
-        .into_any_element()
-}
-
-fn notification_radio_mark(selected: bool) -> AnyElement {
-    div()
-        .size(px(17.))
-        .flex_shrink_0()
-        .rounded_full()
-        .border_1()
-        .border_color(rgb(if selected { accent() } else { field_border() }))
-        .flex()
-        .items_center()
-        .justify_center()
-        .when(selected, |mark| {
-            mark.child(div().size(px(9.)).rounded_full().bg(rgb(accent())))
         })
         .into_any_element()
 }
@@ -297,6 +223,7 @@ pub(super) fn render_details_panel(
     conversation: &ConversationModel,
     timeline: &TimelineModel,
     _capabilities: &BackendCapabilities,
+    notification_selects: &[gpui_kit::Entity<crate::views::select::StyledSelect>; 2],
     cx: &mut Context<AppWindow>,
 ) -> AnyElement {
     let details = conversation.details.as_ref();
@@ -437,6 +364,7 @@ pub(super) fn render_details_panel(
             .child(notification_settings_card(
                 &conversation.summary.id,
                 notifications,
+                notification_selects,
                 cx,
             ))
             .when(has_members, |panel| {
