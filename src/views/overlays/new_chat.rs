@@ -18,11 +18,7 @@ use gpui_kit::{
 use crate::views::app_window::AppWindow;
 
 fn display_name(user: &UserSummary) -> String {
-    if user.display_name.trim().is_empty() {
-        user.id.0.clone()
-    } else {
-        user.display_name.clone()
-    }
+    user.shown_name().to_string()
 }
 
 /// New conversation: people already added as removable chips, a search field,
@@ -283,7 +279,7 @@ pub fn render_new_chat_modal(
         .into_any_element()
 }
 
-/// 44px person row: avatar, name, @username or title, and a check once added.
+/// 44px person row: avatar, name, the other name and title, and a check once added.
 /// The highlighted row (Return's target) takes the accent fill, like the
 /// quick switcher; letters matching the query are bold.
 fn person_row(
@@ -296,11 +292,14 @@ fn person_row(
 ) -> AnyElement {
     let name = display_name(user);
     let username = user.id.0.clone();
-    let detail = if user.title.trim().is_empty() {
-        format!("@{username}")
-    } else {
-        format!("@{username} · {}", user.title.trim())
-    };
+    let detail = [
+        user.other_name(),
+        Some(user.title.trim().to_string()).filter(|title| !title.is_empty()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ");
     let (primary, secondary): (Hsla, Hsla) = if highlighted {
         (
             rgb(sidebar_selected_fg()).into(),

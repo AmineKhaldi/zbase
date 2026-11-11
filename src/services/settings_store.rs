@@ -1,5 +1,8 @@
 use crate::{
-    domain::channel_details::{ConversationNotificationSettings, NotificationLevel},
+    domain::{
+        channel_details::{ConversationNotificationSettings, NotificationLevel},
+        user::NameStyle,
+    },
     models::settings_model::{Density, SettingsModel, SidebarMode, SidebarStyle, ThemeMode},
 };
 use std::{
@@ -197,6 +200,12 @@ fn parse_settings(raw: &str) -> SettingsModel {
                     .ok()
                     .filter(|share| (0.0..=1.0).contains(share));
             }
+            "name_style" => {
+                settings.name_style = match value {
+                    "username" => NameStyle::Username,
+                    _ => NameStyle::FullName,
+                };
+            }
             "emoji_skin_tone" => {
                 settings.emoji_skin_tone = (!value.is_empty()).then(|| value.to_string());
             }
@@ -216,7 +225,7 @@ fn parse_settings(raw: &str) -> SettingsModel {
 
 fn serialize_settings(settings: &SettingsModel) -> String {
     let mut content = format!(
-        "theme={}\ndensity={}\nreduced_motion={}\nshow_right_pane={}\nsidebar_style={}\n",
+        "theme={}\ndensity={}\nreduced_motion={}\nshow_right_pane={}\nsidebar_style={}\nname_style={}\n",
         theme_label(&settings.theme_mode),
         density_label(&settings.density),
         settings.reduced_motion,
@@ -224,6 +233,10 @@ fn serialize_settings(settings: &SettingsModel) -> String {
         match settings.sidebar_style {
             SidebarStyle::Compact => "compact",
             SidebarStyle::Previews => "previews",
+        },
+        match settings.name_style {
+            NameStyle::FullName => "full_name",
+            NameStyle::Username => "username",
         }
     );
     if let Some(share) = settings.sidebar_conversations_share {
@@ -393,6 +406,20 @@ mod tests {
         assert_eq!(
             parse_settings("theme=dark\n").sidebar_style,
             SidebarStyle::Compact
+        );
+    }
+
+    #[test]
+    fn name_style_round_trips_and_defaults_to_full_names() {
+        let mut settings = SettingsModel::default();
+        assert_eq!(settings.name_style, NameStyle::FullName);
+        settings.name_style = NameStyle::Username;
+        let serialized = serialize_settings(&settings);
+        assert!(serialized.contains("name_style=username\n"));
+        assert_eq!(parse_settings(&serialized).name_style, NameStyle::Username);
+        assert_eq!(
+            parse_settings("theme=dark\n").name_style,
+            NameStyle::FullName
         );
     }
 

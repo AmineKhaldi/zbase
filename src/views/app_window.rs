@@ -348,7 +348,6 @@ pub struct AppWindow {
     last_mark_read_attempt: HashMap<String, (String, Instant)>,
     window_is_focused: bool,
     settings_window: Option<gpui_kit::AnyWindowHandle>,
-    hover_settle_seq: u64,
     hover_clear_seq: u64,
     hover_clear_pending: bool,
     quick_switcher_query_seq: u64,
@@ -991,7 +990,6 @@ impl AppWindow {
             last_mark_read_attempt: HashMap::new(),
             window_is_focused: false,
             settings_window: None,
-            hover_settle_seq: 0,
             hover_clear_seq: 0,
             hover_clear_pending: false,
             quick_switcher_query_seq: 0,
@@ -3036,16 +3034,27 @@ impl AppWindow {
                 }
             }
             DemoScene::ReactionTooltip | DemoScene::ReactionTooltipLong => {
-                let (text, x, y) = if scene == DemoScene::ReactionTooltip {
-                    ("Alex Chen (@alex)".to_string(), 400., 360.)
+                use crate::models::overlay_model::{ReactionGlyph, ReactionHoverContent};
+                let (content, x, y) = if scene == DemoScene::ReactionTooltip {
+                    (
+                        ReactionHoverContent {
+                            glyph: ReactionGlyph::Unicode("🚀".to_string()),
+                            names: "You, Alice Johnson, Lena Fischer and Sam Rivera".to_string(),
+                        },
+                        400.,
+                        560.,
+                    )
                 } else {
                     (
-                        "Alex Chen (@alex), Lena Fischer (@lena_f), Robin Ellis (@robin), Sam Rivera (@samr), Morgan Lee (@morgan), Priya Shah (@priya), 佐藤 陽菜 (@hina), Devon Brooks (@devon)".to_string(),
+                        ReactionHoverContent {
+                            glyph: ReactionGlyph::Unicode("🎉".to_string()),
+                            names: "Alex Chen, Lena Fischer, Robin Ellis, Sam Rivera, Morgan Lee, Priya Shah, 佐藤 陽菜, Devon Brooks and 4 others".to_string(),
+                        },
                         f32::from(window.viewport_size().width) - 4.,
                         f32::from(window.viewport_size().height) - 4.,
                     )
                 };
-                self.show_reaction_hover_tooltip(text, x, y, cx);
+                self.show_reaction_hover_tooltip(content, x, y, cx);
             }
             DemoScene::Chat | DemoScene::ChatPreviews | DemoScene::Dm => {}
             DemoScene::ChatPreviewsLive => {
@@ -3893,9 +3902,11 @@ impl AppWindow {
                     }
                 });
             self.models.app.current_user_id = Some(account_user);
-            self.models.app.current_user_display_name = profile
-                .map(|value| value.display_name.clone())
-                .unwrap_or_else(|| account.display_name.clone());
+            self.models.app.current_user_display_name = crate::domain::user::shown_name(
+                &account.display_name,
+                profile.map_or("", |value| value.display_name.as_str()),
+            )
+            .to_string();
             self.models.app.current_user_avatar_asset = profile
                 .and_then(|value| value.avatar_asset.clone())
                 .or_else(|| account.avatar.clone());
@@ -4392,15 +4403,12 @@ impl AppWindow {
                                 });
 
                             if let Some(profile) = profile {
-                                let display_name = profile.display_name.trim();
-                                if !display_name.is_empty()
-                                    && !display_name.eq_ignore_ascii_case(username)
-                                {
-                                    self.models.conversation.summary.title =
-                                        display_name.to_string();
-                                } else {
-                                    self.models.conversation.summary.title = username.to_string();
-                                }
+                                self.models.conversation.summary.title =
+                                    crate::domain::user::shown_name(
+                                        username,
+                                        &profile.display_name,
+                                    )
+                                    .to_string();
                                 profile.avatar_asset.clone()
                             } else {
                                 self.models.conversation.summary.title = username.to_string();
@@ -4424,12 +4432,13 @@ impl AppWindow {
                                         .user_profiles
                                         .get(&UserId::new(username.to_string()))
                                 });
-                            let display_name = profile
-                                .map(|profile| profile.display_name.trim())
-                                .filter(|name| !name.is_empty())
-                                .filter(|name| !name.eq_ignore_ascii_case(username))
-                                .unwrap_or(username);
-                            participants.push(display_name.to_string());
+                            participants.push(
+                                crate::domain::user::shown_name(
+                                    username,
+                                    profile.map_or("", |profile| profile.display_name.as_str()),
+                                )
+                                .to_string(),
+                            );
                         }
                         if !participants.is_empty() {
                             self.models.conversation.summary.title = participants.join(", ");
@@ -6261,11 +6270,11 @@ impl AppWindow {
             .get(author)
             .or_else(|| profiles.get(&UserId::new(author.0.to_ascii_lowercase())));
         crate::views::search::SearchResultContext {
-            author_name: profile
-                .map(|profile| profile.display_name.trim())
-                .filter(|name| !name.is_empty())
-                .unwrap_or(author.0.as_str())
-                .to_string(),
+            author_name: crate::domain::user::shown_name(
+                &author.0,
+                profile.map_or("", |profile| profile.display_name.as_str()),
+            )
+            .to_string(),
             author_avatar: profile.and_then(|profile| profile.avatar_asset.clone()),
             location,
         }
@@ -6622,6 +6631,32 @@ impl AppWindow {
             self.persist_settings();
             self.refresh(cx);
         }
+    }
+
+    pub(crate) fn set_name_style(
+        &mut self,
+        style: crate::domain::user::NameStyle,
+        cx: &mut Context<Self>,
+    ) {
+        if self.models.settings.name_style == style {
+            return;
+        }
+        self.models.settings.name_style = style;
+        crate::domain::user::set_name_style(style);
+        self.persist_settings();
+        // Labels that name people are built ahead of rendering; rebuild them all.
+        self.sync_cache.workspace_sig = None;
+        self.sync_cache.sidebar_sections_sig = None;
+        self.sync_cache.sidebar_avatar_sig = None;
+        self.sync_cache.timeline_rows_sig = None;
+        self.sync_cache.timeline_reactions_sig = None;
+        self.sync_cache.preview_user = None;
+        self.models.rebuild_quick_switcher_local_search_corpus();
+        self.quick_switcher_last_local_query.clear();
+        self.quick_switcher_last_local_matched_entry_indices = Arc::new(Vec::new());
+        self.quick_switcher_last_local_corpus_revision = 0;
+        self.dispatch_ui_action(UiAction::RefreshPeopleNames);
+        self.refresh(cx);
     }
 
     pub(crate) fn set_show_right_pane(&mut self, show: bool, cx: &mut Context<Self>) {
@@ -7676,49 +7711,15 @@ impl AppWindow {
         self.refresh(cx);
     }
 
-    const HOVER_SETTLE_DELAY: Duration = Duration::from_millis(200);
     /// Delay before hiding the quick reaction strip after the mouse leaves the row,
     /// so the user can move to the strip (which may be outside the row) without it disappearing.
     const HOVER_CLEAR_DELAY: Duration = Duration::from_millis(300);
 
-    pub(crate) fn set_hovered_message(&mut self, message_id: MessageId, cx: &mut Context<Self>) {
-        if self.timeline_interactions_blocked_by_overlay() {
-            self.clear_hovered_message_immediate(cx);
-            return;
-        }
-        self.cancel_hover_clear();
-        let mut needs_refresh = false;
-        if self.models.overlay.sidebar_hover_tooltip.is_some() {
-            self.models.hide_sidebar_hover_tooltip();
-            needs_refresh = true;
-        }
-        let message_changed = self.models.timeline.hovered_message_id.as_ref() != Some(&message_id);
-        if message_changed && self.models.overlay.reaction_hover_tooltip.is_some() {
-            self.models.hide_reaction_hover_tooltip();
-            needs_refresh = true;
-        }
-        if message_changed {
-            self.models.timeline.hovered_message_id = Some(message_id);
-            self.models.timeline.hovered_message_is_thread = None;
-            self.models.timeline.hovered_message_anchor_x = None;
-            self.models.timeline.hovered_message_anchor_y = None;
-            self.models.timeline.hovered_message_window_left = None;
-            self.models.timeline.hovered_message_window_top = None;
-            self.models.timeline.hovered_message_window_width = None;
-            self.models.timeline.hovered_message_viewport_size = None;
-            self.models.timeline.hover_toolbar_settled = false;
-            needs_refresh = true;
-        }
-        if needs_refresh {
-            self.refresh(cx);
-        }
-    }
-
-    pub(crate) fn set_hovered_message_with_cursor_anchor(
+    /// Hovers `message_id`: its row highlights and its toolbar shows at once,
+    /// pinned to the message's top-right corner.
+    pub(crate) fn set_hovered_message(
         &mut self,
         message_id: MessageId,
-        cursor_x: f32,
-        cursor_y: f32,
         is_thread: bool,
         cx: &mut Context<Self>,
     ) {
@@ -7732,127 +7733,53 @@ impl AppWindow {
             self.models.hide_sidebar_hover_tooltip();
             needs_refresh = true;
         }
-        let message_changed = self.models.timeline.hovered_message_id.as_ref() != Some(&message_id)
-            || self.models.timeline.hovered_message_is_thread != Some(is_thread);
-        if message_changed && self.models.overlay.reaction_hover_tooltip.is_some() {
-            self.models.hide_reaction_hover_tooltip();
-            needs_refresh = true;
-        }
-
+        let timeline = &mut self.models.timeline;
+        let message_changed = timeline.hovered_message_id.as_ref() != Some(&message_id)
+            || timeline.hovered_message_is_thread != Some(is_thread);
         if message_changed {
-            self.models.timeline.hovered_message_id = Some(message_id.clone());
-            self.models.timeline.hovered_message_is_thread = Some(is_thread);
-            self.models.timeline.hovered_message_anchor_x = Some(cursor_x);
-            self.models.timeline.hovered_message_anchor_y = Some(cursor_y);
-            self.models.timeline.hovered_message_window_left = None;
-            self.models.timeline.hovered_message_window_top = None;
-            self.models.timeline.hovered_message_window_width = None;
-            self.models.timeline.hovered_message_viewport_size = None;
-            needs_refresh = true;
-            // Require a new hover-settle delay when switching rows.
-            self.models.timeline.hover_toolbar_settled = false;
-            self.schedule_hover_settle(cx);
-        } else {
-            // While waiting for the settle delay, keep updating the anchor and restart the timer.
-            // Once the toolbar has appeared, freeze its position until the pointer leaves the row.
-            if !self.models.timeline.hover_toolbar_settled {
-                self.models.timeline.hovered_message_anchor_x = Some(cursor_x);
-                self.models.timeline.hovered_message_anchor_y = Some(cursor_y);
-                self.schedule_hover_settle(cx);
+            timeline.hovered_message_id = Some(message_id);
+            timeline.hovered_message_is_thread = Some(is_thread);
+            timeline.hovered_message_bounds = None;
+            timeline.hovered_message_viewport_size = None;
+            if self.models.overlay.reaction_hover_tooltip.is_some() {
+                self.models.hide_reaction_hover_tooltip();
             }
+            needs_refresh = true;
         }
         if needs_refresh {
             self.refresh(cx);
         }
     }
 
-    pub(crate) fn show_toolbar_immediately(
-        &mut self,
-        message_id: MessageId,
-        cursor_x: f32,
-        cursor_y: f32,
-        is_thread: bool,
-        cx: &mut Context<Self>,
-    ) {
-        if self.timeline_interactions_blocked_by_overlay() {
-            return;
-        }
-        self.cancel_hover_clear();
-        self.hover_settle_seq = self.hover_settle_seq.wrapping_add(1);
-        self.models.timeline.hovered_message_id = Some(message_id);
-        self.models.timeline.hovered_message_is_thread = Some(is_thread);
-        self.models.timeline.hovered_message_anchor_x = Some(cursor_x);
-        self.models.timeline.hovered_message_anchor_y = Some(cursor_y);
-        self.models.timeline.hovered_message_window_left = None;
-        self.models.timeline.hovered_message_window_top = None;
-        self.models.timeline.hovered_message_window_width = None;
-        self.models.timeline.hovered_message_viewport_size = None;
-        self.models.timeline.hover_toolbar_settled = true;
-        self.refresh(cx);
-    }
-
-    fn schedule_hover_settle(&mut self, cx: &mut Context<Self>) {
-        self.hover_settle_seq = self.hover_settle_seq.wrapping_add(1);
-        let seq = self.hover_settle_seq;
-        cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let background = cx.background_executor().clone();
-            let mut async_app = cx.clone();
-            async move {
-                background.timer(Self::HOVER_SETTLE_DELAY).await;
-                let _ = this.update(&mut async_app, |this, cx| {
-                    if this.hover_settle_seq == seq {
-                        this.models.timeline.hover_toolbar_settled = true;
-                        this.refresh(cx);
-                    }
-                });
-            }
-        })
-        .detach();
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Keep the explicit inputs of this existing view API."
-    )]
     pub(crate) fn record_hovered_message_layout(
         &mut self,
         message_id: MessageId,
         is_thread: bool,
-        window_left: f32,
-        window_top: f32,
-        window_width: f32,
+        bounds: gpui_kit::Bounds<f32>,
         viewport_size: gpui_kit::Size<f32>,
         cx: &mut Context<Self>,
     ) {
-        if self.models.timeline.hovered_message_id.as_ref() != Some(&message_id)
-            || self.models.timeline.hovered_message_is_thread != Some(is_thread)
+        let timeline = &mut self.models.timeline;
+        if timeline.hovered_message_id.as_ref() != Some(&message_id)
+            || timeline.hovered_message_is_thread != Some(is_thread)
         {
             return;
         }
-        let needs_refresh = self.models.timeline.hovered_message_viewport_size
-            != Some(viewport_size)
-            || self
-                .models
-                .timeline
-                .hovered_message_window_left
-                .is_none_or(|x| (x - window_left).abs() > 0.5)
-            || self
-                .models
-                .timeline
-                .hovered_message_window_top
-                .is_none_or(|y| (y - window_top).abs() > 0.5)
-            || self
-                .models
-                .timeline
-                .hovered_message_window_width
-                .is_none_or(|w| (w - window_width).abs() > 0.5);
-        if !needs_refresh {
+        let moved = |previous: gpui_kit::Bounds<f32>| {
+            (previous.origin.x - bounds.origin.x).abs() > 0.5
+                || (previous.origin.y - bounds.origin.y).abs() > 0.5
+                || (previous.size.width - bounds.size.width).abs() > 0.5
+                || (previous.size.height - bounds.size.height).abs() > 0.5
+        };
+        if timeline.hovered_message_viewport_size == Some(viewport_size)
+            && timeline
+                .hovered_message_bounds
+                .is_some_and(|previous| !moved(previous))
+        {
             return;
         }
-        self.models.timeline.hovered_message_window_left = Some(window_left);
-        self.models.timeline.hovered_message_window_top = Some(window_top);
-        self.models.timeline.hovered_message_window_width = Some(window_width);
-        self.models.timeline.hovered_message_viewport_size = Some(viewport_size);
+        timeline.hovered_message_bounds = Some(bounds);
+        timeline.hovered_message_viewport_size = Some(viewport_size);
         cx.notify();
     }
 
@@ -7916,14 +7843,8 @@ impl AppWindow {
         if self.models.timeline.hovered_message_id.is_some() {
             self.models.timeline.hovered_message_id = None;
             self.models.timeline.hovered_message_is_thread = None;
-            self.models.timeline.hovered_message_anchor_x = None;
-            self.models.timeline.hovered_message_anchor_y = None;
-            self.models.timeline.hovered_message_window_left = None;
-            self.models.timeline.hovered_message_window_top = None;
-            self.models.timeline.hovered_message_window_width = None;
+            self.models.timeline.hovered_message_bounds = None;
             self.models.timeline.hovered_message_viewport_size = None;
-            self.models.timeline.hover_toolbar_settled = false;
-            self.hover_settle_seq = self.hover_settle_seq.wrapping_add(1);
             needs_refresh = true;
         }
         if self.models.overlay.reaction_hover_tooltip.is_some() {
@@ -7933,41 +7854,6 @@ impl AppWindow {
         if needs_refresh {
             self.refresh(cx);
         }
-    }
-
-    /// Keeps `message_id` hovered (its row stays highlighted) but holds back the
-    /// strip, for a name, quote or reaction inside it that shows its own tooltip.
-    /// Moving back onto the message body re-arms the strip's settle delay.
-    pub(crate) fn hover_message_without_toolbar(
-        &mut self,
-        message_id: MessageId,
-        is_thread: bool,
-        cx: &mut Context<Self>,
-    ) {
-        if self.timeline_interactions_blocked_by_overlay() {
-            self.clear_hovered_message_immediate(cx);
-            return;
-        }
-        self.cancel_hover_clear();
-        self.hover_settle_seq = self.hover_settle_seq.wrapping_add(1);
-        let timeline = &mut self.models.timeline;
-        let message_changed = timeline.hovered_message_id.as_ref() != Some(&message_id)
-            || timeline.hovered_message_is_thread != Some(is_thread);
-        if !message_changed && !timeline.hover_toolbar_settled {
-            return;
-        }
-        if message_changed {
-            timeline.hovered_message_id = Some(message_id);
-            timeline.hovered_message_is_thread = Some(is_thread);
-            timeline.hovered_message_anchor_x = None;
-            timeline.hovered_message_anchor_y = None;
-            timeline.hovered_message_window_left = None;
-            timeline.hovered_message_window_top = None;
-            timeline.hovered_message_window_width = None;
-            timeline.hovered_message_viewport_size = None;
-        }
-        timeline.hover_toolbar_settled = false;
-        self.refresh(cx);
     }
 
     pub(crate) fn show_sidebar_hover_tooltip(
@@ -8013,7 +7899,7 @@ impl AppWindow {
 
     pub(crate) fn show_reaction_hover_tooltip(
         &mut self,
-        text: String,
+        content: crate::models::overlay_model::ReactionHoverContent,
         anchor_x: f32,
         anchor_y: f32,
         cx: &mut Context<Self>,
@@ -8022,7 +7908,7 @@ impl AppWindow {
         let next_y = anchor_y - 8.0;
         let mut needs_refresh = match self.models.overlay.reaction_hover_tooltip.as_ref() {
             Some(current) => {
-                current.text != text
+                current.content != content
                     || (current.anchor_x - next_x).abs() > 0.5
                     || (current.anchor_y - next_y).abs() > 0.5
             }
@@ -8036,7 +7922,7 @@ impl AppWindow {
             return;
         }
         self.models
-            .show_reaction_hover_tooltip(text, next_x, next_y);
+            .show_reaction_hover_tooltip(content, next_x, next_y);
         self.refresh(cx);
     }
 
@@ -10118,9 +10004,7 @@ impl Render for AppWindow {
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
                             // Click-away: dismiss hover toolbar when clicking anywhere outside it.
-                            if this.models.timeline.hover_toolbar_settled
-                                && this.models.timeline.hovered_message_id.is_some()
-                            {
+                            if this.models.timeline.hovered_message_id.is_some() {
                                 this.clear_hovered_message_immediate(cx);
                             }
                         }),
@@ -10405,10 +10289,32 @@ fn render_reaction_hover_tooltip(
     tooltip: &crate::models::overlay_model::ReactionHoverTooltip,
     window: &Window,
 ) -> AnyElement {
-    // Let text layout determine the size: character-count estimates get both
-    // proportional fonts and multi-line actor lists wrong. Anchor the bottom
-    // edge above the pointer, then fit the measured bounds inside the window.
-    let max_width = (f32::from(window.viewport_size().width) - 16.).clamp(1., 520.);
+    use crate::models::overlay_model::ReactionGlyph;
+    use gpui_kit::StyledImage;
+    const GLYPH_PX: f32 = 30.;
+    // The emoji, drawn large, names the reaction; who reacted sits under it in
+    // quieter text. Let text layout determine the size: character-count
+    // estimates get proportional fonts and wrapped name lists wrong. Anchor the
+    // bottom edge above the pointer, then fit the measured bounds in the window.
+    let max_width = (f32::from(window.viewport_size().width) - 16.).clamp(1., 200.);
+    let content = &tooltip.content;
+    let glyph = match &content.glyph {
+        ReactionGlyph::Unicode(unicode) => Some(
+            div()
+                .text_size(px(GLYPH_PX))
+                .line_height(px(34.))
+                .child(unicode.clone())
+                .into_any_element(),
+        ),
+        ReactionGlyph::Image(path) => Some(
+            gpui_kit::img(gpui_kit::ImageSource::from(std::path::PathBuf::from(path)))
+                .size(px(GLYPH_PX))
+                .my(px(2.))
+                .object_fit(gpui_kit::ObjectFit::Contain)
+                .into_any_element(),
+        ),
+        ReactionGlyph::Missing => None,
+    };
     gpui_kit::anchored()
         .anchor(gpui_kit::Anchor::BottomLeft)
         .position(gpui_kit::point(px(tooltip.anchor_x), px(tooltip.anchor_y)))
@@ -10416,15 +10322,27 @@ fn render_reaction_hover_tooltip(
         .child(
             div()
                 .max_w(px(max_width))
-                .rounded_md()
-                .bg(tint(panel_bg(), 0.92))
+                .px(px(12.))
+                .pt(px(10.))
+                .pb(px(9.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(4.))
+                .rounded(px(10.))
+                .bg(rgb(panel_bg()))
                 .border_1()
                 .border_color(shell_border_strong())
-                .px_2()
-                .py_1()
-                .text_xs()
-                .text_color(rgb(text_primary()))
-                .child(tooltip.text.clone()),
+                .shadow(crate::views::card_shadow())
+                .children(glyph)
+                .child(
+                    div()
+                        .text_center()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .text_color(rgb(text_secondary()))
+                        .child(content.names.clone()),
+                ),
         )
         .into_any_element()
 }
@@ -10596,8 +10514,8 @@ fn build_channel_details(
     // - Channels: we intentionally show empty until backend provides roster.
 
     members.sort_by(|left, right| {
-        let left_name = left.display_name.trim().to_ascii_lowercase();
-        let right_name = right.display_name.trim().to_ascii_lowercase();
+        let left_name = left.shown_name().to_ascii_lowercase();
+        let right_name = right.shown_name().to_ascii_lowercase();
         left_name
             .cmp(&right_name)
             .then_with(|| left.user_id.0.cmp(&right.user_id.0))
@@ -10937,10 +10855,11 @@ fn dm_participant_avatars(
             let user_id = UserId::new(username.clone());
             let profile = profiles.get(&user_id);
             AvatarParticipant {
-                display_name: profile
-                    .map(|profile| profile.display_name.clone())
-                    .filter(|name| !name.trim().is_empty())
-                    .unwrap_or(username),
+                display_name: crate::domain::user::shown_name(
+                    &username,
+                    profile.map_or("", |profile| profile.display_name.as_str()),
+                )
+                .to_string(),
                 asset: profile.and_then(|profile| profile.avatar_asset.clone()),
                 presence: presences.get(&user_id).cloned(),
             }
@@ -11211,10 +11130,10 @@ fn profile_display_name(
     user_id: &UserId,
     user_profiles: &HashMap<UserId, crate::state::state::UserProfileState>,
 ) -> String {
-    user_profiles
+    let full_name = user_profiles
         .get(user_id)
-        .map(|profile| profile.display_name.clone())
-        .unwrap_or_else(|| user_id.0.clone())
+        .map_or("", |profile| profile.display_name.as_str());
+    crate::domain::user::shown_name(&user_id.0, full_name).to_string()
 }
 
 fn team_name_for_conversation(

@@ -79,13 +79,19 @@ impl PreviewNames<'_> {
         crate::util::formatting::typing_indicator_label(&names)
     }
 
-    /// First name, as chat lists name people: "Lena" for "Lena Fischer".
+    /// First name, as chat lists name people: "Lena" for "Lena Fischer", or
+    /// the username when people are shown by username.
     fn short_name(&self, username: &str) -> String {
-        self.display_names
+        let full_name = self
+            .display_names
             .get(&username.to_ascii_lowercase())
-            .and_then(|name| name.split_whitespace().next())
-            .map(str::to_string)
-            .unwrap_or_else(|| username.to_string())
+            .map_or("", String::as_str);
+        let shown = crate::domain::user::shown_name(username, full_name);
+        if shown == full_name.trim() {
+            shown.split_whitespace().next().unwrap_or(shown).to_string()
+        } else {
+            shown.to_string()
+        }
     }
 }
 

@@ -64,7 +64,7 @@ fn items(timeline: &TimelineModel, tab: FilesTab) -> Vec<FileItem<'_>> {
                         attachment,
                         index,
                         message_id: &row.message.id,
-                        author: &row.author.display_name,
+                        author: row.author.shown_name(),
                         timestamp: row.message.timestamp_ms,
                     })
                 })

@@ -37,6 +37,8 @@ pub enum UiAction {
     },
     CloseRightPane,
     SetSidebarFilter(String),
+    /// The name style changed: rebuild labels that name people.
+    RefreshPeopleNames,
     SetSearchQuery(String),
     SubmitSearch,
     OpenNewChat,

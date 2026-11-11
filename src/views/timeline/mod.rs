@@ -9,6 +9,7 @@ use crate::{
         ids::{MessageId, UserId},
         message::{BroadcastKind, LinkPreview, MessageFragment, MessageSendState},
     },
+    models::overlay_model::{ReactionGlyph, ReactionHoverContent},
     models::timeline_model::{
         EventSpan, InlineEmojiRender, MessageReactionRender, MessageRow, QuickReactRecent,
         SystemEventIcon, ThreadSummary, TimelineModel, TimelineRow,
@@ -105,19 +106,12 @@ impl gpui_kit::Element for HoveredMessageBoundsReporter {
         let owner = self.owner.clone();
         let message_id = self.message_id.clone();
         let is_thread = self.is_thread;
-        let left: f32 = bounds.origin.x.into();
-        let top: f32 = bounds.origin.y.into();
-        let width: f32 = bounds.size.width.into();
+        let bounds = Bounds::new(
+            gpui_kit::point(f32::from(bounds.origin.x), f32::from(bounds.origin.y)),
+            gpui_kit::size(f32::from(bounds.size.width), f32::from(bounds.size.height)),
+        );
         let _ = owner.update(cx, |this, cx| {
-            this.record_hovered_message_layout(
-                message_id,
-                is_thread,
-                left,
-                top,
-                width,
-                viewport_size,
-                cx,
-            );
+            this.record_hovered_message_layout(message_id, is_thread, bounds, viewport_size, cx);
         });
     }
 
@@ -626,15 +620,6 @@ impl TimelineList {
             .as_ref()
             .is_some_and(|id| id == &row.message.id)
             && timeline.hovered_message_is_thread == Some(is_thread);
-        let hover_anchor_x = is_hovered
-            .then_some(timeline.hovered_message_anchor_x)
-            .flatten();
-        let hover_window_left = is_hovered
-            .then_some(timeline.hovered_message_window_left)
-            .flatten();
-        let hover_window_width = is_hovered
-            .then_some(timeline.hovered_message_window_width)
-            .flatten();
         let is_main_thread_reply = !is_thread && row.message.reply_to.is_some();
         let show_header = row.show_header || is_main_thread_reply || is_thread;
         let sending = row.message.send_state == MessageSendState::Pending
@@ -648,22 +633,28 @@ impl TimelineList {
                 .is_some_and(|current_user_id| {
                     current_user_id.0.eq_ignore_ascii_case(&row.author.id.0)
                 });
-            let author_tooltip = match row.author.affinity {
-                Affinity::Positive if !is_you => format!(
-                    "@{} · You follow {}",
-                    row.author.id.0, row.author.display_name
-                ),
-                _ => format!("@{}", row.author.id.0),
-            };
+            // The tooltip carries the name the header leaves out.
+            let shown_name = row.author.shown_name().to_string();
+            let author_tooltip = [
+                row.author.other_name(),
+                (row.author.affinity == Affinity::Positive && !is_you)
+                    .then(|| format!("You follow {shown_name}")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
             let mut header_children = vec![
                 div()
                     .id(SharedString::from(format!(
                         "timeline-author-name-{}",
                         row.message.id.0
                     )))
-                    .tooltip(crate::views::tooltip::TextTooltip::single_line(
-                        author_tooltip,
-                    ))
+                    .when(!author_tooltip.is_empty(), |name| {
+                        name.tooltip(crate::views::tooltip::TextTooltip::single_line(
+                            author_tooltip,
+                        ))
+                    })
                     .on_click(cx.listener({
                         let author_user_id = author_user_id.clone();
                         move |this, _, _, cx| {
@@ -677,14 +668,14 @@ impl TimelineList {
                     // by whitespace alone.
                     .font_weight(FontWeight::BOLD)
                     .text_color(rgb(text_primary()))
-                    .child(row.author.display_name.clone())
+                    .child(shown_name.clone())
                     .into_any_element(),
             ];
             if !is_you
                 && let Some(marker) = crate::views::identity_marker(
                     SharedString::from(format!("timeline-author-identity-{}", row.message.id.0)),
                     row.author.affinity,
-                    &row.author.display_name,
+                    &shown_name,
                     false,
                 )
             {
@@ -756,21 +747,15 @@ impl TimelineList {
 
         let is_highlighted = timeline.highlighted_message_id.as_ref() == Some(&row.message.id)
             || timeline.editing_message_id.as_ref() == Some(&row.message.id);
-        let hover_anchor_y = is_hovered
-            .then_some(timeline.hovered_message_anchor_y)
-            .flatten();
-        let hover_window_top = is_hovered
-            .then_some(timeline.hovered_message_window_top)
-            .flatten();
         let hover_geometry = (|| {
-            if !is_hovered || !timeline.hover_toolbar_settled {
+            if !is_hovered {
                 return None;
             }
             Some(HoverGeometry {
-                pointer: gpui_kit::point(hover_anchor_x?, hover_anchor_y?),
-                container_origin: gpui_kit::point(hover_window_left?, hover_window_top?),
-                container_width: hover_window_width?,
+                container: timeline.hovered_message_bounds?,
                 viewport: timeline.hovered_message_viewport_size?,
+                has_header: show_header,
+                is_last_message,
             })
         })();
         content = content.child(Self::render_message(
@@ -785,7 +770,7 @@ impl TimelineList {
             show_thread_reply_badge,
             timeline.thread_summaries.get(&row.message.id),
             (timeline.clipped_thread_root_id.as_ref() == Some(&row.message.id))
-                .then_some(row.author.display_name.as_str()),
+                .then_some(row.author.shown_name()),
             is_thread,
             thread_media_max_width,
             is_last_message,
@@ -810,32 +795,16 @@ impl TimelineList {
                     row.message.id.0
                 )))
                 .on_mouse_move(
-                    cx.listener(move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
-                        let cursor_x: f32 = event.position.x.into();
-                        let cursor_y: f32 = event.position.y.into();
+                    cx.listener(move |this, _: &gpui_kit::MouseMoveEvent, _, cx| {
                         this.clear_reaction_hover_tooltip(cx);
-                        this.set_hovered_message_with_cursor_anchor(
-                            hover_msg_id_for_anchor.clone(),
-                            cursor_x,
-                            cursor_y,
-                            is_thread,
-                            cx,
-                        );
+                        this.set_hovered_message(hover_msg_id_for_anchor.clone(), is_thread, cx);
                         cx.stop_propagation();
                     }),
                 )
                 .on_mouse_down(
                     gpui_kit::MouseButton::Right,
-                    cx.listener(move |this, event: &gpui_kit::MouseDownEvent, _, cx| {
-                        let cursor_x: f32 = event.position.x.into();
-                        let cursor_y: f32 = event.position.y.into();
-                        this.show_toolbar_immediately(
-                            right_click_msg_id.clone(),
-                            cursor_x,
-                            cursor_y,
-                            is_thread,
-                            cx,
-                        );
+                    cx.listener(move |this, _: &gpui_kit::MouseDownEvent, _, cx| {
+                        this.set_hovered_message(right_click_msg_id.clone(), is_thread, cx);
                         cx.stop_propagation();
                     }),
                 )
@@ -890,32 +859,16 @@ impl TimelineList {
                     row.message.id.0
                 )))
                 .on_mouse_move(
-                    cx.listener(move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
-                        let cursor_x: f32 = event.position.x.into();
-                        let cursor_y: f32 = event.position.y.into();
+                    cx.listener(move |this, _: &gpui_kit::MouseMoveEvent, _, cx| {
                         this.clear_reaction_hover_tooltip(cx);
-                        this.set_hovered_message_with_cursor_anchor(
-                            hover_msg_id_for_anchor.clone(),
-                            cursor_x,
-                            cursor_y,
-                            is_thread,
-                            cx,
-                        );
+                        this.set_hovered_message(hover_msg_id_for_anchor.clone(), is_thread, cx);
                         cx.stop_propagation();
                     }),
                 )
                 .on_mouse_down(
                     gpui_kit::MouseButton::Right,
-                    cx.listener(move |this, event: &gpui_kit::MouseDownEvent, _, cx| {
-                        let cursor_x: f32 = event.position.x.into();
-                        let cursor_y: f32 = event.position.y.into();
-                        this.show_toolbar_immediately(
-                            right_click_msg_id.clone(),
-                            cursor_x,
-                            cursor_y,
-                            is_thread,
-                            cx,
-                        );
+                    cx.listener(move |this, _: &gpui_kit::MouseDownEvent, _, cx| {
+                        this.set_hovered_message(right_click_msg_id.clone(), is_thread, cx);
                         cx.stop_propagation();
                     }),
                 )
@@ -1196,17 +1149,9 @@ impl TimelineList {
                                                 thumb
                                                     .cursor(gpui_kit::CursorStyle::PointingHand)
                                                     .on_mouse_move(cx.listener(
-                                                        move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
-                                                            let cursor_x: f32 = event.position.x.into();
-                                                            let cursor_y: f32 = event.position.y.into();
-                                                            this.clear_reaction_hover_tooltip(cx);
-                                                            this.set_hovered_message_with_cursor_anchor(
-                                                                hover_message_id.clone(),
-                                                                cursor_x,
-                                                                cursor_y,
-                                                                is_thread,
-                                                                cx,
-                                                            );
+                                                        move |this, _: &gpui_kit::MouseMoveEvent, _, cx| {
+                                                                                                                        this.clear_reaction_hover_tooltip(cx);
+                                                            this.set_hovered_message(hover_message_id.clone(), is_thread, cx);
                                                         cx.stop_propagation();
                                                         },
                                                     ))
@@ -1308,17 +1253,9 @@ impl TimelineList {
                                             .cursor(gpui_kit::CursorStyle::PointingHand)
                                             .on_mouse_move(cx.listener({
                                                 let hover_message_id = message.id.clone();
-                                                move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
-                                                    let cursor_x: f32 = event.position.x.into();
-                                                    let cursor_y: f32 = event.position.y.into();
-                                                    this.clear_reaction_hover_tooltip(cx);
-                                                    this.set_hovered_message_with_cursor_anchor(
-                                                        hover_message_id.clone(),
-                                                        cursor_x,
-                                                        cursor_y,
-                                                        is_thread,
-                                                        cx,
-                                                    );
+                                                move |this, _: &gpui_kit::MouseMoveEvent, _, cx| {
+                                                                                                        this.clear_reaction_hover_tooltip(cx);
+                                                    this.set_hovered_message(hover_message_id.clone(), is_thread, cx);
                                                 cx.stop_propagation();
                                                 }
                                             }))
@@ -1424,7 +1361,11 @@ impl TimelineList {
                                 reaction_index,
                                 normalize_emoji_alias(&reaction.emoji)
                             ));
-                            let hover_text = reaction_hover_text(&reaction);
+                            let hover_content = reaction_hover_content(
+                                &reaction,
+                                reaction_tooltip_glyph(resolved, &alias),
+                                current_user_id,
+                            );
 
                             let emoji_element: AnyElement = if let Some(render) = resolved {
                                 if let Some(unicode) = &render.unicode {
@@ -1517,19 +1458,19 @@ impl TimelineList {
                                 .id(reaction_chip_id)
                                 .cursor(gpui_kit::CursorStyle::PointingHand)
                                 .on_mouse_move(cx.listener({
-                                    let hover_text = hover_text.clone();
+                                    let hover_content = hover_content.clone();
                                     let hovered_message_id = message.id.clone();
                                     move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
                                         let cursor_x: f32 = event.position.x.into();
                                         let cursor_y: f32 = event.position.y.into();
-                                        this.hover_message_without_toolbar(
+                                        this.set_hovered_message(
                                             hovered_message_id.clone(),
                                             is_thread,
                                             cx,
                                         );
-                                        if let Some(hover_text) = hover_text.as_ref() {
+                                        if let Some(hover_content) = hover_content.as_ref() {
                                             this.show_reaction_hover_tooltip(
-                                                hover_text.clone(),
+                                                hover_content.clone(),
                                                 cursor_x,
                                                 cursor_y,
                                                 cx,
@@ -2061,17 +2002,9 @@ impl TimelineList {
                                     this.open_url_or_deep_link(&url, window, cx);
                                 }))
                                 .on_mouse_move(cx.listener(
-                                    move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
-                                        let cursor_x: f32 = event.position.x.into();
-                                        let cursor_y: f32 = event.position.y.into();
+                                    move |this, _: &gpui_kit::MouseMoveEvent, _, cx| {
                                         this.clear_reaction_hover_tooltip(cx);
-                                        this.set_hovered_message_with_cursor_anchor(
-                                            message_id.clone(),
-                                            cursor_x,
-                                            cursor_y,
-                                            is_thread,
-                                            cx,
-                                        );
+                                        this.set_hovered_message(message_id.clone(), is_thread, cx);
                                         cx.stop_propagation();
                                     },
                                 ))
@@ -2096,17 +2029,9 @@ impl TimelineList {
                                     this.open_url_or_deep_link(&url, window, cx);
                                 }))
                                 .on_mouse_move(cx.listener(
-                                    move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
-                                        let cursor_x: f32 = event.position.x.into();
-                                        let cursor_y: f32 = event.position.y.into();
+                                    move |this, _: &gpui_kit::MouseMoveEvent, _, cx| {
                                         this.clear_reaction_hover_tooltip(cx);
-                                        this.set_hovered_message_with_cursor_anchor(
-                                            message_id.clone(),
-                                            cursor_x,
-                                            cursor_y,
-                                            is_thread,
-                                            cx,
-                                        );
+                                        this.set_hovered_message(message_id.clone(), is_thread, cx);
                                         cx.stop_propagation();
                                     },
                                 ))
@@ -2211,17 +2136,9 @@ impl TimelineList {
                                 this.open_url_or_deep_link(&url, window, cx);
                             }))
                             .on_mouse_move(cx.listener(
-                                move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
-                                    let cursor_x: f32 = event.position.x.into();
-                                    let cursor_y: f32 = event.position.y.into();
+                                move |this, _: &gpui_kit::MouseMoveEvent, _, cx| {
                                     this.clear_reaction_hover_tooltip(cx);
-                                    this.set_hovered_message_with_cursor_anchor(
-                                        message_id.clone(),
-                                        cursor_x,
-                                        cursor_y,
-                                        is_thread,
-                                        cx,
-                                    );
+                                    this.set_hovered_message(message_id.clone(), is_thread, cx);
                                     cx.stop_propagation();
                                 },
                             ))
@@ -3628,7 +3545,7 @@ fn append_edited_annotation(text: &mut String, styled_ranges: &mut Vec<StyledRan
 }
 
 /// Mouse-move handler for a control inside a message that shows its own
-/// tooltip: the message stays hovered and highlighted, without the strip.
+/// tooltip: the message stays hovered, and the event stops here.
 fn hold_message_hover(
     message_id: &crate::domain::ids::MessageId,
     is_thread: bool,
@@ -3636,7 +3553,7 @@ fn hold_message_hover(
 ) -> impl Fn(&gpui_kit::MouseMoveEvent, &mut Window, &mut gpui_kit::App) + 'static {
     let message_id = message_id.clone();
     cx.listener(move |this, _: &gpui_kit::MouseMoveEvent, _, cx| {
-        this.hover_message_without_toolbar(message_id.clone(), is_thread, cx);
+        this.set_hovered_message(message_id.clone(), is_thread, cx);
         cx.stop_propagation();
     })
 }
@@ -3882,33 +3799,66 @@ pub(crate) fn thread_replies_divider(reply_count: usize) -> AnyElement {
         .into_any_element()
 }
 
-fn reaction_hover_text(reaction: &MessageReactionRender) -> Option<String> {
-    if reaction.actors.is_empty() {
-        return None;
+/// The emoji a reaction tooltip draws large: the same one as its chip.
+fn reaction_tooltip_glyph(resolved: Option<&InlineEmojiRender>, alias: &str) -> ReactionGlyph {
+    match resolved {
+        Some(render) => match (&render.unicode, &render.asset_path) {
+            (Some(unicode), _) => ReactionGlyph::Unicode(unicode.clone()),
+            (None, Some(asset_path)) => {
+                ReactionGlyph::Image(crate::views::normalize_local_source_path(asset_path))
+            }
+            (None, None) => ReactionGlyph::Missing,
+        },
+        None => standard_emoji_for_alias(alias)
+            .map(|unicode| ReactionGlyph::Unicode(unicode.to_string()))
+            .unwrap_or(ReactionGlyph::Missing),
     }
-    let mut labels = reaction
+}
+
+fn reaction_hover_content(
+    reaction: &MessageReactionRender,
+    glyph: ReactionGlyph,
+    current_user_id: Option<&UserId>,
+) -> Option<ReactionHoverContent> {
+    let names = reaction_actor_names(reaction, current_user_id)?;
+    Some(ReactionHoverContent { glyph, names })
+}
+
+/// "You, Alice Johnson and Sam Rivera": you first, then everyone else by the
+/// name the app shows for them, with the rest counted past eight.
+fn reaction_actor_names(
+    reaction: &MessageReactionRender,
+    current_user_id: Option<&UserId>,
+) -> Option<String> {
+    const MAX_NAMES: usize = 8;
+    let is_me =
+        |user_id: &str| current_user_id.is_some_and(|me| me.0.eq_ignore_ascii_case(user_id));
+    let mut names = reaction
         .actors
         .iter()
+        .filter(|actor| !is_me(&actor.user_id))
         .map(|actor| {
-            if actor.display_name.eq_ignore_ascii_case(&actor.user_id) {
-                actor.user_id.clone()
-            } else {
-                format!("{} (@{})", actor.display_name, actor.user_id)
-            }
+            crate::domain::user::shown_name(&actor.user_id, &actor.display_name).to_string()
         })
         .collect::<Vec<_>>();
-    labels.sort();
-    labels.dedup();
-    if labels.is_empty() {
-        return None;
+    names.sort_by_key(|name| name.to_lowercase());
+    names.dedup();
+    if reaction.actors.iter().any(|actor| is_me(&actor.user_id)) {
+        names.insert(0, "You".to_string());
     }
-    const MAX_NAMES: usize = 8;
-    if labels.len() > MAX_NAMES {
-        let remaining = labels.len() - MAX_NAMES;
-        labels.truncate(MAX_NAMES);
-        return Some(format!("{} (+{} more)", labels.join(", "), remaining));
+    let others = names.len().saturating_sub(MAX_NAMES);
+    names.truncate(MAX_NAMES);
+    if others > 0 {
+        names.push(format!(
+            "{others} {}",
+            if others == 1 { "other" } else { "others" }
+        ));
     }
-    Some(labels.join(", "))
+    match names.as_slice() {
+        [] => None,
+        [one] => Some(one.clone()),
+        [rest @ .., last] => Some(format!("{} and {last}", rest.join(", "))),
+    }
 }
 
 fn is_emoji_only(text: &str) -> bool {
@@ -4052,25 +4002,64 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reaction_hover_text_includes_display_names_and_usernames() {
-        let text = reaction_hover_text(&MessageReactionRender {
+    fn reaction_by(actors: &[(&str, &str)]) -> MessageReactionRender {
+        MessageReactionRender {
             emoji: ":thumbsup:".to_string(),
             source_ref: None,
-            count: 2,
-            actors: vec![
-                crate::models::timeline_model::ReactionActorRender {
-                    user_id: "alice".to_string(),
-                    display_name: "Alice A".to_string(),
-                },
-                crate::models::timeline_model::ReactionActorRender {
-                    user_id: "bob".to_string(),
-                    display_name: "bob".to_string(),
-                },
-            ],
+            count: actors.len(),
+            actors: actors
+                .iter()
+                .map(
+                    |(user_id, display_name)| crate::models::timeline_model::ReactionActorRender {
+                        user_id: user_id.to_string(),
+                        display_name: display_name.to_string(),
+                    },
+                )
+                .collect(),
             reacted_by_me: false,
-        });
-        assert_eq!(text, Some("Alice A (@alice), bob".to_string()));
+        }
+    }
+
+    #[test]
+    fn reaction_tooltip_lists_you_first_then_shown_names() {
+        let me = UserId::new("robin");
+        let reaction = reaction_by(&[
+            ("sam", "Sam Rivera"),
+            ("robin", "Robin Ellis"),
+            ("alice", "Alice Johnson"),
+            ("bob", ""),
+        ]);
+        assert_eq!(
+            reaction_actor_names(&reaction, Some(&me)).as_deref(),
+            Some("You, Alice Johnson, bob and Sam Rivera")
+        );
+        assert_eq!(
+            reaction_actor_names(&reaction_by(&[("alice", "Alice Johnson")]), Some(&me)).as_deref(),
+            Some("Alice Johnson")
+        );
+        assert_eq!(reaction_actor_names(&reaction_by(&[]), Some(&me)), None);
+        let content = reaction_hover_content(
+            &reaction_by(&[("robin", "Robin Ellis")]),
+            ReactionGlyph::Missing,
+            Some(&me),
+        )
+        .expect("one actor");
+        assert_eq!(content.names, "You");
+    }
+
+    #[test]
+    fn reaction_tooltip_counts_people_past_eight() {
+        let actors = (0..11)
+            .map(|index| (format!("user{index:02}"), String::new()))
+            .collect::<Vec<_>>();
+        let actors = actors
+            .iter()
+            .map(|(user_id, name)| (user_id.as_str(), name.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reaction_actor_names(&reaction_by(&actors), None).as_deref(),
+            Some("user00, user01, user02, user03, user04, user05, user06, user07 and 3 others")
+        );
     }
 
     #[test]

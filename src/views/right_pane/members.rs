@@ -63,7 +63,7 @@ pub(super) fn member_sections<'a>(
         people.sort_by_cached_key(|member| {
             (
                 !(member.is_team_admin_or_owner && member.is_team_owner),
-                member.display_name.to_lowercase(),
+                member.shown_name().to_lowercase(),
             )
         });
     }
@@ -201,11 +201,12 @@ fn people_count(count: usize) -> String {
     format!("{count} {}", if count == 1 { "member" } else { "members" })
 }
 
-/// 40px row: avatar with presence, name and @username, identity marker, role.
+/// 40px row: avatar with presence, the shown name and then the other one,
+/// identity marker, role.
 fn member_row(member: &ChannelMemberPreview, cx: &mut Context<AppWindow>) -> AnyElement {
     let user_id = member.user_id.clone();
     let username = member.user_id.0.as_str();
-    let show_username = !member.display_name.trim().eq_ignore_ascii_case(username);
+    let other_name = member.other_name();
     let role = member
         .is_team_admin_or_owner
         .then_some(if member.is_team_owner {
@@ -247,15 +248,15 @@ fn member_row(member: &ChannelMemberPreview, cx: &mut Context<AppWindow>) -> Any
                         .text_size(px(13.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(rgb(text_primary()))
-                        .child(member.display_name.clone()),
+                        .child(member.shown_name().to_string()),
                 )
                 .children(crate::views::identity_marker(
                     SharedString::from(format!("members-pane-identity-{username}")),
                     member.affinity,
-                    &member.display_name,
+                    member.shown_name(),
                     true,
                 ))
-                .when(show_username, |row| {
+                .when_some(other_name, |row, other_name| {
                     row.child(
                         div()
                             .flex_1()
@@ -263,7 +264,7 @@ fn member_row(member: &ChannelMemberPreview, cx: &mut Context<AppWindow>) -> Any
                             .truncate()
                             .text_size(px(12.))
                             .text_color(rgb(text_secondary()))
-                            .child(format!("@{username}")),
+                            .child(other_name),
                     )
                 }),
         )

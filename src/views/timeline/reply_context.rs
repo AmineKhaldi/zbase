@@ -63,7 +63,7 @@ pub(super) fn cached_reply_context(
         preview.push('…');
     }
     Some(ReplyContext {
-        author: parent.author.display_name.clone(),
+        author: parent.author.shown_name().to_string(),
         excerpt: preview,
     })
 }

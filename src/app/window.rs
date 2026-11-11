@@ -56,6 +56,7 @@ const ENV_BENCH_SKIP_BACKEND: &str = "ZBASE_BENCH_SKIP_BACKEND";
 
 pub fn open_main_window(cx: &mut App) {
     let settings = load_settings();
+    crate::domain::user::set_name_style(settings.name_style);
     // A first window leaves the conversation its full minimum width beside a
     // wider Previews sidebar.
     let default_width = WINDOW_MIN_WIDTH_PX + sidebar_width_for_style(settings.sidebar_style)

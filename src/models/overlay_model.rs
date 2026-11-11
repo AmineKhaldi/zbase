@@ -12,9 +12,26 @@ pub struct SidebarHoverTooltip {
 
 #[derive(Clone, Debug)]
 pub struct ReactionHoverTooltip {
-    pub text: String,
+    pub content: ReactionHoverContent,
     pub anchor_x: f32,
     pub anchor_y: f32,
+}
+
+/// A reaction's tooltip: the emoji drawn large beside who reacted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReactionHoverContent {
+    pub glyph: ReactionGlyph,
+    /// "You, Alice Johnson and Sam Rivera"
+    pub names: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReactionGlyph {
+    Unicode(String),
+    /// A custom emoji's image, as a local path.
+    Image(String),
+    /// Nothing to draw; the tooltip lists only the names.
+    Missing,
 }
 
 #[derive(Clone, Debug)]
