@@ -58,7 +58,8 @@ static void refresh_permission(void) {
 
 static void request_permission(void) {
     [UNUserNotificationCenter.currentNotificationCenter
-        requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound
+        requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound |
+                                        UNAuthorizationOptionBadge
                       completionHandler:^(BOOL granted, NSError *error) {
                           if (!granted) NSLog(@"zBase notifications not authorized: %@", error);
                           refresh_permission();
