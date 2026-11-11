@@ -91,6 +91,8 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       CARGO_BUILD_JOBS: '2'
       CARGO_INCREMENTAL: '0'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
       DEPS_DIR: ${{ github.workspace }}/dist/macos-deps
@@ -164,6 +166,10 @@ jobs:
             dist/macos-deps/prefix
             dist/macos-deps/downloads
           key: ${{ steps.media-cache.outputs.cache-primary-key }}
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
+        with:
+          version: v0.16.0
       - uses: actions/cache/restore@v6
         id: rust-cache
         with:
@@ -171,8 +177,11 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: rust-macos15-arm64-${{ steps.toolchain.outputs.rust-key }}-${{ hashFiles('Cargo.lock', 'scripts/macos/build_media_deps.sh') }}-${{ github.sha }}
+          # Allow lockfile/version changes while preserving compiler and native inputs.
+          key: rust-macos15-arm64-v2-${{ steps.toolchain.outputs.rust-key }}-${{ hashFiles('scripts/macos/build_media_deps.sh') }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
+            rust-macos15-arm64-v2-${{ steps.toolchain.outputs.rust-key }}-${{ hashFiles('scripts/macos/build_media_deps.sh') }}-${{ hashFiles('Cargo.lock') }}-
+            rust-macos15-arm64-v2-${{ steps.toolchain.outputs.rust-key }}-${{ hashFiles('scripts/macos/build_media_deps.sh') }}-
             rust-macos15-arm64-${{ steps.toolchain.outputs.rust-key }}-${{ hashFiles('Cargo.lock', 'scripts/macos/build_media_deps.sh') }}-
       - name: Prepare pinned updater framework
         run: scripts/macos/prepare_sparkle.sh
