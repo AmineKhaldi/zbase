@@ -1,7 +1,7 @@
 //! Explicit save/open actions shared by attachment surfaces.
 use super::*;
 use crate::domain::attachment::AttachmentSummary;
-use gpui::{Animation, AnimationExt, Global, SharedString, Transformation};
+use gpui_kit::{Animation, AnimationExt, Global, SharedString, Transformation};
 
 #[derive(Clone)]
 enum DownloadState {
@@ -70,7 +70,7 @@ pub(crate) fn control(
         .hover(|s| s.bg(subtle_surface()))
         .tooltip(crate::views::tooltip::TextTooltip::single_line(tooltip))
         .child(if matches!(current, Some(DownloadState::Downloading)) {
-            gpui::svg()
+            gpui_kit::svg()
                 .path("assets/icons/download-spinner.svg")
                 .size(px(14.))
                 .text_color(rgb(crate::views::accent()))
@@ -78,14 +78,14 @@ pub(crate) fn control(
                     "download-spinner",
                     Animation::new(Duration::from_millis(800)).repeat(),
                     |el, delta| {
-                        el.with_transformation(Transformation::rotate(gpui::Radians(
+                        el.with_transformation(Transformation::rotate(gpui_kit::Radians(
                             delta * std::f32::consts::TAU,
                         )))
                     },
                 )
                 .into_any_element()
         } else if current.is_none() {
-            gpui::svg()
+            gpui_kit::svg()
                 .path("assets/icons/download.svg")
                 .size(px(16.))
                 .text_color(rgb(crate::views::accent()))

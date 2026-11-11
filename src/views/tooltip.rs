@@ -1,7 +1,9 @@
 //! Plain-text hover tooltip shared by sidebar rows, toolbar buttons and badges.
 use crate::views::{panel_bg, shell_border_strong, text_primary, text_secondary};
-use gpui::prelude::FluentBuilder;
-use gpui::{AppContext, Context, IntoElement, ParentElement, Render, Styled, Window, div, px, rgb};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
+    AppContext, Context, IntoElement, ParentElement, Render, Styled, Window, div, px, rgb,
+};
 
 /// GPUI supplies the hover delay and removes this tooltip on pointer exit.
 pub struct TextTooltip {
@@ -15,14 +17,14 @@ impl TextTooltip {
     /// Wrapping tooltip for long labels such as full conversation names.
     pub fn builder(
         text: String,
-    ) -> impl Fn(&mut Window, &mut gpui::App) -> gpui::AnyView + 'static {
+    ) -> impl Fn(&mut Window, &mut gpui_kit::App) -> gpui_kit::AnyView + 'static {
         Self::build(text, None, false)
     }
 
     /// One-line tooltip for icon buttons.
     pub fn single_line(
         text: String,
-    ) -> impl Fn(&mut Window, &mut gpui::App) -> gpui::AnyView + 'static {
+    ) -> impl Fn(&mut Window, &mut gpui_kit::App) -> gpui_kit::AnyView + 'static {
         Self::build(text, None, true)
     }
 
@@ -30,7 +32,7 @@ impl TextTooltip {
     pub fn with_shortcut(
         text: String,
         shortcut: String,
-    ) -> impl Fn(&mut Window, &mut gpui::App) -> gpui::AnyView + 'static {
+    ) -> impl Fn(&mut Window, &mut gpui_kit::App) -> gpui_kit::AnyView + 'static {
         Self::build(text, Some(shortcut), true)
     }
 
@@ -38,7 +40,7 @@ impl TextTooltip {
         text: String,
         shortcut: Option<String>,
         single_line: bool,
-    ) -> impl Fn(&mut Window, &mut gpui::App) -> gpui::AnyView + 'static {
+    ) -> impl Fn(&mut Window, &mut gpui_kit::App) -> gpui_kit::AnyView + 'static {
         let theme = crate::views::current_theme();
         move |_, cx| {
             cx.new(|_| Self {

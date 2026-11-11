@@ -16,9 +16,9 @@ use crate::{
         tooltip::{TextTooltip, shortcut_label},
     },
 };
-use gpui::prelude::FluentBuilder;
-use gpui::{
-    AnyElement, ClickEvent, Context, Corner, CursorStyle, Entity, FontWeight, Hsla,
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
+    Anchor, AnyElement, ClickEvent, Context, CursorStyle, Entity, FontWeight, Hsla,
     InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled, anchored,
     deferred, div, point, px, rgb,
 };
@@ -196,7 +196,7 @@ pub(crate) fn composer_field(
 }
 
 /// A 28px icon button inside the composer field's right edge.
-fn composer_tool(id: &'static str, icon: AnyElement) -> gpui::Stateful<gpui::Div> {
+fn composer_tool(id: &'static str, icon: AnyElement) -> gpui_kit::Stateful<gpui_kit::Div> {
     div()
         .id(id)
         .w(px(28.))
@@ -243,7 +243,7 @@ fn format_tool(
         .when(menu_open, |wrapper| {
             wrapper.child(deferred(
                 anchored()
-                    .anchor(Corner::BottomLeft)
+                    .anchor(Anchor::BottomLeft)
                     .offset(point(px(0.), px(-6.)))
                     .child(popup_menu(
                         menu_id,

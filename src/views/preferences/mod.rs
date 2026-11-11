@@ -12,8 +12,8 @@ use crate::{
         section_label, shell_border, success, text_primary, text_secondary, tint, warning,
     },
 };
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     AnyElement, App, BoxShadow, CursorStyle, FontWeight, InteractiveElement, IntoElement,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, WeakEntity, div, point, px,
     rgb,
@@ -222,8 +222,8 @@ impl PreferencesView {
 /// Click handler that applies `change` to the main window, if it still exists.
 fn update_app(
     app: &WeakEntity<AppWindow>,
-    change: impl Fn(&mut AppWindow, &mut gpui::Context<AppWindow>) + 'static,
-) -> impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut App) + 'static {
+    change: impl Fn(&mut AppWindow, &mut gpui_kit::Context<AppWindow>) + 'static,
+) -> impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut App) + 'static {
     let app = app.clone();
     move |_, _, cx| {
         let _ = app.update(cx, |this, cx| change(this, cx));
@@ -259,7 +259,7 @@ fn section(title: &'static str, rows: Vec<AnyElement>) -> AnyElement {
         .into_any_element()
 }
 
-fn row_text(title: &'static str, description: &'static str) -> gpui::Div {
+fn row_text(title: &'static str, description: &'static str) -> gpui_kit::Div {
     div()
         .flex_1()
         .min_w(px(0.))
@@ -303,7 +303,7 @@ fn segmented<T: Clone + 'static>(
     id: &'static str,
     options: Vec<(&'static str, bool, T)>,
     app: &WeakEntity<AppWindow>,
-    select: impl Fn(&mut AppWindow, T, &mut gpui::Context<AppWindow>) + Clone + 'static,
+    select: impl Fn(&mut AppWindow, T, &mut gpui_kit::Context<AppWindow>) + Clone + 'static,
 ) -> AnyElement {
     div()
         .h(px(28.))
@@ -354,7 +354,7 @@ fn toggle(
     id: &'static str,
     on: bool,
     app: &WeakEntity<AppWindow>,
-    flip: impl Fn(&mut AppWindow, &mut gpui::Context<AppWindow>) + 'static,
+    flip: impl Fn(&mut AppWindow, &mut gpui_kit::Context<AppWindow>) + 'static,
 ) -> AnyElement {
     div()
         .id(id)
@@ -438,7 +438,7 @@ fn theme_tile(
                 .border_color(if selected {
                     rgb(accent()).into()
                 } else {
-                    gpui::transparent_black()
+                    gpui_kit::transparent_black()
                 })
                 .child(
                     div()
@@ -530,7 +530,7 @@ fn group_bg() -> u32 {
     if is_dark_theme() { 0x2a2a2a } else { 0xffffff }
 }
 
-fn raised_surface() -> gpui::Hsla {
+fn raised_surface() -> gpui_kit::Hsla {
     if is_dark_theme() {
         rgb(0x5a5a5a).into()
     } else {
@@ -539,7 +539,7 @@ fn raised_surface() -> gpui::Hsla {
 }
 
 /// The recessed track behind segments.
-fn segment_track() -> gpui::Hsla {
+fn segment_track() -> gpui_kit::Hsla {
     if is_dark_theme() {
         rgb(0x333333).into()
     } else {
@@ -617,6 +617,7 @@ fn account_row(account: &AccountSummary) -> AnyElement {
 
 fn raised_shadow() -> Vec<BoxShadow> {
     vec![BoxShadow {
+        inset: false,
         color: tint(0x000000, if is_dark_theme() { 0.40 } else { 0.14 }),
         offset: point(px(0.), px(1.)),
         blur_radius: px(2.),

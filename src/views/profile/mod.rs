@@ -17,8 +17,8 @@ use crate::{
         tooltip::TextTooltip,
     },
 };
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     AnyElement, Context, CursorStyle, FontWeight, InteractiveElement, IntoElement, ObjectFit,
     ParentElement, ScrollHandle, StatefulInteractiveElement, Styled, StyledImage, div, img, px,
     rgb,
@@ -255,7 +255,7 @@ pub fn render_profile_panel(
                         .child(entry_name.clone()),
                 )
                 .children(crate::views::identity_marker(
-                    gpui::SharedString::from(format!(
+                    gpui_kit::SharedString::from(format!(
                         "profile-social-identity-{}",
                         entry.user_id.0
                     )),
@@ -392,7 +392,7 @@ pub fn render_profile_panel(
         .overflow_y_scroll()
         .track_scroll(profile_scroll)
         .when(use_social_virtualization, |panel| {
-            panel.on_scroll_wheel(cx.listener(AppWindow::profile_scrolled))
+            panel.on_scroll(cx.listener(AppWindow::profile_scrolled))
         })
         .scrollbar_width(px(8.))
         .flex()
@@ -418,7 +418,7 @@ pub fn render_profile_panel(
     // last visible row reads as "continues"; a profile that fits, or one
     // scrolled to the end, shows its last row unfaded.
     let more_below = profile_has_more_below(
-        f32::from(profile_scroll.max_offset().height),
+        f32::from(profile_scroll.max_offset().y),
         f32::from(-profile_scroll.offset().y),
     );
     let body = div()
@@ -645,7 +645,7 @@ fn empty_profile_panel(cx: &mut Context<AppWindow>) -> AnyElement {
     pane_with_header(pane_header("Profile", None, "profile-pane-close", cx), body)
 }
 
-fn skeleton_section(widths: Vec<gpui::Pixels>) -> AnyElement {
+fn skeleton_section(widths: Vec<gpui_kit::Pixels>) -> AnyElement {
     div()
         .mx_4()
         .py(px(14.))
@@ -818,7 +818,7 @@ fn proof_service(service_name: &str) -> ProofService {
 }
 
 fn status_icon(
-    id: impl Into<gpui::ElementId>,
+    id: impl Into<gpui_kit::ElementId>,
     icon: &'static str,
     color: u32,
     label: &'static str,
@@ -959,14 +959,14 @@ fn social_entry_window(
     }
 
     let max_offset = profile_scroll.max_offset();
-    let progress = if max_offset.height <= px(0.) {
+    let progress = if max_offset.y <= px(0.) {
         0.0
     } else {
         let mut scroll_top = profile_scroll.offset().y.abs();
-        if scroll_top > max_offset.height {
-            scroll_top = max_offset.height;
+        if scroll_top > max_offset.y {
+            scroll_top = max_offset.y;
         }
-        (f32::from(scroll_top) / f32::from(max_offset.height)).clamp(0.0, 1.0)
+        (f32::from(scroll_top) / f32::from(max_offset.y)).clamp(0.0, 1.0)
     };
     let remaining = total_entries.saturating_sub(SOCIAL_ENTRY_INITIAL_RENDER_ROWS);
     let revealed = ((remaining as f32) * progress).ceil() as usize;

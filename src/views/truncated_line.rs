@@ -5,7 +5,7 @@
 //! use a throwaway width, leaving a few characters behind. This element lays out
 //! at the full available width and truncates while painting, so it always uses
 //! its final bounds.
-use gpui::{
+use gpui_kit::{
     App, Bounds, Element, ElementId, FontWeight, GlobalElementId, Hsla, InspectorElementId,
     IntoElement, LayoutId, Pixels, ShapedLine, SharedString, Style, TextRun, Window, relative,
 };
@@ -125,7 +125,14 @@ impl Element for TruncatedLine {
         cx: &mut App,
     ) {
         if let Some((line, line_height)) = prepaint.as_ref() {
-            let _ = line.paint(bounds.origin, *line_height, window, cx);
+            let _ = line.paint(
+                bounds.origin,
+                *line_height,
+                gpui_kit::TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
         }
     }
 }
@@ -164,11 +171,11 @@ mod tests {
     fn run(len: usize, weight: FontWeight) -> TextRun {
         TextRun {
             len,
-            font: gpui::Font {
+            font: gpui_kit::Font {
                 weight,
-                ..gpui::font(".SystemUIFont")
+                ..gpui_kit::font(".SystemUIFont")
             },
-            color: gpui::black(),
+            color: gpui_kit::black(),
             background_color: None,
             underline: None,
             strikethrough: None,

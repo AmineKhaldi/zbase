@@ -8,11 +8,11 @@ use crate::{
         text_primary, with_theme,
     },
 };
-use gpui::{
+use gpui_kit::{
     AnyWindowHandle, App, AppContext, Bounds, Context, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Pixels, Render, Styled, Subscription,
-    TitlebarOptions, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowHandle,
-    WindowOptions, div, point, px, rgb, size,
+    TitlebarOptions, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowOptions,
+    div, point, px, rgb, size,
 };
 
 pub const SETTINGS_WINDOW_TITLE: &str = "Settings";
@@ -36,7 +36,7 @@ impl SettingsWindow {
         main_window: AnyWindowHandle,
         main_bounds: Bounds<Pixels>,
         cx: &mut App,
-    ) -> Option<WindowHandle<Self>> {
+    ) -> Option<AnyWindowHandle> {
         let window_size = size(px(WIDTH_PX), px(HEIGHT_PX));
         let origin = point(
             main_bounds.center().x - window_size.width / 2.,
@@ -55,27 +55,25 @@ impl SettingsWindow {
             window_background: WindowBackgroundAppearance::Opaque,
             ..Default::default()
         };
-        let handle = cx
-            .open_window(options, |window, cx| {
-                let view = cx.new(|cx| {
-                    let mut subscriptions = Vec::new();
-                    if let Some(app) = app.upgrade() {
-                        subscriptions.push(cx.observe(&app, |_, _, cx| cx.notify()));
-                    }
-                    subscriptions
-                        .push(cx.observe_window_appearance(window, |_, _, cx| cx.notify()));
-                    Self {
-                        app,
-                        main_window,
-                        focus_handle: cx.focus_handle(),
-                        _subscriptions: subscriptions,
-                    }
-                });
-                window.focus(&view.focus_handle(cx));
-                view
-            })
-            .inspect_err(|error| tracing::warn!("failed to open settings window: {error}"))
-            .ok()?;
+        let (handle, _) = gpui_kit::open_window(options, cx, |window, cx| {
+            let view = cx.new(|cx| {
+                let mut subscriptions = Vec::new();
+                if let Some(app) = app.upgrade() {
+                    subscriptions.push(cx.observe(&app, |_, _, cx| cx.notify()));
+                }
+                subscriptions.push(cx.observe_window_appearance(window, |_, _, cx| cx.notify()));
+                Self {
+                    app,
+                    main_window,
+                    focus_handle: cx.focus_handle(),
+                    _subscriptions: subscriptions,
+                }
+            });
+            window.focus(&view.focus_handle(cx), cx);
+            view
+        })
+        .inspect_err(|error| tracing::warn!("failed to open settings window: {error}"))
+        .ok()?;
         // Make it key even when it was requested from a menu while another app
         // was frontmost.
         cx.activate(true);

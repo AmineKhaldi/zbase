@@ -1,7 +1,7 @@
 //! Layout for paragraphs with smaller inline-code runs. GPUI's built-in text
 //! layout accepts one font size per paragraph; keep sizing, painting and hit
 //! testing together here so code can be 12px without shrinking the body text.
-use gpui::{App, Bounds, Pixels, Point, ShapedLine, Size, TextRun, Window, point, px, size};
+use gpui_kit::{App, Bounds, Pixels, Point, ShapedLine, Size, TextRun, Window, point, px, size};
 use std::{ops::Range, sync::Arc};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -455,11 +455,23 @@ impl MixedLayout {
         for painted in self.spans.iter() {
             let position = origin + painted.span.origin + point(px(0.), painted.baseline_offset);
             if backgrounds {
-                let _ = painted
-                    .line
-                    .paint_background(position, self.line_height, window, cx);
+                let _ = painted.line.paint_background(
+                    position,
+                    self.line_height,
+                    gpui_kit::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
             } else {
-                let _ = painted.line.paint(position, self.line_height, window, cx);
+                let _ = painted.line.paint(
+                    position,
+                    self.line_height,
+                    gpui_kit::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
             }
         }
     }
@@ -509,8 +521,8 @@ mod tests {
             .iter()
             .map(|len| TextRun {
                 len: *len,
-                font: gpui::font("Menlo"),
-                color: gpui::rgb(0xffffff).into(),
+                font: gpui_kit::font("Menlo"),
+                color: gpui_kit::rgb(0xffffff).into(),
                 background_color: None,
                 underline: None,
                 strikethrough: None,

@@ -5,7 +5,7 @@
 //! shrunk to a thumbnail turns its text grainy. Resampling once on the CPU
 //! with Lanczos, to a nearby size bucket, keeps edges and detail smooth the
 //! way a browser's downscale does.
-use gpui::{App, ImageAssetLoader, ImageCacheError, ImageSource, Resource, Window};
+use gpui_kit::{App, ImageAssetLoader, ImageCacheError, ImageSource, Resource, Window};
 use image::{ImageFormat, ImageReader, RgbaImage, imageops::FilterType};
 use std::path::PathBuf;
 

@@ -14,7 +14,7 @@ use crate::{
         panel_bg, panel_surface, text_primary, text_secondary,
     },
 };
-use gpui::{
+use gpui_kit::{
     AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, div, px, rgb,
 };

@@ -8,8 +8,8 @@ use crate::views::{
     link, mono_font_family, panel_alt_bg, success, success_soft, text_primary, text_secondary,
     warning, warning_soft,
 };
-use gpui::prelude::FluentBuilder;
-use gpui::{Div, IntoElement, ParentElement, Styled, div, px, rgb};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{Div, IntoElement, ParentElement, Styled, div, px, rgb};
 
 const PR_ICON: &str = "assets/icons/git-pull-request.svg";
 const DRAFT_ICON: &str = "assets/icons/git-pull-request-draft.svg";
@@ -241,7 +241,7 @@ fn diff_stat(additions: u32, deletions: u32) -> Div {
         )
 }
 
-fn chip(icon: &'static str, label: impl Into<gpui::SharedString>, tone: Tone) -> Div {
+fn chip(icon: &'static str, label: impl Into<gpui_kit::SharedString>, tone: Tone) -> Div {
     let (fg, bg) = tone.colors();
     div()
         .flex()
@@ -264,7 +264,7 @@ fn pill(label: &'static str, tone: Tone) -> Div {
         .rounded_full()
         .bg(rgb(bg))
         .text_color(rgb(fg))
-        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
         .child(label)
 }
 

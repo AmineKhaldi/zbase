@@ -8,7 +8,7 @@ use std::{
 };
 
 use ffmpeg_next as ffmpeg;
-use gpui::RenderImage;
+use gpui_kit::RenderImage;
 use image::{Delay, Frame, RgbaImage};
 
 const MAX_VIDEO_FRAME_COUNT: usize = 300;

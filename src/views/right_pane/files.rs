@@ -12,7 +12,7 @@ use crate::{
     views::{self, app_window::AppWindow},
 };
 use chrono::{DateTime, Local};
-use gpui::{
+use gpui_kit::{
     AnyElement, Context, CursorStyle, IntoElement, ObjectFit, ScrollHandle, SharedString, div, img,
     prelude::*, px, rgb,
 };
@@ -126,7 +126,7 @@ pub(super) fn render_files_panel(
                 .border_color(if tab == state.tab {
                     rgb(views::accent()).into()
                 } else {
-                    gpui::transparent_black()
+                    gpui_kit::transparent_black()
                 })
                 .flex_1()
                 .py_1p5()
@@ -137,7 +137,7 @@ pub(super) fn render_files_panel(
                 .bg(if tab == state.tab {
                     views::panel_alt_surface()
                 } else {
-                    gpui::transparent_black()
+                    gpui_kit::transparent_black()
                 })
                 .text_color(rgb(if tab == state.tab {
                     views::text_primary()

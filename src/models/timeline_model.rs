@@ -81,6 +81,7 @@ pub enum TimelineRow {
 #[derive(Clone, Debug, Default)]
 pub struct TimelineModel {
     pub conversation_id: ConversationId,
+    pub scrolled_from_top: bool,
     pub current_user_id: Option<UserId>,
     pub rows: Vec<TimelineRow>,
     pub highlighted_message_id: Option<MessageId>,
@@ -108,7 +109,7 @@ pub struct TimelineModel {
     pub hovered_message_window_top: Option<f32>,
     /// Hovered message container width in window coords.
     pub hovered_message_window_width: Option<f32>,
-    pub hovered_message_viewport_size: Option<gpui::Size<f32>>,
+    pub hovered_message_viewport_size: Option<gpui_kit::Size<f32>>,
     /// Whether the hover toolbar is settled (mouse was still long enough).
     pub hover_toolbar_settled: bool,
     pub typing_text: Option<String>,

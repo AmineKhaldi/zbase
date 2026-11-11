@@ -5,7 +5,7 @@ use crate::{
         panel_surface, text_primary, text_secondary,
     },
 };
-use gpui::{
+use gpui_kit::{
     AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
     StatefulInteractiveElement, Styled, div, rgb,
 };

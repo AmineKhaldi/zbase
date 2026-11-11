@@ -13,7 +13,7 @@ use crate::{
     },
     views::{avatar::Avatar, text_secondary},
 };
-use gpui::{
+use gpui_kit::{
     AnyElement, Context, IntoElement, ParentElement, Styled, UniformListScrollHandle, div, px, rgb,
     uniform_list,
 };
@@ -25,6 +25,7 @@ pub(super) fn render<H: SidebarHost>(
     current: &Route,
     hovered: Option<&str>,
     scroll: &UniformListScrollHandle,
+    reduced_motion: bool,
     cx: &mut Context<H>,
 ) -> AnyElement {
     let filter = sidebar.filter.trim().to_lowercase();
@@ -53,7 +54,7 @@ pub(super) fn render<H: SidebarHost>(
             })
             .into_any_element();
     }
-    uniform_list("sidebar-recent-list", rows.len(), move |range, _, app| {
+    let list = uniform_list("sidebar-recent-list", rows.len(), move |range, _, app| {
         owner
             .update(app, |_, cx| {
                 crate::views::with_theme(theme, || {
@@ -81,10 +82,10 @@ pub(super) fn render<H: SidebarHost>(
             })
             .unwrap_or_default()
     })
-    .track_scroll(scroll.clone())
+    .track_scroll(scroll)
     .flex_1()
-    .min_h(px(0.))
-    .into_any_element()
+    .min_h(px(0.));
+    super::scroll_viewport("sidebar-recent-bounce", scroll, list, reduced_motion)
 }
 
 /// What decides a row's look besides the row itself.

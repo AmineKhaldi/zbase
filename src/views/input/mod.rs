@@ -1,7 +1,7 @@
 mod blink;
 mod scrolling;
 
-use gpui::{
+use gpui_kit::{
     App, Bounds, ClipboardEntry, ClipboardItem, Context, CursorStyle, Element, ElementId,
     ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, Hsla,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
@@ -11,7 +11,7 @@ use gpui::{
 use std::{
     collections::VecDeque,
     ops::Range,
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -207,13 +207,14 @@ pub struct TextField {
     marked_range: Option<Range<usize>>,
     last_layout: Option<TextLayoutSnapshot>,
     last_bounds: Option<Bounds<Pixels>>,
+    last_platform_selection: Option<Range<usize>>,
     is_selecting: bool,
     field_kind: TextFieldKind,
     autocomplete_navigation_enabled: bool,
     scroll_y: Pixels,
     scroll_to_cursor: bool,
     selection_pointer: Option<Point<Pixels>>,
-    selection_scroll_task: Option<gpui::Task<()>>,
+    selection_scroll_task: Option<gpui_kit::Task<()>>,
     /// Raised only by Up in an empty editor; revalidated when consumed.
     pub up_at_top_triggered: bool,
     pub pasted_image: Option<Vec<u8>>,
@@ -304,6 +305,7 @@ impl TextField {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            last_platform_selection: None,
             is_selecting: false,
             field_kind,
             autocomplete_navigation_enabled: false,
@@ -753,7 +755,7 @@ impl TextField {
         self.stop_selection_drag();
         self.is_selecting = true;
         self.selection_pointer = Some(event.position);
-        window.focus(&self.focus_handle(cx));
+        window.focus(&self.focus_handle(cx), cx);
         let offset = self.index_for_mouse_position(event.position);
 
         if !event.modifiers.shift {
@@ -1224,7 +1226,7 @@ impl Element for TextLineElement {
     fn request_layout(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
@@ -1324,7 +1326,7 @@ impl Element for TextLineElement {
     fn prepaint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         window: &mut Window,
@@ -1412,7 +1414,7 @@ impl Element for TextLineElement {
             let lines = window
                 .text_system()
                 .shape_text(display_text.into(), font_size, &runs, wrap_width, None)
-                .map(|lines| lines.into_vec())
+                .map(|lines| lines.into_iter().map(Arc::new).collect())
                 .unwrap_or_default();
             if let Some(shape_started_at) = shape_started_at {
                 let elapsed = shape_started_at.elapsed();
@@ -1493,7 +1495,7 @@ impl Element for TextLineElement {
     fn paint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         prepaint: &mut Self::PrepaintState,
@@ -1511,7 +1513,7 @@ impl Element for TextLineElement {
         // depend on the next frame installing listeners after mouse-down.
         let input = self.input.downgrade();
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-            if phase == gpui::DispatchPhase::Capture
+            if phase == gpui_kit::DispatchPhase::Capture
                 && let Some(input) = input.upgrade()
                 && input.read(cx).is_selecting
             {
@@ -1520,7 +1522,7 @@ impl Element for TextLineElement {
         });
         let input = self.input.downgrade();
         window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-            if phase == gpui::DispatchPhase::Capture
+            if phase == gpui_kit::DispatchPhase::Capture
                 && event.button == MouseButton::Left
                 && let Some(input) = input.upgrade()
                 && input.read(cx).is_selecting
@@ -1560,7 +1562,18 @@ impl Element for TextLineElement {
         let content_height = prepaint.layout.total_height();
         let layout = std::mem::take(&mut prepaint.layout);
         let scroll_y = prepaint.scroll_y;
-        self.input.update(cx, |input, _cx| {
+        let focused = focus_handle.is_focused(window);
+        let (text_changed, selection_changed) = self.input.update(cx, |input, _cx| {
+            let text_changed = input.last_layout.as_ref().is_none_or(|previous| {
+                previous.content != layout.content || previous.marked_range != layout.marked_range
+            });
+            let selection_changed = input.last_platform_selection.as_ref()
+                != Some(&input.selected_range)
+                || input.last_bounds != Some(bounds)
+                || input.scroll_y != scroll_y;
+            if focused {
+                input.last_platform_selection = Some(input.selected_range.clone());
+            }
             let previous_content_height = input.last_content_height;
             input.last_content_height = content_height;
             input.last_layout = Some(layout);
@@ -1585,7 +1598,17 @@ impl Element for TextLineElement {
                     );
                 }
             }
+            (text_changed, selection_changed)
         });
+        // Publish native text-service state after committing layout and dropping
+        // the entity borrow. AppKit may immediately ask for caret/IME geometry.
+        if focused {
+            if text_changed {
+                window.notify_text_input_changed(&focus_handle);
+            } else if selection_changed {
+                window.notify_text_selection_changed(&focus_handle);
+            }
+        }
     }
 }
 
@@ -1634,7 +1657,7 @@ impl Render for TextField {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
+            .on_scroll(cx.listener(Self::on_scroll))
             .child(TextLineElement { input: cx.entity() })
     }
 }
@@ -1647,7 +1670,7 @@ impl Focusable for TextField {
 
 #[derive(Clone)]
 struct TextLayoutSnapshot {
-    lines: Vec<WrappedLine>,
+    lines: Vec<Arc<WrappedLine>>,
     line_height: Pixels,
     is_placeholder: bool,
     text_len: usize,
@@ -2060,7 +2083,7 @@ mod tests {
     #[test]
     fn theme_color_changes_invalidate_cached_text_and_placeholder_runs() {
         use super::{PLACEHOLDER_OPACITY, TextLayoutSnapshot};
-        use gpui::{Hsla, px, rgb};
+        use gpui_kit::{Hsla, px, rgb};
         for is_placeholder in [false, true] {
             let dark: Hsla = rgb(0xd9d9d9).into();
             let light: Hsla = rgb(0x262626).into();

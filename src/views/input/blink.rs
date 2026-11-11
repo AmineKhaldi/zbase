@@ -2,7 +2,7 @@
 //! off like a native field. The timer runs only while the field is focused in
 //! the active window, so idle fields cause no redraws.
 use super::TextField;
-use gpui::{AnyWindowHandle, Context};
+use gpui_kit::{AnyWindowHandle, Context};
 use std::{ops::Range, time::Duration};
 
 /// The macOS caret's half-period.
@@ -13,7 +13,7 @@ pub(super) struct CaretBlink {
     running: bool,
     /// Bumped to retire a running timer.
     epoch: usize,
-    task: Option<gpui::Task<()>>,
+    task: Option<gpui_kit::Task<()>>,
     /// Selection and text length at the last paint; a change restarts the blink solid.
     last_state: Option<(Range<usize>, usize)>,
 }
@@ -65,7 +65,7 @@ impl TextField {
         let epoch = self.blink.epoch;
         let focus = self.focus_handle.clone();
         self.blink.task = Some(cx.spawn(
-            move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+            move |this: gpui_kit::WeakEntity<Self>, cx: &mut gpui_kit::AsyncApp| {
                 let mut cx = cx.clone();
                 let background = cx.background_executor().clone();
                 async move {

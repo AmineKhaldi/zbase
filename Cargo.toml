@@ -13,13 +13,15 @@ icon = ["assets/macos/AppIcon.icns"]
 default = []
 demo-fixtures = []
 macos-updater = []
+# Select the same backend throughout Kit, Base, components, and native platforms.
+gpui-fast = ["gpui-kit/gpui-fast"]
 
 # Keep compiler and Clippy warnings fatal for local builds and CI alike.
 [lints.rust]
 warnings = "deny"
 
 [dependencies]
-gpui = { version = "0.2.2", default-features = false, features = ["font-kit"] }
+gpui-kit = "=0.9.1"
 unicode-segmentation = "1.12.0"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "io-util"] }
 tracing = "0.1"
@@ -51,6 +53,9 @@ tree-sitter-bash = "0.25.1"
 tree-sitter-go = "0.25.0"
 tree-sitter-toml-ng = "0.7.0"
 tree-sitter-sequel = "0.3.11"
+
+[dev-dependencies]
+gpui-kit = { version = "=0.9.1", features = ["test-support"] }
 
 [target.'cfg(windows)'.build-dependencies]
 # Already in the tree through gpui; compiles the Windows icon resource.

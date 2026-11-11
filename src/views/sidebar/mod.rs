@@ -24,9 +24,9 @@ use crate::{
         warning,
     },
 };
-use gpui::prelude::FluentBuilder;
-use gpui::{
-    AnyElement, AppContext, ClickEvent, Context, Corner, DragMoveEvent, FontWeight, Hsla,
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
+    Anchor, AnyElement, AppContext, ClickEvent, Context, DragMoveEvent, FontWeight, Hsla,
     InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, anchored, deferred, div,
     point, px, rgb, svg,
@@ -350,6 +350,7 @@ enum ToolbarAction {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SidebarChrome {
     pub update_available: bool,
+    pub reduced_motion: bool,
     pub can_go_back: bool,
     pub can_go_forward: bool,
     pub search_open: bool,
@@ -494,6 +495,26 @@ pub(super) struct RowContext<'a> {
     pub live: &'a HashMap<String, crate::models::sidebar_preview::PreviewLive>,
 }
 
+/// Keep toolbar/footer chrome outside the elastic viewport in both sidebar modes.
+pub(super) fn scroll_viewport<H: gpui_kit::base::ScrollbarHandle + Clone>(
+    id: &'static str,
+    handle: &H,
+    content: impl IntoElement,
+    reduced_motion: bool,
+) -> AnyElement {
+    div()
+        .flex_1()
+        .min_h(px(0.))
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .child(
+            gpui_kit::base::ScrollBounce::new(id, handle, content)
+                .enabled(gpui_kit::base::ScrollBounce::enabled_by_default() && !reduced_motion),
+        )
+        .into_any_element()
+}
+
 impl Sidebar {
     #[expect(
         clippy::too_many_arguments,
@@ -550,6 +571,7 @@ impl Sidebar {
                     current_route,
                     hovered_row,
                     recent_scroll,
+                    chrome.reduced_motion,
                     cx,
                 ))
             })
@@ -587,9 +609,12 @@ impl Sidebar {
                     first = false;
                     elements.push(Self::render_section(section, &context, top, cx));
                 }
-                root.child(
+                root.child(scroll_viewport(
+                    "sidebar-grouped-bounce",
+                    scroll_handle,
                     div()
                         .flex_1()
+                        .min_h(px(0.))
                         .id("sidebar-sections-scroll")
                         .overflow_y_scroll()
                         .scrollbar_width(px(8.))
@@ -601,7 +626,8 @@ impl Sidebar {
                         .flex()
                         .flex_col()
                         .children(elements),
-                )
+                    chrome.reduced_motion,
+                ))
             })
             .child(Self::render_profile_footer(
                 connectivity,
@@ -778,7 +804,7 @@ impl Sidebar {
                     .when(open, |trigger| {
                         trigger.child(deferred(
                             anchored()
-                                .anchor(Corner::TopLeft)
+                                .anchor(Anchor::TopLeft)
                                 .offset(point(px(0.), px(4.)))
                                 .child(popup_menu(
                                     "sidebar-order-menu",
@@ -850,7 +876,7 @@ impl Sidebar {
                     .when(menu_open, |identity| {
                         identity.child(deferred(
                             anchored()
-                                .anchor(Corner::BottomLeft)
+                                .anchor(Anchor::BottomLeft)
                                 .offset(point(px(0.), px(-4.)))
                                 .child(popup_menu(
                                     "sidebar-identity-menu",
@@ -952,7 +978,7 @@ impl Sidebar {
 
         let mut offset = scroll_handle.offset();
         let max = scroll_handle.max_offset();
-        offset.y = (offset.y + delta).clamp(-max.height, px(0.));
+        offset.y = (offset.y + delta).clamp(-max.y, px(0.));
         scroll_handle.set_offset(offset);
     }
 

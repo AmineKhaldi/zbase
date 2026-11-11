@@ -182,7 +182,7 @@ jobs:
         env:
           DYLD_FRAMEWORK_PATH: ${{ github.workspace }}/dist/sparkle
         id: rust-tests
-        run: cargo test --release --locked --all-targets --features gpui/runtime_shaders,macos-updater --timings
+        run: cargo test --release --locked --all-targets --features macos-updater --timings
       - name: Build and verify self-contained app
         run: |
           scripts/macos/build_app_bundle.sh release

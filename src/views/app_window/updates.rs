@@ -4,7 +4,7 @@ use crate::services::updates::{
     session::{self, SavedDraft, UpdateSession},
 };
 use crate::views::accent;
-use gpui::FontWeight;
+use gpui_kit::FontWeight;
 
 #[derive(Default)]
 pub(super) struct UpdateUi {
@@ -51,7 +51,7 @@ impl AppWindow {
         if let Some(focus) = self.update_ui.previous_focus.take()
             && restore
         {
-            window.focus(&focus);
+            window.focus(&focus, cx);
         }
         cx.notify();
     }
@@ -464,7 +464,12 @@ impl AppWindow {
                         .w_full()
                         .rounded_full()
                         .bg(crate::views::subtle_surface())
-                        .child(div().h_full().w(gpui::relative(progress)).bg(rgb(accent()))),
+                        .child(
+                            div()
+                                .h_full()
+                                .w(gpui_kit::relative(progress))
+                                .bg(rgb(accent())),
+                        ),
                 )
                 .child(format!(
                     "{:.1} / {:.1} MB",

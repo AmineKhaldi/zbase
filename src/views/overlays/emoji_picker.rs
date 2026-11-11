@@ -14,7 +14,7 @@ use crate::{
         search_icon, shell_border, shell_border_strong, text_primary, text_secondary, tint,
     },
 };
-use gpui::{
+use gpui_kit::{
     AnyElement, Context, Entity, ImageSource, InteractiveElement, IntoElement, ObjectFit,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, StyledImage, div, img, px,
     rgb,
@@ -492,7 +492,7 @@ fn section_title(title: impl Into<String>) -> AnyElement {
     div()
         .text_xs()
         .text_color(rgb(text_secondary()))
-        .font_weight(gpui::FontWeight::MEDIUM)
+        .font_weight(gpui_kit::FontWeight::MEDIUM)
         .child(title.into())
         .into_any_element()
 }

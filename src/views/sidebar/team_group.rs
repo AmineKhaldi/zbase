@@ -7,8 +7,8 @@ use crate::{
     models::sidebar_model::SidebarRow,
     views::{accent, avatar::Avatar, shell_border_strong, subtle_surface, text_secondary},
 };
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     AnyElement, AppContext, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, div, px, rgb,
 };

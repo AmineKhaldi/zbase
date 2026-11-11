@@ -1,7 +1,9 @@
 //! Each rendered element owns its image and at most one decode task. Scaled
 //! images never enter GPUI's unbounded asset cache or share atlas ownership.
 use super::{ScaledSource, scale_file};
-use gpui::{App, AppContext, Context, ImageCacheError, RenderImage, SharedString, Task, Window};
+use gpui_kit::{
+    App, AppContext, Context, ImageCacheError, RenderImage, SharedString, Task, Window,
+};
 use image::Frame;
 use std::sync::Arc;
 

@@ -48,8 +48,8 @@ use crate::{
         tint,
     },
 };
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     AnyElement, AppContext, Context, CursorStyle, Entity, ExternalPaths, FontWeight, ImageSource,
     InteractiveElement, IntoElement, MouseButton, ObjectFit, ParentElement, Render, RenderImage,
     ScrollHandle, SharedString, StatefulInteractiveElement, Styled, StyledImage, Window, div, img,
@@ -261,7 +261,7 @@ impl ThreadPane {
                             .id("thread-pane-scroll")
                             .overflow_y_scroll()
                             .track_scroll(thread_scroll)
-                            .on_scroll_wheel(cx.listener(AppWindow::thread_scrolled))
+                            .on_scroll(cx.listener(AppWindow::thread_scrolled))
                             .child(div().pt_3().pb_4().flex().flex_col().gap_1().children(
                                 thread_rows.into_iter().flat_map(|row| {
                                     let is_root =
@@ -1199,7 +1199,7 @@ fn member_avatar(
     id_prefix: &str,
     member: &crate::domain::channel_details::ChannelMemberPreview,
     size: f32,
-    surface: gpui::Hsla,
+    surface: gpui_kit::Hsla,
 ) -> AnyElement {
     Avatar::with_presence_tooltip(
         SharedString::from(format!("{id_prefix}-presence-{}", member.user_id.0)),

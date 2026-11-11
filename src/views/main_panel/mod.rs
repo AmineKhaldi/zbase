@@ -7,8 +7,8 @@ use crate::{
         input::TextField, search::SearchView, text_primary,
     },
 };
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     AnyElement, Context, Entity, IntoElement, ListState, ParentElement, RenderImage, Styled, div,
     px, rgb,
 };

@@ -12,116 +12,87 @@ use crate::views::input::{
     DeleteToBeginningOfLine, DeleteToEndOfLine, MoveToBeginningOfLine, MoveToEndOfLine,
     SelectToBeginningOfLine, SelectToEndOfLine, ShowCharacterPalette,
 };
-use gpui::{App, KeyBinding};
+use gpui_kit::{App, KeyBinding};
 
 pub fn install(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new(&command_keys("cmd-q"), commands::QuitApp, Some("Workspace")),
-        KeyBinding::new(
-            &command_keys("cmd-w"),
-            commands::CloseWindow,
-            Some("SettingsWindow"),
-        ),
-        KeyBinding::new(
-            &command_keys("cmd-q"),
-            commands::QuitApp,
-            Some("SettingsWindow"),
-        ),
-        KeyBinding::new(
-            &command_keys("cmd-w"),
-            commands::CloseWindow,
-            Some("Workspace"),
-        ),
-        KeyBinding::new(
-            &command_keys("cmd-["),
-            commands::NavigateBack,
-            Some("Workspace"),
-        ),
-        KeyBinding::new(
-            &command_keys("cmd-]"),
-            commands::NavigateForward,
-            Some("Workspace"),
-        ),
-        KeyBinding::new(
-            &command_keys("cmd-shift-a"),
-            commands::ShowActivity,
-            Some("Workspace"),
-        ),
-        KeyBinding::new(
-            &command_keys("cmd-,"),
-            commands::OpenPreferences,
-            Some("Workspace"),
-        ),
-        KeyBinding::new(
-            &command_keys("alt-cmd-1"),
+        command_binding("cmd-q", commands::QuitApp, Some("Workspace"), cx),
+        command_binding("cmd-w", commands::CloseWindow, Some("SettingsWindow"), cx),
+        command_binding("cmd-q", commands::QuitApp, Some("SettingsWindow"), cx),
+        command_binding("cmd-w", commands::CloseWindow, Some("Workspace"), cx),
+        command_binding("cmd-[", commands::NavigateBack, Some("Workspace"), cx),
+        command_binding("cmd-]", commands::NavigateForward, Some("Workspace"), cx),
+        command_binding("cmd-shift-a", commands::ShowActivity, Some("Workspace"), cx),
+        command_binding("cmd-,", commands::OpenPreferences, Some("Workspace"), cx),
+        command_binding(
+            "alt-cmd-1",
             commands::SortSidebarByRecent,
             Some("Workspace"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("alt-cmd-2"),
+        command_binding(
+            "alt-cmd-2",
             commands::GroupSidebarByTeam,
             Some("Workspace"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("cmd-shift-\\"),
+        command_binding(
+            "cmd-shift-\\",
             commands::ToggleThreadPane,
             Some("Workspace"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("cmd-shift-m"),
+        command_binding(
+            "cmd-shift-m",
             commands::ToggleMembersPane,
             Some("Workspace"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("cmd-shift-d"),
+        command_binding(
+            "cmd-shift-d",
             commands::ToggleDetailsPane,
             Some("Workspace"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("cmd-shift-f"),
+        command_binding(
+            "cmd-shift-f",
             commands::OpenFilesPane,
             Some("Workspace"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("cmd-shift-s"),
+        command_binding(
+            "cmd-shift-s",
             commands::ToggleSplashScreen,
             Some("Workspace"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("cmd-1"),
-            commands::ShowHome,
-            Some("Workspace"),
-        ),
-        KeyBinding::new(
-            &command_keys("cmd-2"),
+        command_binding("cmd-1", commands::ShowHome, Some("Workspace"), cx),
+        command_binding(
+            "cmd-2",
             commands::OpenQuickSwitcherRecent2,
             Some("Workspace"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("cmd-3"),
+        command_binding(
+            "cmd-3",
             commands::OpenQuickSwitcherRecent3,
             Some("Workspace"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("cmd-4"),
+        command_binding(
+            "cmd-4",
             commands::OpenQuickSwitcherRecent4,
             Some("Workspace"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("cmd-5"),
+        command_binding(
+            "cmd-5",
             commands::OpenQuickSwitcherRecent5,
             Some("Workspace"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("cmd-j"),
-            commands::OpenSearch,
-            Some("Workspace"),
-        ),
-        KeyBinding::new(
-            &command_keys("cmd-f"),
-            commands::ToggleFindInChat,
-            Some("Workspace"),
-        ),
+        command_binding("cmd-j", commands::OpenSearch, Some("Workspace"), cx),
+        command_binding("cmd-f", commands::ToggleFindInChat, Some("Workspace"), cx),
         KeyBinding::new("enter", commands::ConfirmPrimary, Some("Workspace")),
         KeyBinding::new(
             "tab",
@@ -142,24 +113,12 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("right", Right, Some("QuickSwitcherTextField")),
         KeyBinding::new("shift-left", SelectLeft, Some("QuickSwitcherTextField")),
         KeyBinding::new("shift-right", SelectRight, Some("QuickSwitcherTextField")),
-        KeyBinding::new(
-            &command_keys("cmd-a"),
-            SelectAll,
-            Some("QuickSwitcherTextField"),
-        ),
-        KeyBinding::new(
-            &command_keys("cmd-v"),
-            Paste,
-            Some("QuickSwitcherTextField"),
-        ),
-        KeyBinding::new(&command_keys("cmd-c"), Copy, Some("QuickSwitcherTextField")),
-        KeyBinding::new(&command_keys("cmd-x"), Cut, Some("QuickSwitcherTextField")),
-        KeyBinding::new(&command_keys("cmd-z"), Undo, Some("QuickSwitcherTextField")),
-        KeyBinding::new(
-            &command_keys("cmd-shift-z"),
-            Redo,
-            Some("QuickSwitcherTextField"),
-        ),
+        command_binding("cmd-a", SelectAll, Some("QuickSwitcherTextField"), cx),
+        command_binding("cmd-v", Paste, Some("QuickSwitcherTextField"), cx),
+        command_binding("cmd-c", Copy, Some("QuickSwitcherTextField"), cx),
+        command_binding("cmd-x", Cut, Some("QuickSwitcherTextField"), cx),
+        command_binding("cmd-z", Undo, Some("QuickSwitcherTextField"), cx),
+        command_binding("cmd-shift-z", Redo, Some("QuickSwitcherTextField"), cx),
         KeyBinding::new("home", Home, Some("QuickSwitcherTextField")),
         KeyBinding::new("end", End, Some("QuickSwitcherTextField")),
         KeyBinding::new("shift-home", SelectHome, Some("QuickSwitcherTextField")),
@@ -171,50 +130,49 @@ pub fn install(cx: &mut App) {
             commands::ActivateSidebarSelection,
             Some("Workspace"),
         ),
-        KeyBinding::new(
-            &command_keys("cmd-n"),
-            commands::OpenNewChat,
-            Some("Workspace"),
-        ),
-        KeyBinding::new(
-            &command_keys("cmd-enter"),
-            commands::StartNewChat,
-            Some("Workspace"),
-        ),
-        KeyBinding::new(
-            &command_keys("cmd-b"),
+        command_binding("cmd-n", commands::OpenNewChat, Some("Workspace"), cx),
+        command_binding("cmd-enter", commands::StartNewChat, Some("Workspace"), cx),
+        command_binding(
+            "cmd-b",
             commands::FormatBold,
             Some("MultilineTextField"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("cmd-i"),
+        command_binding(
+            "cmd-i",
             commands::FormatItalic,
             Some("MultilineTextField"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("cmd-e"),
+        command_binding(
+            "cmd-e",
             commands::FormatCode,
             Some("MultilineTextField"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("cmd-k"),
+        command_binding(
+            "cmd-k",
             commands::ToggleQuickSwitcher,
             Some("Workspace"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("cmd-shift-p"),
+        command_binding(
+            "cmd-shift-p",
             commands::ToggleCommandPalette,
             Some("Workspace"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("cmd-shift-i"),
+        command_binding(
+            "cmd-shift-i",
             commands::ToggleKeybaseInspector,
             Some("Workspace"),
+            cx,
         ),
-        KeyBinding::new(
-            &command_keys("cmd-shift-b"),
+        command_binding(
+            "cmd-shift-b",
             commands::ToggleBenchmarkCapture,
             Some("Workspace"),
+            cx,
         ),
         KeyBinding::new("escape", commands::DismissOverlays, Some("Workspace")),
         KeyBinding::new(
@@ -238,12 +196,12 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("right", Right, Some("TextField")),
         KeyBinding::new("shift-left", SelectLeft, Some("TextField")),
         KeyBinding::new("shift-right", SelectRight, Some("TextField")),
-        KeyBinding::new(&command_keys("cmd-a"), SelectAll, Some("TextField")),
-        KeyBinding::new(&command_keys("cmd-v"), Paste, Some("TextField")),
-        KeyBinding::new(&command_keys("cmd-c"), Copy, Some("TextField")),
-        KeyBinding::new(&command_keys("cmd-x"), Cut, Some("TextField")),
-        KeyBinding::new(&command_keys("cmd-z"), Undo, Some("TextField")),
-        KeyBinding::new(&command_keys("cmd-shift-z"), Redo, Some("TextField")),
+        command_binding("cmd-a", SelectAll, Some("TextField"), cx),
+        command_binding("cmd-v", Paste, Some("TextField"), cx),
+        command_binding("cmd-c", Copy, Some("TextField"), cx),
+        command_binding("cmd-x", Cut, Some("TextField"), cx),
+        command_binding("cmd-z", Undo, Some("TextField"), cx),
+        command_binding("cmd-shift-z", Redo, Some("TextField"), cx),
         KeyBinding::new("home", Home, Some("TextField")),
         KeyBinding::new("end", End, Some("TextField")),
         KeyBinding::new("shift-home", SelectHome, Some("TextField")),
@@ -258,20 +216,12 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("shift-right", SelectRight, Some("MultilineTextField")),
         KeyBinding::new("shift-up", SelectUp, Some("MultilineTextField")),
         KeyBinding::new("shift-down", SelectDown, Some("MultilineTextField")),
-        KeyBinding::new(
-            &command_keys("cmd-a"),
-            SelectAll,
-            Some("MultilineTextField"),
-        ),
-        KeyBinding::new(&command_keys("cmd-v"), Paste, Some("MultilineTextField")),
-        KeyBinding::new(&command_keys("cmd-c"), Copy, Some("MultilineTextField")),
-        KeyBinding::new(&command_keys("cmd-x"), Cut, Some("MultilineTextField")),
-        KeyBinding::new(&command_keys("cmd-z"), Undo, Some("MultilineTextField")),
-        KeyBinding::new(
-            &command_keys("cmd-shift-z"),
-            Redo,
-            Some("MultilineTextField"),
-        ),
+        command_binding("cmd-a", SelectAll, Some("MultilineTextField"), cx),
+        command_binding("cmd-v", Paste, Some("MultilineTextField"), cx),
+        command_binding("cmd-c", Copy, Some("MultilineTextField"), cx),
+        command_binding("cmd-x", Cut, Some("MultilineTextField"), cx),
+        command_binding("cmd-z", Undo, Some("MultilineTextField"), cx),
+        command_binding("cmd-shift-z", Redo, Some("MultilineTextField"), cx),
         KeyBinding::new("home", Home, Some("MultilineTextField")),
         KeyBinding::new("end", End, Some("MultilineTextField")),
         KeyBinding::new("shift-home", SelectHome, Some("MultilineTextField")),
@@ -285,8 +235,8 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("shift-right", SelectRight, Some("SelectableText")),
         KeyBinding::new("shift-up", SelectUp, Some("SelectableText")),
         KeyBinding::new("shift-down", SelectDown, Some("SelectableText")),
-        KeyBinding::new(&command_keys("cmd-a"), SelectAll, Some("SelectableText")),
-        KeyBinding::new(&command_keys("cmd-c"), Copy, Some("SelectableText")),
+        command_binding("cmd-a", SelectAll, Some("SelectableText"), cx),
+        command_binding("cmd-c", Copy, Some("SelectableText"), cx),
         KeyBinding::new("home", Home, Some("SelectableText")),
         KeyBinding::new("end", End, Some("SelectableText")),
         KeyBinding::new("shift-home", SelectHome, Some("SelectableText")),
@@ -511,4 +461,27 @@ pub fn install(cx: &mut App) {
             Some("MultilineTextField"),
         ),
     ]);
+}
+
+/// GPUI's dynamic loader owns parsed keystrokes and applies the platform mapper.
+fn command_binding(
+    keys: &str,
+    action: impl gpui_kit::Action,
+    context: Option<&str>,
+    cx: &App,
+) -> KeyBinding {
+    let context = context.map(|context| {
+        gpui_kit::KeyBindingContextPredicate::parse(context)
+            .expect("valid built-in key context")
+            .into()
+    });
+    KeyBinding::load(
+        &command_keys(keys),
+        Box::new(action),
+        context,
+        false,
+        None,
+        cx,
+    )
+    .expect("valid built-in command binding")
 }

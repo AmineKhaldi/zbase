@@ -1,7 +1,7 @@
 //! Shared geometry for the timeline, thread replies, and right-click strip.
 //! Never clamp a right-hand candidate back across the pointer; choose another
 //! side instead. Hidden/unplaceable strips must not contribute any hit boxes.
-use gpui::{Bounds, Point, Size, point, size};
+use gpui_kit::{Bounds, Point, Size, point, size};
 
 pub(super) const BUTTON_SIZE: f32 = 26.0;
 const GAP: f32 = 14.0;

@@ -3,8 +3,8 @@
 //! column, right-aligned shortcuts and separators. The owner keeps the open
 //! state, places the menu with `anchored` and closes it from `on_dismiss`.
 use crate::views::{is_dark_theme, text_primary, text_secondary, tint};
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     AnyElement, App, BoxShadow, ClickEvent, FontWeight, Hsla, InteractiveElement, IntoElement,
     MouseDownEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div,
     point, px, rgb, svg,
@@ -170,6 +170,7 @@ fn menu_border() -> Hsla {
 
 fn menu_shadow() -> Vec<BoxShadow> {
     vec![BoxShadow {
+        inset: false,
         color: tint(0x000000, if is_dark_theme() { 0.45 } else { 0.16 }),
         offset: point(px(0.), px(6.)),
         blur_radius: px(18.),

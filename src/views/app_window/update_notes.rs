@@ -4,7 +4,9 @@ use crate::views::{
     inline_markdown::{InlineMarkdownConfig, apply_inline_markdown},
     selectable_text::{LinkRange, SelectableText, resolve_selectable_text},
 };
-use gpui::{AnyElement, Context, Entity, FontWeight, IntoElement, ParentElement, Styled, div, px};
+use gpui_kit::{
+    AnyElement, Context, Entity, FontWeight, IntoElement, ParentElement, Styled, div, px,
+};
 use std::collections::HashMap;
 
 fn links(source: &str) -> (String, Vec<LinkRange>) {

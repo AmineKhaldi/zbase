@@ -1,5 +1,5 @@
 use super::TextField;
-use gpui::{Bounds, Context, Pixels, Point, ScrollDelta, ScrollWheelEvent, Window, point, px};
+use gpui_kit::{Bounds, Context, Pixels, Point, ScrollDelta, ScrollEvent, Window, point, px};
 use std::time::Duration;
 
 pub(super) fn resolve_scroll_offset(
@@ -48,9 +48,9 @@ impl TextField {
         self.selection_scroll_task = None;
     }
 
-    pub(super) fn on_scroll_wheel(
+    pub(super) fn on_scroll(
         &mut self,
-        event: &ScrollWheelEvent,
+        event: &ScrollEvent,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -126,7 +126,7 @@ impl TextField {
         let window_handle = window.window_handle();
         let focus = self.focus_handle.clone();
         self.selection_scroll_task = Some(cx.spawn(
-            move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+            move |this: gpui_kit::WeakEntity<Self>, cx: &mut gpui_kit::AsyncApp| {
                 let mut cx = cx.clone();
                 let background = cx.background_executor().clone();
                 async move {
@@ -165,7 +165,7 @@ impl TextField {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::size;
+    use gpui_kit::size;
 
     #[test]
     fn manual_scroll_survives_repaint_until_keyboard_or_edit_reveals_caret() {
