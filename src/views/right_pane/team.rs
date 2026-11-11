@@ -52,28 +52,48 @@ pub(super) fn render_team_panel(
                 .child("Channels"),
         )
         .when(state.loading, |card| {
-            card.child(div().text_size(typography::body()).child("Loading channels…"))
+            card.child(
+                div()
+                    .text_size(typography::body())
+                    .child("Loading channels…"),
+            )
         })
         .when_some(state.error.as_ref(), |card, error| {
-            card.child(div().text_size(typography::body()).text_color(rgb(danger())).child(error.clone()))
-                .child(
+            card.child(
+                div()
+                    .text_size(typography::body())
+                    .text_color(rgb(danger()))
+                    .child(error.clone()),
+            )
+            .child(
+                div()
+                    .id("team-channels-retry")
+                    .text_size(typography::body())
+                    .text_color(rgb(accent()))
+                    .cursor(CursorStyle::PointingHand)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_team_details(retry_team.clone(), cx);
+                    }))
+                    .child("Try again"),
+            )
+        })
+        .when(
+            !state.loading && state.error.is_none() && state.channels.is_empty(),
+            |card| {
+                card.child(
                     div()
-                        .id("team-channels-retry")
                         .text_size(typography::body())
-                        .text_color(rgb(accent()))
-                        .cursor(CursorStyle::PointingHand)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.open_team_details(retry_team.clone(), cx);
-                        }))
-                        .child("Try again"),
+                        .child("No channels available."),
                 )
-        })
-        .when(!state.loading && state.error.is_none() && state.channels.is_empty(), |card| {
-            card.child(div().text_size(typography::body()).child("No channels available."))
-        })
-        .children(state.channels.iter().enumerate().map(|(index, channel)| {
-            channel_row(index, channel, workspace, cx)
-        }));
+            },
+        )
+        .children(
+            state
+                .channels
+                .iter()
+                .enumerate()
+                .map(|(index, channel)| channel_row(index, channel, workspace, cx)),
+        );
     let body = div()
         .id("team-details-scroll")
         .flex_1()
