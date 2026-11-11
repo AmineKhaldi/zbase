@@ -32,6 +32,8 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       CARGO_INCREMENTAL: '0'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
@@ -61,6 +63,10 @@ jobs:
           $bytes = [System.Text.Encoding]::UTF8.GetBytes((rustc -vV | Out-String))
           $key = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
           "rust-key=$key" >> $env:GITHUB_OUTPUT
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
+        with:
+          version: v0.16.0
       - uses: actions/cache/restore@v6
         id: rust-cache
         with:
@@ -68,8 +74,11 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: rust-windows-x64-${{ steps.toolchain.outputs.rust-key }}-${{ hashFiles('Cargo.lock', 'scripts/windows/build_installer.ps1') }}-${{ github.sha }}
+          # Allow lockfile/version changes while preserving compiler and native inputs.
+          key: rust-windows-x64-v2-${{ steps.toolchain.outputs.rust-key }}-${{ hashFiles('scripts/windows/build_installer.ps1') }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
+            rust-windows-x64-v2-${{ steps.toolchain.outputs.rust-key }}-${{ hashFiles('scripts/windows/build_installer.ps1') }}-${{ hashFiles('Cargo.lock') }}-
+            rust-windows-x64-v2-${{ steps.toolchain.outputs.rust-key }}-${{ hashFiles('scripts/windows/build_installer.ps1') }}-
             rust-windows-x64-${{ steps.toolchain.outputs.rust-key }}-${{ hashFiles('Cargo.lock', 'scripts/windows/build_installer.ps1') }}-
       - name: Rust release tests and installer
         id: installer
