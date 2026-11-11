@@ -34,6 +34,7 @@ use crate::domain::{channel_details::ConversationNotificationSettings, user::Nam
 #[derive(Clone, Debug)]
 pub struct SettingsModel {
     pub theme_mode: ThemeMode,
+    pub text_size: TextSize,
     pub density: Density,
     pub reduced_motion: bool,
     pub show_right_pane: bool,
@@ -58,6 +59,7 @@ impl Default for SettingsModel {
     fn default() -> Self {
         Self {
             theme_mode: ThemeMode::System,
+            text_size: TextSize::default(),
             density: Density::Comfortable,
             reduced_motion: false,
             show_right_pane: true,
@@ -73,5 +75,63 @@ impl Default for SettingsModel {
             quick_switcher_affinity: HashMap::new(),
             conversation_notifications: HashMap::new(),
         }
+    }
+}
+
+/// A global type scale, stored as a percentage in five-percent steps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextSize(u16);
+
+impl Default for TextSize {
+    fn default() -> Self {
+        Self::BASE
+    }
+}
+
+impl TextSize {
+    pub const BASE: Self = Self(100);
+    pub const MIN_PERCENT: u16 = 100;
+    pub const MAX_PERCENT: u16 = 200;
+    pub const STEP: u16 = 5;
+
+    pub fn percent(self) -> u16 {
+        self.0
+    }
+
+    pub fn from_percent(value: u16) -> Option<Self> {
+        ((Self::MIN_PERCENT..=Self::MAX_PERCENT).contains(&value)
+            && value.is_multiple_of(Self::STEP))
+        .then_some(Self(value))
+    }
+
+    pub fn smaller(self) -> Self {
+        Self(self.0.saturating_sub(Self::STEP).max(Self::MIN_PERCENT))
+    }
+
+    pub fn larger(self) -> Self {
+        Self((self.0 + Self::STEP).min(Self::MAX_PERCENT))
+    }
+
+    pub fn scale(self) -> f32 {
+        self.0 as f32 / 100.
+    }
+}
+
+#[cfg(test)]
+mod text_size_tests {
+    use super::TextSize;
+
+    #[test]
+    fn stepping_is_bounded_and_reversible() {
+        let mut size = TextSize::default();
+        assert_eq!(size.smaller(), size);
+        for percent in (105..=200).step_by(5) {
+            let next = size.larger();
+            assert_eq!(next.percent(), percent);
+            assert_eq!(next.smaller(), size);
+            size = next;
+        }
+        assert_eq!(size.larger(), size);
+        assert_eq!(size.scale(), 2.);
     }
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Screenshots the offline demo build in fixed UI scenes, for design review.
 #
-#   scripts/ui_preview/capture.sh [--no-build] [--out DIR] [--theme light|dark] [SCENE...]
+#   scripts/ui_preview/capture.sh [--no-build] [--out DIR] [--theme light|dark] [--text-size 100..200] [SCENE...]
 #
 # Scenes: chat chat-grouped chat-previews chat-previews-grouped chat-grouped-collapsed chat-previews-live
 # identity-menu order-menu chat-states
@@ -26,6 +26,7 @@ ALL_SCENES=(files-media files-documents files-empty chat chat-grouped chat-previ
 THEMES=(light dark)
 OUT="$ROOT/target/ui_preview/shots"
 BUILD=1
+TEXT_SIZE=100
 RENDER_WAIT_SECS="${ZBASE_PREVIEW_RENDER_WAIT:-2.5}"
 WINDOW_TIMEOUT_SECS=30
 SCENES=()
@@ -40,6 +41,16 @@ while [[ $# -gt 0 ]]; do
     --out)
       [[ $# -ge 2 ]] || { echo "--out needs a directory" >&2; exit 2; }
       OUT="$2"
+      shift
+      ;;
+    --text-size)
+      [[ $# -ge 2 ]] || { echo "--text-size needs a percentage from 100 to 200 (steps of 5)" >&2; exit 2; }
+      if [[ "$2" =~ ^[0-9]{3}$ ]] && (( 10#$2 >= 100 && 10#$2 <= 200 && 10#$2 % 5 == 0 )); then
+        TEXT_SIZE="$2"
+      else
+        echo "invalid text size: $2 (expected 100..200 in steps of 5)" >&2
+        exit 2
+      fi
       shift
       ;;
     --theme)
@@ -107,6 +118,7 @@ for scene in "${SCENES[@]}"; do
       ZBASE_BENCH_SKIP_BACKEND=1 \
       ZBASE_DEMO_SCENE="$scene" \
       ZBASE_DEMO_THEME="$theme" \
+      ZBASE_DEMO_TEXT_SIZE="$TEXT_SIZE" \
       ZBASE_DEMO_SIDEBAR_STYLE="$sidebar_style" \
       "$BIN") >"$log" 2>&1 &
     APP_PID=$!

@@ -2,11 +2,12 @@
 //! macOS System Settings. Only settings that change the app are listed. Shown in
 //! its own window (see `settings_window`); every control writes back through the
 //! main window, which owns and persists the settings.
+use crate::views::typography;
 use crate::{
     domain::user::NameStyle,
     models::{
         app_model::Connectivity,
-        settings_model::{Density, SettingsModel, SidebarMode, SidebarStyle, ThemeMode},
+        settings_model::{Density, SettingsModel, SidebarMode, SidebarStyle, TextSize, ThemeMode},
     },
     views::{
         accent, accent_strong, app_window::AppWindow, avatar::Avatar, field_border, is_dark_theme,
@@ -216,7 +217,12 @@ impl PreferencesView {
                     })
                     .child(section(
                         "Appearance",
-                        vec![theme_row.into_any_element(), density_row, names_row],
+                        vec![
+                            theme_row.into_any_element(),
+                            text_size_row(settings.text_size, app),
+                            density_row,
+                            names_row,
+                        ],
                     ))
                     .child(section(
                         "Layout",
@@ -230,7 +236,7 @@ impl PreferencesView {
                     .child(
                         div()
                             .px(px(4.))
-                            .text_size(px(12.))
+                            .text_size(typography::font_px(12.))
                             .text_color(rgb(text_secondary()))
                             .child(format!(
                                 "zBase {} · Settings are saved on this Mac.",
@@ -240,6 +246,100 @@ impl PreferencesView {
             )
             .into_any_element()
     }
+}
+
+/// The sample uses the same inherited scale as the rest of Settings.
+fn text_size_row(size: TextSize, app: &WeakEntity<AppWindow>) -> AnyElement {
+    div()
+        .px(px(16.))
+        .py(px(14.))
+        .flex()
+        .flex_col()
+        .gap(px(12.))
+        .child(row_text(
+            "Text size",
+            "Adjust text throughout zBase. Changes apply immediately.",
+        ))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .child(text_size_step(
+                    "preferences-text-size-decrease",
+                    "−",
+                    size.smaller(),
+                    size != size.smaller(),
+                    app,
+                ))
+                .child(
+                    div()
+                        .min_w(typography::font_px(52.))
+                        .text_center()
+                        .text_size(typography::body())
+                        .child(format!("{}%", size.percent())),
+                )
+                .child(text_size_step(
+                    "preferences-text-size-increase",
+                    "+",
+                    size.larger(),
+                    size != size.larger(),
+                    app,
+                )),
+        )
+        .child(
+            div()
+                .text_size(typography::body())
+                .child("The quick brown fox jumps over the lazy dog."),
+        )
+        .child(
+            div()
+                .text_size(typography::caption())
+                .text_color(rgb(text_secondary()))
+                .child("Labels, timestamps, and code scale with your messages."),
+        )
+        .child(
+            div()
+                .id("preferences-text-size-reset")
+                .text_size(typography::caption())
+                .text_color(rgb(accent()))
+                .cursor(CursorStyle::PointingHand)
+                .on_click(update_app(app, |this, cx| {
+                    this.set_text_size(TextSize::default(), cx)
+                }))
+                .child("Reset to default"),
+        )
+        .into_any_element()
+}
+
+fn text_size_step(
+    id: &'static str,
+    label: &'static str,
+    target: TextSize,
+    enabled: bool,
+    app: &WeakEntity<AppWindow>,
+) -> AnyElement {
+    div()
+        .id(id)
+        .size(typography::font_px(28.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.))
+        .border_1()
+        .border_color(shell_border())
+        .text_size(typography::body())
+        .opacity(if enabled { 1. } else { 0.35 })
+        .when(enabled, |button| {
+            button
+                .cursor(CursorStyle::PointingHand)
+                .hover(|style| style.bg(segment_track()))
+                .on_click(update_app(app, move |this, cx| {
+                    this.set_text_size(target, cx)
+                }))
+        })
+        .child(label)
+        .into_any_element()
 }
 
 /// Click handler that applies `change` to the main window, if it still exists.
@@ -291,16 +391,16 @@ fn row_text(title: &'static str, description: &'static str) -> gpui_kit::Div {
         .gap(px(2.))
         .child(
             div()
-                .text_size(px(13.))
-                .line_height(px(18.))
+                .text_size(typography::label())
+                .line_height(typography::font_px(18.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(rgb(text_primary()))
                 .child(title),
         )
         .child(
             div()
-                .text_size(px(12.))
-                .line_height(px(16.))
+                .text_size(typography::font_px(12.))
+                .line_height(typography::font_px(16.))
                 .text_color(rgb(text_secondary()))
                 .child(description),
         )
@@ -329,7 +429,7 @@ fn segmented<T: Clone + 'static>(
     select: impl Fn(&mut AppWindow, T, &mut gpui_kit::Context<AppWindow>) + Clone + 'static,
 ) -> AnyElement {
     div()
-        .h(px(28.))
+        .h(typography::font_px(28.))
         .p(px(2.))
         .flex()
         .items_center()
@@ -345,7 +445,7 @@ fn segmented<T: Clone + 'static>(
                 .flex()
                 .items_center()
                 .rounded(px(5.))
-                .text_size(px(13.))
+                .text_size(typography::label())
                 .font_weight(FontWeight::MEDIUM)
                 .cursor(CursorStyle::PointingHand)
                 .when(selected, |segment| {
@@ -476,7 +576,7 @@ fn theme_tile(
         )
         .child(
             div()
-                .text_size(px(12.))
+                .text_size(typography::font_px(12.))
                 .font_weight(if selected {
                     FontWeight::SEMIBOLD
                 } else {
@@ -600,16 +700,16 @@ fn account_row(account: &AccountSummary) -> AnyElement {
                 .gap(px(2.))
                 .child(
                     div()
-                        .text_size(px(13.))
-                        .line_height(px(18.))
+                        .text_size(typography::label())
+                        .line_height(typography::font_px(18.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(rgb(text_primary()))
                         .child(account.display_name.clone()),
                 )
                 .child(
                     div()
-                        .text_size(px(12.))
-                        .line_height(px(16.))
+                        .text_size(typography::font_px(12.))
+                        .line_height(typography::font_px(16.))
                         .text_color(rgb(text_secondary()))
                         .child(format!("Signed in as {}", account.username)),
                 ),
@@ -620,7 +720,7 @@ fn account_row(account: &AccountSummary) -> AnyElement {
                 .flex()
                 .items_center()
                 .gap(px(6.))
-                .text_size(px(12.))
+                .text_size(typography::font_px(12.))
                 .text_color(rgb(text_secondary()))
                 .child(
                     div()
@@ -703,7 +803,7 @@ fn update_settings_rows(
             div()
                 .px_4()
                 .py_2()
-                .text_xs()
+                .text_size(typography::caption())
                 .text_color(rgb(text_secondary()))
                 .child(format!("Last checked: {last}"))
                 .into_any_element(),
@@ -713,7 +813,7 @@ fn update_settings_rows(
             div()
                 .px_4()
                 .py_2()
-                .text_xs()
+                .text_size(typography::caption())
                 .text_color(rgb(text_secondary()))
                 .child(snapshot.message.clone())
                 .into_any_element(),

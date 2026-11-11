@@ -4,6 +4,7 @@ use crate::services::updates::{
     session::{self, SavedDraft, UpdateSession},
 };
 use crate::views::accent;
+use crate::views::typography;
 use gpui_kit::FontWeight;
 
 #[derive(Default)]
@@ -434,14 +435,14 @@ impl AppWindow {
             .flex()
             .flex_col()
             .gap_3()
-            .text_sm()
+            .text_size(typography::body())
             .text_color(rgb(text_primary()))
             .on_mouse_move(cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
             .child(
                 div()
-                    .text_xs()
+                    .text_size(typography::caption())
                     .text_color(rgb(text_secondary()))
                     .child(format!(
                         "Installed: {}{}",
@@ -531,7 +532,7 @@ impl AppWindow {
                 div()
                     .id("update-skip-version")
                     .cursor_pointer()
-                    .text_xs()
+                    .text_size(typography::caption())
                     .text_color(rgb(text_secondary()))
                     .child("Skip this version")
                     .on_click(cx.listener(|this, _, window, cx| {

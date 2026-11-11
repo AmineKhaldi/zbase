@@ -1,5 +1,6 @@
 //! Conversation attachments, using the same pane shell and media openers as chat.
 use super::{conversation_location, pane_header, pane_with_header};
+use crate::views::typography;
 use crate::{
     domain::{
         attachment::{AttachmentKind, AttachmentSummary},
@@ -131,7 +132,7 @@ pub(super) fn render_files_panel(
                 .flex_1()
                 .py_1p5()
                 .rounded_md()
-                .text_sm()
+                .text_size(typography::body())
                 .text_center()
                 .cursor(CursorStyle::PointingHand)
                 .bg(if tab == state.tab {
@@ -221,7 +222,7 @@ pub(super) fn render_files_panel(
             |body| {
                 body.child(
                     div()
-                        .text_xs()
+                        .text_size(typography::caption())
                         .text_color(rgb(views::text_secondary()))
                         .child("Showing attachments from loaded messages."),
                 )
@@ -335,7 +336,7 @@ fn render_item(
                                 .px_1()
                                 .bg(views::tint(0x000000, 0.7))
                                 .text_color(rgb(0xffffff))
-                                .text_xs()
+                                .text_size(typography::caption())
                                 .child(format!(
                                     "▶ {}",
                                     item.attachment
@@ -381,7 +382,7 @@ fn render_item(
                     .child(filename_row(&name))
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(typography::caption())
                             .text_color(rgb(views::text_secondary()))
                             .truncate()
                             .child(metadata),
@@ -402,7 +403,7 @@ fn filename_row(name: &str) -> AnyElement {
     div()
         .min_w(px(0.))
         .flex()
-        .text_sm()
+        .text_size(typography::body())
         .child(div().min_w(px(0.)).truncate().child(stem.to_owned()))
         .child(div().flex_shrink_0().child(extension))
         .into_any_element()
@@ -414,7 +415,7 @@ fn jump_button(message_id: MessageId, index: usize, cx: &mut Context<AppWindow>)
             "file-jump-{}-{index}",
             message_id.0
         )))
-        .text_xs()
+        .text_size(typography::caption())
         .text_color(rgb(views::text_secondary()))
         .rounded_sm()
         .px_1()

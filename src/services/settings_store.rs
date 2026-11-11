@@ -3,7 +3,9 @@ use crate::{
         channel_details::{ConversationNotificationSettings, NotificationLevel},
         user::NameStyle,
     },
-    models::settings_model::{Density, SettingsModel, SidebarMode, SidebarStyle, ThemeMode},
+    models::settings_model::{
+        Density, SettingsModel, SidebarMode, SidebarStyle, TextSize, ThemeMode,
+    },
 };
 use std::{
     fs,
@@ -169,6 +171,13 @@ fn parse_settings(raw: &str) -> SettingsModel {
         }
 
         match key {
+            "text_size" => {
+                settings.text_size = value
+                    .parse()
+                    .ok()
+                    .and_then(TextSize::from_percent)
+                    .unwrap_or_default();
+            }
             "theme" => {
                 settings.theme_mode = match value {
                     "light" => ThemeMode::Light,
@@ -239,6 +248,7 @@ fn serialize_settings(settings: &SettingsModel) -> String {
             NameStyle::Username => "username",
         }
     );
+    content.push_str(&format!("text_size={}\n", settings.text_size.percent()));
     if let Some(share) = settings.sidebar_conversations_share {
         content.push_str(&format!("sidebar_conversations_share={share:.4}\n"));
     }
@@ -510,5 +520,37 @@ quick_switcher_affinity.=2.5,1710000000002
             parsed.quick_switcher_affinity.get("conv_ok"),
             Some(&(1.5, 1_710_000_000_000))
         );
+    }
+}
+
+#[cfg(test)]
+mod text_size_tests {
+    use super::*;
+
+    #[test]
+    fn text_sizes_round_trip_and_invalid_values_use_default() {
+        for percent in
+            (TextSize::MIN_PERCENT..=TextSize::MAX_PERCENT).step_by(TextSize::STEP as usize)
+        {
+            let text_size = TextSize::from_percent(percent).unwrap();
+            let settings = SettingsModel {
+                text_size,
+                ..Default::default()
+            };
+            assert_eq!(
+                parse_settings(&serialize_settings(&settings)).text_size,
+                text_size
+            );
+        }
+        for raw in [
+            "",
+            "text_size=NaN",
+            "text_size=0",
+            "text_size=65535",
+            "text_size=101",
+            "text_size=205",
+        ] {
+            assert_eq!(parse_settings(raw).text_size, TextSize::default());
+        }
     }
 }

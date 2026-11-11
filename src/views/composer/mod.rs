@@ -1,3 +1,4 @@
+use crate::views::typography;
 use crate::{
     models::{
         app_model::SendNotice,
@@ -127,8 +128,8 @@ pub(crate) fn composer_field(
         .border_1()
         .border_color(rgb(field_border()))
         .bg(fill)
-        .text_sm()
-        .line_height(px(22.))
+        .text_size(typography::body())
+        .line_height(typography::font_px(22.))
         .text_color(rgb(text_primary()))
         .flex()
         .items_end()
@@ -257,8 +258,8 @@ fn format_tool(
             composer_tool(
                 id,
                 div()
-                    .text_size(px(13.))
-                    .line_height(px(16.))
+                    .text_size(typography::label())
+                    .line_height(typography::font_px(16.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(text_secondary()))
                     .child("Aa")
@@ -319,7 +320,7 @@ impl ComposerPanel {
                     .pl_2()
                     .border_l_2()
                     .border_color(rgb(accent()))
-                    .text_xs()
+                    .text_size(typography::caption())
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(rgb(text_secondary()))
                     .child("Editing · press Escape to cancel")
@@ -330,7 +331,7 @@ impl ComposerPanel {
                     .pl_2()
                     .border_l_2()
                     .border_color(rgb(accent()))
-                    .text_xs()
+                    .text_size(typography::caption())
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(rgb(text_secondary()))
                     .child("Replying in thread")
@@ -356,7 +357,7 @@ impl ComposerPanel {
             // when typing starts or stops; it is also the composer's bottom inset.
             .child(
                 div()
-                    .h(px(TYPING_SLOT_HEIGHT_PX))
+                    .h(typography::font_px(TYPING_SLOT_HEIGHT_PX))
                     // Lines the dots up with the field's text.
                     .pl(px(13.))
                     .flex()
@@ -447,14 +448,14 @@ fn render_candidate_row(candidate: &AutocompleteCandidate) -> AnyElement {
             .gap_2()
             .child(
                 div()
-                    .text_sm()
+                    .text_size(typography::body())
                     .text_color(rgb(text_primary()))
                     .child(crate::domain::user::shown_name(username, display_name).to_string()),
             )
             .children(
                 crate::domain::user::other_name(username, display_name).map(|other_name| {
                     div()
-                        .text_xs()
+                        .text_size(typography::caption())
                         .text_color(rgb(text_secondary()))
                         .child(other_name)
                 }),
@@ -470,13 +471,13 @@ fn render_candidate_row(candidate: &AutocompleteCandidate) -> AnyElement {
             .gap_2()
             .child(
                 div()
-                    .text_sm()
+                    .text_size(typography::body())
                     .text_color(rgb(text_primary()))
                     .child(format!("@{keyword}")),
             )
             .child(
                 div()
-                    .text_xs()
+                    .text_size(typography::caption())
                     .text_color(rgb(text_secondary()))
                     .child(description.clone()),
             )
@@ -491,13 +492,13 @@ fn render_candidate_row(candidate: &AutocompleteCandidate) -> AnyElement {
             .gap_2()
             .child(
                 div()
-                    .text_base()
+                    .text_size(typography::large_body())
                     .text_color(rgb(text_primary()))
                     .child(glyph.clone().unwrap_or_else(|| "◻".to_string())),
             )
             .child(
                 div()
-                    .text_sm()
+                    .text_size(typography::body())
                     .text_color(rgb(text_primary()))
                     .child(label.clone()),
             )

@@ -2,6 +2,7 @@ use super::{
     DragPreview, DraggedSection, LEAD_GAP_PX, ROW_AVATAR_SIZE_PX, ROW_INSET_PX, RowContext,
     SidebarHost, disclosure, team_asset,
 };
+use crate::views::typography;
 use crate::{
     domain::{conversation::ConversationGroup, ids::SidebarSectionId},
     views::{accent, avatar::Avatar, sidebar_hover_bg, text_primary},
@@ -35,14 +36,14 @@ impl TeamHeader<'_> {
         div()
             .id(group.clone())
             .group(group.clone())
-            .h(px(TEAM_HEADER_PX))
+            .h(px(typography::sidebar_px(TEAM_HEADER_PX)))
             .flex_shrink_0()
             .flex()
             .items_center()
             .gap(px(LEAD_GAP_PX))
             .px(px(ROW_INSET_PX))
             .rounded(px(6.))
-            .text_size(px(TEAM_TEXT_PX))
+            .text_size(typography::font_px(TEAM_TEXT_PX))
             .text_color(rgb(text_primary()))
             .cursor_pointer()
             .hover(|style| style.bg(rgb(sidebar_hover_bg())))

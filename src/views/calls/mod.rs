@@ -1,3 +1,4 @@
+use crate::views::typography;
 use crate::{
     models::call_model::CallModel,
     views::{
@@ -118,7 +119,7 @@ impl CallWindow {
                     .rounded_lg()
                     .bg(panel_alt_surface())
                     .p_4()
-                    .text_sm()
+                    .text_size(typography::body())
                     .text_color(rgb(text_secondary()))
                     .child(match status.as_str() {
                         "SharingScreen" => "Screen share is active.",
@@ -137,7 +138,7 @@ impl CallWindow {
                             .bg(panel_alt_surface())
                             .px_3()
                             .py_2()
-                            .text_sm()
+                            .text_size(typography::body())
                             .text_color(rgb(text_primary()))
                             .child(participant.display_name)
                             .into_any_element()

@@ -1,6 +1,7 @@
 //! Explicit save/open actions shared by attachment surfaces.
 use super::*;
 use crate::domain::attachment::AttachmentSummary;
+use crate::views::typography;
 use gpui_kit::{Animation, AnimationExt, Global, SharedString, Transformation};
 
 #[derive(Clone)]
@@ -53,13 +54,13 @@ pub(crate) fn control(
     div()
         .id(SharedString::from(id))
         .w(px(48.))
-        .h(px(26.))
+        .min_h(typography::font_px(26.))
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
         .rounded_sm()
-        .text_xs()
+        .text_size(typography::caption())
         .text_color(rgb(crate::views::accent()))
         .cursor(if available {
             CursorStyle::PointingHand

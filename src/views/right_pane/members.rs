@@ -1,6 +1,7 @@
 //! Members pane: a filter field, then owners and admins, members and bots,
 //! each person with presence, display name, username and role.
 use super::{conversation_location, member_avatar, pane_header, pane_with_header};
+use crate::views::typography;
 use crate::{
     domain::channel_details::ChannelMemberPreview,
     models::conversation_model::ConversationModel,
@@ -245,7 +246,7 @@ fn member_row(member: &ChannelMemberPreview, cx: &mut Context<AppWindow>) -> Any
                         .flex_shrink_0()
                         .max_w(px(180.))
                         .truncate()
-                        .text_size(px(13.))
+                        .text_size(typography::label())
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(rgb(text_primary()))
                         .child(member.shown_name().to_string()),
@@ -262,7 +263,7 @@ fn member_row(member: &ChannelMemberPreview, cx: &mut Context<AppWindow>) -> Any
                             .flex_1()
                             .min_w(px(0.))
                             .truncate()
-                            .text_size(px(12.))
+                            .text_size(typography::font_px(12.))
                             .text_color(rgb(text_secondary()))
                             .child(other_name),
                     )
@@ -276,13 +277,13 @@ fn member_row(member: &ChannelMemberPreview, cx: &mut Context<AppWindow>) -> Any
 fn role_badge(role: &'static str) -> AnyElement {
     div()
         .flex_shrink_0()
-        .h(px(18.))
+        .min_h(typography::font_px(18.))
         .px(px(6.))
         .flex()
         .items_center()
         .rounded(px(4.))
         .bg(tint(text_primary(), 0.07))
-        .text_size(px(11.))
+        .text_size(typography::font_px(11.))
         .font_weight(FontWeight::MEDIUM)
         .text_color(rgb(text_secondary()))
         .child(role)

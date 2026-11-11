@@ -1,3 +1,4 @@
+use crate::views::typography;
 pub(crate) mod layout_anchor;
 use crate::util::emoji_aliases::{normalize_emoji_alias, standard_emoji_for_alias};
 mod reply_context;
@@ -534,7 +535,7 @@ impl TimelineList {
                             .flex_wrap()
                             .items_center()
                             .gap_0p5()
-                            .text_xs()
+                            .text_size(typography::caption())
                             .text_color(rgb(text_secondary()))
                             .children(span_elements),
                     )
@@ -548,7 +549,7 @@ impl TimelineList {
                 .gap_2()
                 .py_1()
                 .px_4()
-                .text_xs()
+                .text_size(typography::caption())
                 .text_color(rgb(text_secondary()))
                 .child(activity_icon(accent()))
                 .child(label.clone())
@@ -663,7 +664,7 @@ impl TimelineList {
                     }))
                     .on_mouse_move(hold_message_hover(&row.message.id, is_thread, cx))
                     .cursor(gpui_kit::CursorStyle::PointingHand)
-                    .text_sm()
+                    .text_size(typography::body())
                     // Bold, so each turn is anchored by its name rather than
                     // by whitespace alone.
                     .font_weight(FontWeight::BOLD)
@@ -687,7 +688,7 @@ impl TimelineList {
                         "timeline-timestamp-{}-{}",
                         row.message.id.0, is_thread
                     )))
-                    .text_xs()
+                    .text_size(typography::caption())
                     .text_color(rgb(text_secondary()))
                     .when_some(
                         row.message.timestamp_ms.and_then(message_full_timestamp),
@@ -718,7 +719,7 @@ impl TimelineList {
                     .gap_2()
                     // Tighter than the default, so the name sits close to the
                     // message under it.
-                    .line_height(px(18.))
+                    .line_height(typography::font_px(18.))
                     .children(header_children),
             );
         }
@@ -1188,7 +1189,7 @@ impl TimelineList {
                                                         let label = attachment_label.clone();
                                                         move || {
                                                             div()
-                                                                .text_xs()
+                                                                .text_size(typography::caption())
                                                                 .text_color(rgb(text_secondary()))
                                                                 .child(label.clone())
                                                                 .into_any_element()
@@ -1199,7 +1200,7 @@ impl TimelineList {
                                     if let Some(ref caption) = caption_text {
                                         card = card.child(
                                             div()
-                                                .text_xs()
+                                                .text_size(typography::caption())
                                                 .text_color(rgb(text_secondary()))
                                                 .child(caption.clone()),
                                         );
@@ -1305,7 +1306,7 @@ impl TimelineList {
                                                         .py_0p5()
                                                         .rounded_sm()
                                                         .bg(tint(0x000000, 0.6))
-                                                        .text_xs()
+                                                        .text_size(typography::caption())
                                                         .text_color(rgb(0xFFFFFF))
                                                         .child(label),
                                                 )
@@ -1321,7 +1322,7 @@ impl TimelineList {
             .when(show_edited_badge && !edited_inline, |container| {
                 container.child(
                     div()
-                        .text_xs()
+                        .text_size(typography::caption())
                         .text_color(rgb(text_secondary()))
                         .child(EDITED_LABEL.trim_start()),
                 )
@@ -1390,7 +1391,7 @@ impl TimelineList {
                                                 let alias = reaction.emoji.clone();
                                                 move || {
                                                     div()
-                                                        .text_xs()
+                                                        .text_size(typography::caption())
                                                         .child(alias.clone())
                                                         .into_any_element()
                                                 }
@@ -1399,7 +1400,7 @@ impl TimelineList {
                                         .into_any_element()
                                 } else {
                                     div()
-                                        .text_xs()
+                                        .text_size(typography::caption())
                                         .child(reaction.emoji.clone())
                                         .into_any_element()
                                 }
@@ -1407,7 +1408,7 @@ impl TimelineList {
                                 reaction_glyph(standard.to_string())
                             } else {
                                 div()
-                                    .text_xs()
+                                    .text_size(typography::caption())
                                     .child(reaction.emoji.clone())
                                     .into_any_element()
                             };
@@ -1416,7 +1417,7 @@ impl TimelineList {
                             // your own reaction is tinted with the accent.
                             let mine = reaction.reacted_by_me;
                             let chip = div()
-                                .h(px(REACTION_TILE_PX))
+                                .min_h(typography::font_px(REACTION_TILE_PX))
                                 // The count's digit carries its own side bearing.
                                 .pl(px(8.))
                                 .pr(px(6.))
@@ -1445,7 +1446,7 @@ impl TimelineList {
                                 .child(emoji_element)
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(typography::caption())
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(rgb(if mine {
                                             accent()
@@ -1562,7 +1563,7 @@ impl TimelineList {
                             .justify_center()
                             .hover(|s| s.bg(subtle_surface()))
                             .cursor(gpui_kit::CursorStyle::PointingHand)
-                            .text_sm()
+                            .text_size(typography::body())
                             .child(unicode.to_string())
                             .into_any_element()
                     })
@@ -1591,7 +1592,7 @@ impl TimelineList {
                                     .justify_center()
                                     .hover(|s| s.bg(subtle_surface()))
                                     .cursor(gpui_kit::CursorStyle::PointingHand)
-                                    .text_sm()
+                                    .text_size(typography::body())
                                     .child(unicode.clone())
                                     .into_any_element(),
                             )
@@ -2079,7 +2080,7 @@ impl TimelineList {
                                                     .unwrap_or_else(|| "media".to_string());
                                                 move || {
                                                     div()
-                                                        .text_xs()
+                                                        .text_size(typography::caption())
                                                         .text_color(rgb(text_secondary()))
                                                         .child(site.clone())
                                                         .into_any_element()
@@ -2109,7 +2110,7 @@ impl TimelineList {
                                                 .bg(glass_surface_dark())
                                                 .border_1()
                                                 .border_color(shell_border())
-                                                .text_xs()
+                                                .text_size(typography::caption())
                                                 .text_color(rgb(text_primary()))
                                                 .child("video"),
                                         )
@@ -2152,15 +2153,20 @@ impl TimelineList {
                             .gap_0p5()
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_size(typography::caption())
                                     .text_color(rgb(text_secondary()))
                                     .child(site),
                             )
-                            .child(div().text_sm().text_color(rgb(text_primary())).child(title))
+                            .child(
+                                div()
+                                    .text_size(typography::body())
+                                    .text_color(rgb(text_primary()))
+                                    .child(title),
+                            )
                             .when(has_title && !is_giphy, |container| {
                                 container.child(
                                     div()
-                                        .text_xs()
+                                        .text_size(typography::caption())
                                         .text_color(rgb(super::link()))
                                         .child(preview.url.clone()),
                                 )
@@ -2196,7 +2202,7 @@ impl TimelineList {
             .when(hidden > 0, |container| {
                 container.child(
                     div()
-                        .text_xs()
+                        .text_size(typography::caption())
                         .text_color(rgb(text_secondary()))
                         .child(format!("+{} more links", hidden)),
                 )
@@ -2437,7 +2443,9 @@ impl TimelineList {
                 container.text_size(px(48.)).line_height(px(52.))
             })
             .when(!emoji_only, |container| {
-                container.text_sm().line_height(px(22.))
+                container
+                    .text_size(typography::body())
+                    .line_height(typography::font_px(22.))
             })
             .child(resolve_selectable_text_with_attachments(
                 selectable_texts,
@@ -2502,8 +2510,8 @@ impl TimelineList {
                                     let alias = alias.clone();
                                     move || {
                                         div()
-                                            .text_sm()
-                                            .line_height(px(22.))
+                                            .text_size(typography::body())
+                                            .line_height(typography::font_px(22.))
                                             .child(format!(":{alias}:"))
                                             .into_any_element()
                                     }
@@ -2638,7 +2646,9 @@ impl TimelineList {
                     container.text_size(px(48.)).line_height(px(52.))
                 })
                 .when(!emoji_only, |container| {
-                    container.text_sm().line_height(px(22.))
+                    container
+                        .text_size(typography::body())
+                        .line_height(typography::font_px(22.))
                 })
                 .child(resolve_selectable_text(
                     selectable_texts,
@@ -2665,7 +2675,9 @@ impl TimelineList {
                     container.text_size(px(48.)).line_height(px(52.))
                 })
                 .when(!emoji_only, |container| {
-                    container.text_sm().line_height(px(22.))
+                    container
+                        .text_size(typography::body())
+                        .line_height(typography::font_px(22.))
                 })
                 .child(resolve_selectable_text(
                     selectable_texts,
@@ -2790,8 +2802,8 @@ impl TimelineList {
                             container.w_full().min_w(px(0.))
                         })
                         .when(compact_inline, |container| container.flex_1().min_w(px(0.)))
-                        .text_sm()
-                        .line_height(px(22.))
+                        .text_size(typography::body())
+                        .line_height(typography::font_px(22.))
                         .text_color(rgb(text_primary()))
                         .child(selectable)
                         .into_any_element()
@@ -2824,10 +2836,10 @@ impl TimelineList {
                     .py_0p5()
                     .rounded_sm()
                     .bg(rgb(crate::views::inline_code_background()))
-                    .text_sm()
+                    .text_size(typography::body())
                     .font_family(mono_font_family())
                     .text_size(crate::views::inline_code_font_size())
-                    .line_height(px(22.))
+                    .line_height(typography::font_px(22.))
                     .text_color(rgb(crate::views::inline_code_foreground()))
                     .child(selectable)
                     .into_any_element()
@@ -2846,7 +2858,9 @@ impl TimelineList {
                                 container.text_size(px(48.)).line_height(px(52.))
                             })
                             .when(!emoji_only, |container| {
-                                container.text_sm().line_height(px(22.))
+                                container
+                                    .text_size(typography::body())
+                                    .line_height(typography::font_px(22.))
                             })
                             .child(unicode.clone())
                             .into_any_element();
@@ -2874,7 +2888,9 @@ impl TimelineList {
                                                 container.text_size(px(48.)).line_height(px(52.))
                                             })
                                             .when(!emoji_only, |container| {
-                                                container.text_sm().line_height(px(22.))
+                                                container
+                                                    .text_size(typography::body())
+                                                    .line_height(typography::font_px(22.))
                                             })
                                             .child(format!(":{alias}:"))
                                             .into_any_element()
@@ -2891,7 +2907,9 @@ impl TimelineList {
                             container.text_size(px(48.)).line_height(px(52.))
                         })
                         .when(!emoji_only, |container| {
-                            container.text_sm().line_height(px(22.))
+                            container
+                                .text_size(typography::body())
+                                .line_height(typography::font_px(22.))
                         })
                         .child(unicode.to_string())
                         .into_any_element();
@@ -2905,7 +2923,9 @@ impl TimelineList {
                         container.text_size(px(48.)).line_height(px(52.))
                     })
                     .when(!emoji_only, |container| {
-                        container.text_sm().line_height(px(22.))
+                        container
+                            .text_size(typography::body())
+                            .line_height(typography::font_px(22.))
                     })
                     .child(format!(":{alias}:"))
                     .into_any_element()
@@ -2995,8 +3015,8 @@ impl TimelineList {
                         container.w_full().min_w(px(0.))
                     })
                     .when(compact_inline, |container| container.flex_1().min_w(px(0.)))
-                    .text_sm()
-                    .line_height(px(22.))
+                    .text_size(typography::body())
+                    .line_height(typography::font_px(22.))
                     .text_color(rgb(text_primary()))
                     .child(selectable)
                     .into_any_element()
@@ -3048,7 +3068,7 @@ impl TimelineList {
                     .bg(rgb(panel_alt_bg()))
                     .px_2()
                     .py_1()
-                    .text_sm()
+                    .text_size(typography::body())
                     .font_family(mono_font_family())
                     .text_size(mono_font_size())
                     .child(resolve_selectable_text(
@@ -3067,7 +3087,7 @@ impl TimelineList {
                 .relative()
                 .pl_3()
                 .pb_1()
-                .text_sm()
+                .text_size(typography::body())
                 .text_color(rgb(text_secondary()))
                 .child(
                     div()
@@ -3110,8 +3130,8 @@ impl TimelineList {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .text_size(px(12.))
-                    .line_height(px(16.))
+                    .text_size(typography::font_px(12.))
+                    .line_height(typography::font_px(16.))
                     .child(crate::views::icon_asset(
                         "assets/icons/alert-triangle.svg",
                         12.,
@@ -3219,8 +3239,8 @@ impl TimelineList {
                 container.w_full().min_w(px(0.))
             })
             .when(compact_inline, |container| container.flex_1().min_w(px(0.)))
-            .text_sm()
-            .line_height(px(22.))
+            .text_size(typography::body())
+            .line_height(typography::font_px(22.))
             .text_color(rgb(text_primary()))
             .child(selectable)
             .into_any_element()
@@ -3286,8 +3306,8 @@ impl TimelineList {
                 container.w_full().min_w(px(0.))
             })
             .when(compact_inline, |container| container.flex_1().min_w(px(0.)))
-            .text_sm()
-            .line_height(px(22.))
+            .text_size(typography::body())
+            .line_height(typography::font_px(22.))
             .text_color(rgb(text_primary()))
             .child(selectable)
             .into_any_element()
@@ -3575,14 +3595,14 @@ fn render_reply_quote(
         .mt(px(2.))
         .mb(px(2.))
         .pl(px(8.))
-        .line_height(px(18.))
+        .line_height(typography::font_px(18.))
         .border_l_2()
         .border_color(tint(text_secondary(), 0.55))
         .group_hover(group, |style| style.border_color(rgb(accent())))
         .cursor(gpui_kit::CursorStyle::PointingHand)
         .on_click(on_click)
         .on_mouse_move(on_mouse_move)
-        .text_xs()
+        .text_size(typography::caption())
         .text_color(rgb(text_secondary()))
         .child(TruncatedLine::new(match context {
             Some(ReplyContext { author, excerpt }) => vec![
@@ -3630,7 +3650,7 @@ fn day_divider(label: &str, compact: bool) -> AnyElement {
         .child(
             div()
                 .flex_shrink_0()
-                .text_xs()
+                .text_size(typography::caption())
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(text_secondary()))
                 .child(label.to_string()),
@@ -3656,7 +3676,7 @@ fn new_messages_divider(label: &str, compact: bool) -> AnyElement {
         .child(
             div()
                 .flex_shrink_0()
-                .text_size(px(11.))
+                .text_size(typography::font_px(11.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(new_messages()))
                 .child(label.to_string()),
@@ -3716,7 +3736,7 @@ fn thread_summary_row(
     div()
         .id(group.clone())
         .group(group.clone())
-        .h(px(24.))
+        .min_h(typography::font_px(24.))
         // Outset so the faces line up with the message text above.
         .ml(px(-4.))
         .pl(px(4.))
@@ -3749,7 +3769,7 @@ fn thread_summary_row(
         .child(
             div()
                 .flex_shrink_0()
-                .text_size(px(12.))
+                .text_size(typography::font_px(12.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(link()))
                 .child(thread_summary_label(reply_count, clipped_parent_author)),
@@ -3758,7 +3778,7 @@ fn thread_summary_row(
             row.child(
                 div()
                     .flex_shrink_0()
-                    .text_size(px(12.))
+                    .text_size(typography::font_px(12.))
                     .text_color(rgb(text_secondary()))
                     .child(last_reply),
             )
@@ -3766,7 +3786,7 @@ fn thread_summary_row(
         .child(
             div()
                 .flex_shrink_0()
-                .text_size(px(12.))
+                .text_size(typography::font_px(12.))
                 .text_color(gpui_kit::transparent_black())
                 .group_hover(group, |style| style.text_color(rgb(text_secondary())))
                 .child("View thread"),
@@ -3787,7 +3807,7 @@ pub(crate) fn thread_replies_divider(reply_count: usize) -> AnyElement {
         .child(
             div()
                 .flex_shrink_0()
-                .text_xs()
+                .text_size(typography::caption())
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(text_secondary()))
                 .child(format!(

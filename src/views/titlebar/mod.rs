@@ -1,3 +1,4 @@
+use crate::views::typography;
 use crate::{
     models::app_model::Connectivity,
     views::app_window::AppWindow,
@@ -105,7 +106,7 @@ impl CustomTitlebar {
                             .id("titlebar-home")
                             .on_click(cx.listener(AppWindow::home_click))
                             .px_2()
-                            .text_sm()
+                            .text_size(typography::body())
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(workspace_name.to_string()),
                     ),

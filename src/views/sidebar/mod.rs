@@ -1,3 +1,4 @@
+use crate::views::typography;
 mod grouped;
 mod preview_row;
 mod recent;
@@ -46,7 +47,7 @@ impl Render for DragPreview {
             .py_1p5()
             .rounded_md()
             .bg(subtle_surface())
-            .text_xs()
+            .text_size(typography::caption())
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(rgb(text_secondary()))
             .child(self.title.clone())
@@ -107,11 +108,11 @@ impl RowLook {
     }
 
     pub fn row_px(self) -> f32 {
-        match self {
+        typography::sidebar_px(match self {
             Self::Compact => COMPACT_ROW_HEIGHT_PX,
             Self::Previews { .. } => PREVIEW_ROW_HEIGHT_PX,
             Self::Channel => CHANNEL_ROW_HEIGHT_PX,
-        }
+        })
     }
 }
 
@@ -201,16 +202,16 @@ impl RowActivity {
             return Some(
                 div()
                     .flex_shrink_0()
-                    .h(px(16.))
-                    .min_w(px(16.))
+                    .h(typography::font_px(16.))
+                    .min_w(typography::font_px(16.))
                     .px(px(5.))
                     .rounded_full()
                     .bg(rgb(accent_strong()))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(11.))
-                    .line_height(px(16.))
+                    .text_size(typography::font_px(11.))
+                    .line_height(typography::font_px(16.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(0xffffff))
                     .child(badge_label(self.badge, self.mention))
@@ -303,7 +304,7 @@ impl CompactRow<'_> {
                 div()
                     .flex_1()
                     .min_w(px(0.))
-                    .text_size(px(ROW_TEXT_SIZE_PX))
+                    .text_size(typography::font_px(ROW_TEXT_SIZE_PX))
                     .child(TruncatedLine::new(title)),
             )
             .when_some(activity.indicator(selected), |row, indicator| {
@@ -580,7 +581,9 @@ impl Sidebar {
                 root.child(
                     div()
                         .pt(px(FIRST_SECTION_GAP_PX))
-                        .h(px(FIRST_SECTION_GAP_PX + SECTION_HEADER_PX))
+                        .h(px(
+                            FIRST_SECTION_GAP_PX + typography::sidebar_px(SECTION_HEADER_PX)
+                        ))
                         .flex()
                         .items_center()
                         .child(section_label("Recent")),
@@ -872,7 +875,7 @@ impl Sidebar {
                                     .flex_col()
                                     .child(
                                         div()
-                                            .text_xs()
+                                            .text_size(typography::caption())
                                             .font_weight(FontWeight::MEDIUM)
                                             .child(current_user_display_name.to_string()),
                                     )
@@ -885,8 +888,8 @@ impl Sidebar {
                                                     .flex()
                                                     .items_center()
                                                     .gap(px(4.))
-                                                    .text_size(px(11.))
-                                                    .line_height(px(14.))
+                                                    .text_size(typography::font_px(11.))
+                                                    .line_height(typography::font_px(14.))
                                                     .text_color(rgb(text_secondary()))
                                                     .tooltip(SidebarTooltip::single_line(
                                                         tooltip.to_string(),
@@ -1062,7 +1065,7 @@ pub(super) fn disclosure(collapsed: bool, group: SharedString) -> AnyElement {
 fn section_label(title: &'static str) -> AnyElement {
     div()
         .pl(px(ROW_INSET_PX))
-        .text_xs()
+        .text_size(typography::caption())
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(rgb(text_secondary()))
         .child(title)

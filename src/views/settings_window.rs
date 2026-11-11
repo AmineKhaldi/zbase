@@ -1,6 +1,7 @@
 //! The Settings window (⌘, or zBase > Settings…): a separate fixed-size macOS
 //! window, so changing a preference never replaces the conversation. The main
 //! window owns the settings; this window renders them and writes changes back.
+use crate::views::typography;
 use crate::{
     app::{commands, theme::resolve_theme},
     views::{
@@ -137,6 +138,7 @@ impl Render for SettingsWindow {
                 (app.settings_model().clone(), app.preferences_context())
             })
             .unwrap_or_default();
+        window.set_rem_size(px(16. * settings.text_size.scale()));
         let theme = resolve_theme(&settings.theme_mode, window.appearance());
         with_theme(theme, || {
             div()
@@ -160,7 +162,7 @@ impl Render for SettingsWindow {
                         .justify_center()
                         .border_b_1()
                         .border_color(shell_border())
-                        .text_size(px(13.))
+                        .text_size(typography::label())
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(SETTINGS_WINDOW_TITLE),
                 )

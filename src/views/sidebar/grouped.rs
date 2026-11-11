@@ -4,6 +4,7 @@ use super::{
     SidebarHost, disclosure, scroll_viewport,
     team_group::{TEAM_HEADER_PX, TeamHeader},
 };
+use crate::views::typography;
 use crate::{
     domain::conversation::ConversationGroup,
     models::sidebar_model::{SidebarModel, SidebarRow, SidebarSection, TeamsItem},
@@ -330,8 +331,8 @@ fn teams_item_px(index: usize, item: TeamsItem<'_>) -> f32 {
         TeamsItem::Header(section) => {
             header_gap(index)
                 + match team_of(section) {
-                    Some(_) => TEAM_HEADER_PX,
-                    None => SECTION_HEADER_PX,
+                    Some(_) => typography::sidebar_px(TEAM_HEADER_PX),
+                    None => typography::sidebar_px(SECTION_HEADER_PX),
                 }
         }
         TeamsItem::Row(..) => RowLook::Channel.row_px(),
@@ -379,12 +380,12 @@ fn section_header<H: SidebarHost>(section: &SidebarSection, cx: &mut Context<H>)
     div()
         .id(group.clone())
         .group(group.clone())
-        .h(px(SECTION_HEADER_PX))
+        .h(px(typography::sidebar_px(SECTION_HEADER_PX)))
         .flex()
         .items_center()
         .justify_between()
         .gap_1()
-        .text_xs()
+        .text_size(typography::caption())
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(rgb(text_secondary()))
         .px(px(ROW_INSET_PX))
@@ -548,7 +549,7 @@ fn unread_pill<H: SidebarHost>(
         .right(px(SCROLLBAR_GUTTER_PX + ROW_INSET_PX / 2.))
         .when(up, |pill| pill.top(px(4.)))
         .when(!up, |pill| pill.bottom(px(4.)))
-        .h(px(UNREAD_PILL_PX))
+        .h(typography::font_px(UNREAD_PILL_PX))
         .pl(px(7.))
         .pr(px(9.))
         .flex()
@@ -557,7 +558,7 @@ fn unread_pill<H: SidebarHost>(
         .rounded_full()
         .bg(rgb(accent_strong()))
         .shadow(sidebar_card_shadow())
-        .text_size(px(11.))
+        .text_size(typography::font_px(11.))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(rgb(0xffffff))
         .cursor_pointer()

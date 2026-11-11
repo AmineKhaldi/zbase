@@ -1,3 +1,4 @@
+use crate::views::typography;
 use crate::views::{app_bg, app_window::AppWindow, is_dark_theme, text_primary, tint};
 use gpui_kit::{
     AnyElement, BoxShadow, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
@@ -96,7 +97,7 @@ impl SplashView {
                             )
                             .child(
                                 div()
-                                    .text_sm()
+                                    .text_size(typography::body())
                                     .font_weight(FontWeight::NORMAL)
                                     .text_color(rgb(subtitle_color))
                                     .child("conversations · people · messages"),
@@ -104,7 +105,7 @@ impl SplashView {
                             .child(
                                 div()
                                     .h(px(18.))
-                                    .text_xs()
+                                    .text_size(typography::caption())
                                     .font_weight(FontWeight::NORMAL)
                                     .text_color(rgb(status_color))
                                     .child(status.to_string()),
@@ -140,7 +141,7 @@ fn keycap(
         .items_center()
         .justify_center()
         .text_color(rgb(text_primary()))
-        .text_base()
+        .text_size(typography::large_body())
         .font_weight(FontWeight::MEDIUM)
         .child(label.to_string())
         .into_any_element()

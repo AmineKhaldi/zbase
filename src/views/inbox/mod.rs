@@ -1,3 +1,4 @@
+use crate::views::typography;
 use crate::{
     models::notifications_model::{ActivityItem, ActivityKind, NotificationsModel},
     views::{
@@ -43,7 +44,7 @@ impl InboxView {
                     .rounded_lg()
                     .bg(panel_alt_surface())
                     .p_4()
-                    .text_sm()
+                    .text_size(typography::body())
                     .text_color(rgb(text_secondary()))
                     .child("Mentions, thread replies, reactions, and reminders will land here."),
             )
@@ -114,7 +115,7 @@ impl InboxView {
                     )
                     .child(
                         div()
-                            .text_sm()
+                            .text_size(typography::body())
                             .text_color(rgb(text_secondary()))
                             .child(item.detail.clone()),
                     ),

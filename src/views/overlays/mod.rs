@@ -1,3 +1,4 @@
+use crate::views::typography;
 use crate::{
     domain::attachment::{AttachmentKind, AttachmentSource, AttachmentSummary},
     domain::route::Route,
@@ -227,7 +228,7 @@ impl OverlayHost {
                         .py_3()
                         .rounded_lg()
                         .bg(panel_surface())
-                        .text_sm()
+                        .text_size(typography::body())
                         .text_color(rgb(text_primary()))
                         .id("lightbox-error-card")
                         .on_mouse_down(
@@ -304,7 +305,7 @@ impl OverlayHost {
                                                     .flex()
                                                     .items_center()
                                                     .justify_center()
-                                                    .text_sm()
+                                                    .text_size(typography::body())
                                                     .text_color(rgb(text_secondary()))
                                                     .child("Image unavailable")
                                                     .into_any_element()
@@ -322,7 +323,7 @@ impl OverlayHost {
                                     cx.listener(|_, _, _, cx| cx.stop_propagation()),
                                 )
                                 .max_w(px(900.))
-                                .text_sm()
+                                .text_size(typography::body())
                                 .text_color(rgb(text_primary()))
                                 .child(caption),
                         )
@@ -349,7 +350,7 @@ impl OverlayHost {
                 .shadow(card_shadow())
                 .px_4()
                 .py_3()
-                .text_sm()
+                .text_size(typography::body())
                 .text_color(rgb(text_primary()))
                 .child("No files selected.")
                 .into_any_element();
@@ -396,7 +397,7 @@ impl OverlayHost {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .text_sm()
+                                    .text_size(typography::body())
                                     .text_color(rgb(text_secondary()))
                                     .child("Image unavailable")
                                     .into_any_element()
@@ -409,7 +410,7 @@ impl OverlayHost {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .text_sm()
+                        .text_size(typography::body())
                         .text_color(rgb(text_secondary()))
                         .child("Image unavailable")
                         .into_any_element()
@@ -420,7 +421,7 @@ impl OverlayHost {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_sm()
+                .text_size(typography::body())
                 .text_color(rgb(text_secondary()))
                 .child("Video preview coming soon")
                 .into_any_element(),
@@ -429,7 +430,7 @@ impl OverlayHost {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_sm()
+                .text_size(typography::body())
                 .text_color(rgb(text_secondary()))
                 .child("Audio file selected")
                 .into_any_element(),
@@ -438,7 +439,7 @@ impl OverlayHost {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_sm()
+                .text_size(typography::body())
                 .text_color(rgb(text_secondary()))
                 .child("File selected")
                 .into_any_element(),
@@ -466,7 +467,7 @@ impl OverlayHost {
                     .py_3()
                     .border_b_1()
                     .border_color(shell_border())
-                    .text_sm()
+                    .text_size(typography::body())
                     .text_color(rgb(text_primary()))
                     .child("Upload files"),
             )
@@ -491,13 +492,13 @@ impl OverlayHost {
                     )
                     .child(
                         div()
-                            .text_sm()
+                            .text_size(typography::body())
                             .text_color(rgb(text_primary()))
                             .child(candidate.filename.clone()),
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(typography::caption())
                             .text_color(rgb(text_secondary()))
                             .child(format!("{counter} · {attachment_label}")),
                     )
@@ -510,7 +511,7 @@ impl OverlayHost {
                             .border_color(shell_border())
                             .px_3()
                             .py_2()
-                            .text_sm()
+                            .text_size(typography::body())
                             .text_color(rgb(text_primary()))
                             .on_click(cx.listener(AppWindow::focus_file_upload_caption_input))
                             .child(file_upload_caption_input.clone()),
@@ -686,7 +687,7 @@ impl OverlayHost {
         let status_line = |text: String| {
             div()
                 .px_2()
-                .text_size(px(12.))
+                .text_size(typography::font_px(12.))
                 .text_color(rgb(text_secondary()))
                 .child(text)
         };
@@ -722,7 +723,7 @@ impl OverlayHost {
             .overflow_hidden()
             .child(
                 div()
-                    .h(px(48.))
+                    .min_h(typography::font_px(48.))
                     .flex_shrink_0()
                     .px_4()
                     .flex()
@@ -734,7 +735,7 @@ impl OverlayHost {
                     .child(
                         div()
                             .flex_1()
-                            .text_size(px(15.))
+                            .text_size(typography::font_px(15.))
                             .text_color(rgb(text_primary()))
                             .id("quick-switcher-overlay-input")
                             .on_click(cx.listener(AppWindow::focus_quick_switcher_input))
@@ -753,15 +754,17 @@ impl OverlayHost {
             )
             .child(
                 div()
-                    .h(px(36.))
+                    .min_h(typography::font_px(36.))
+                    .py_1()
                     .flex_shrink_0()
                     .px_4()
                     .border_t_1()
                     .border_color(shell_border())
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap(px(16.))
-                    .text_size(px(12.))
+                    .text_size(typography::font_px(12.))
                     .text_color(rgb(text_secondary()))
                     .child(hint(vec!["↑", "↓"], "Navigate"))
                     .child(hint(vec!["↵"], "Open"))
@@ -917,7 +920,7 @@ impl OverlayHost {
             .when(is_message, |row| row.items_start())
             .when(!is_message, |row| row.items_center())
             .gap(px(10.))
-            .text_size(px(14.))
+            .text_size(typography::font_px(14.))
             .bg(row_surface)
             .when(!selected, |row| {
                 row.hover(|style| style.bg(tint(text_primary(), 0.06)))
@@ -946,8 +949,8 @@ impl OverlayHost {
                     .child(
                         div()
                             .w_full()
-                            .when(is_message, |line| line.text_size(px(12.)))
-                            .line_height(px(if is_message { 16. } else { 20. }))
+                            .when(is_message, |line| line.text_size(typography::font_px(12.)))
+                            .line_height(typography::font_px(if is_message { 16. } else { 20. }))
                             .child(TruncatedLine::new(segments)),
                     )
                     .when_some(snippet, |column, snippet| {
@@ -1061,7 +1064,7 @@ impl OverlayHost {
                     .py_3()
                     .border_b_1()
                     .border_color(shell_border())
-                    .text_xs()
+                    .text_size(typography::caption())
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(rgb(text_secondary()))
                     .child("Commands"),
@@ -1135,7 +1138,7 @@ impl OverlayHost {
             .flex()
             .items_center()
             .justify_between()
-            .text_sm()
+            .text_size(typography::body())
             .text_color(rgb(text_primary()))
             .hover(|s| s.bg(subtle_surface()))
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -1144,7 +1147,7 @@ impl OverlayHost {
             .child(label)
             .child(
                 div()
-                    .text_xs()
+                    .text_size(typography::caption())
                     .text_color(rgb(text_secondary()))
                     .child(shortcut_label(shortcut)),
             )
