@@ -262,34 +262,35 @@ impl ThreadPane {
                             .overflow_y_scroll()
                             .track_scroll(thread_scroll)
                             .on_scroll(cx.listener(AppWindow::thread_scrolled))
-                            .child(div().pt_3().pb_4().flex().flex_col().gap_1().children(
-                                thread_rows.into_iter().flat_map(|row| {
-                                    let is_root =
-                                        thread.root_message_id.as_ref() == Some(&row.message.id);
-                                    let timeline_row = TimelineRow::Message(row);
-                                    let rendered = TimelineList::render_thread_row(
-                                        timeline,
-                                        &timeline_row,
-                                        thread_media_max_width,
-                                        video_render_cache,
-                                        code_highlight_cache,
-                                        selectable_texts,
-                                        cx,
-                                    );
-                                    // Set the root apart from its replies, or say there
-                                    // are none yet.
-                                    let divider = is_root.then(|| {
-                                        if reply_count > 0 {
-                                            crate::views::timeline::thread_replies_divider(
-                                                reply_count,
-                                            )
-                                        } else {
-                                            thread_no_replies_note()
-                                        }
-                                    });
-                                    std::iter::once(rendered).chain(divider)
-                                }),
-                            ))
+                            .pt_3()
+                            .pb_4()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .children(thread_rows.into_iter().map(|row| {
+                                let is_root =
+                                    thread.root_message_id.as_ref() == Some(&row.message.id);
+                                let timeline_row = TimelineRow::Message(row);
+                                let rendered = TimelineList::render_thread_row(
+                                    timeline,
+                                    &timeline_row,
+                                    thread_media_max_width,
+                                    video_render_cache,
+                                    code_highlight_cache,
+                                    selectable_texts,
+                                    cx,
+                                );
+                                // Set the root apart from its replies, or say there
+                                // are none yet.
+                                let divider = is_root.then(|| {
+                                    if reply_count > 0 {
+                                        crate::views::timeline::thread_replies_divider(reply_count)
+                                    } else {
+                                        thread_no_replies_note()
+                                    }
+                                });
+                                div().flex_shrink_0().child(rendered).children(divider)
+                            }))
                             .when(thread_is_empty, |scroll| {
                                 scroll.child(crate::views::empty_state(
                                     "assets/icons/thread.svg",
@@ -2417,7 +2418,7 @@ fn custom_emoji_size_px(emoji_only: bool) -> f32 {
     }
 }
 
-fn build_thread_message_rows(
+pub(crate) fn build_thread_message_rows(
     thread: &ThreadPaneModel,
     timeline: &TimelineModel,
 ) -> Vec<MessageRow> {

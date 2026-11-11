@@ -15,9 +15,9 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Only the most recent PR links keep refreshing; older ones are fetched once.
+/// Only the highest-priority PR links keep refreshing; others are fetched once.
 pub const MAX_REFRESHED_PRS: usize = 25;
-const MAX_BATCH: usize = 25;
+const MAX_BATCH: usize = 4;
 const RUNNING_INTERVAL: Duration = Duration::from_secs(30);
 const OPEN_INTERVAL: Duration = Duration::from_secs(180);
 const DRAFT_INTERVAL: Duration = Duration::from_secs(300);
@@ -77,6 +77,7 @@ enum PrFetch {
 struct Entry {
     status: Option<GithubPrStatus>,
     fetched_at: Option<Instant>,
+    discovered_at: Option<Instant>,
     in_flight: bool,
     no_access: bool,
     failed: bool,
@@ -88,7 +89,7 @@ pub struct GithubPrService {
     token_retry_at: Option<Instant>,
     backoff_until: Option<Instant>,
     failures: u32,
-    in_flight: bool,
+    active_batches: usize,
     attention: bool,
 }
 
@@ -106,7 +107,7 @@ impl GithubPrService {
             token_retry_at: None,
             backoff_until: None,
             failures: 0,
-            in_flight: false,
+            active_batches: 0,
             attention: false,
         }
     }
@@ -150,7 +151,7 @@ impl GithubPrService {
         })
     }
 
-    /// `refs` are the PRs linked in the open conversation, most recent first.
+    /// `refs` are PRs in the open conversation, ordered by viewport priority.
     /// Returns whether any preview may have changed.
     pub fn poll(
         &mut self,
@@ -162,11 +163,20 @@ impl GithubPrService {
         let mut changed = false;
         for pr in refs {
             if !self.entries.contains_key(pr) {
-                self.entries.insert(pr.clone(), Entry::default());
+                self.entries.insert(
+                    pr.clone(),
+                    Entry {
+                        discovered_at: Some(now),
+                        ..Entry::default()
+                    },
+                );
                 changed = true;
             }
         }
-        if self.in_flight || self.backoff_until.is_some_and(|until| now < until) {
+        if self.active_batches >= 2
+            || (self.active_batches > 0 && self.token.is_none())
+            || self.backoff_until.is_some_and(|until| now < until)
+        {
             return changed;
         }
         if self.token.is_none() && self.token_retry_at.is_some_and(|at| now < at) {
@@ -182,11 +192,12 @@ impl GithubPrService {
                 entry.in_flight = true;
             }
         }
-        self.in_flight = true;
+        let include_details = self.entries[&due[0]].status.is_some();
+        self.active_batches += 1;
         let token = self.token.clone();
         let sender = sender.clone();
         std::thread::spawn(move || {
-            let outcome = fetch_batch(token, &due);
+            let outcome = fetch_batch(token, &due, include_details);
             let _ = sender.send(GithubPrFetchResult { refs: due, outcome });
         });
         true
@@ -199,7 +210,8 @@ impl GithubPrService {
         attention: bool,
         now: Instant,
     ) -> Vec<GithubPrRef> {
-        refs.iter()
+        let mut candidates: Vec<_> = refs
+            .iter()
             .enumerate()
             .filter(|(index, pr)| {
                 let Some(entry) = self.entries.get(*pr) else {
@@ -210,25 +222,39 @@ impl GithubPrService {
                 }
                 match (&entry.status, entry.fetched_at) {
                     (Some(status), Some(fetched_at)) => {
-                        window_focused
-                            && *index < MAX_REFRESHED_PRS
-                            && refresh_due(
-                                status,
-                                now.saturating_duration_since(fetched_at),
-                                attention,
-                            )
+                        // Reserve the second slot for initial loads so an older
+                        // conversation or background refresh cannot block them.
+                        self.active_batches == 0
+                            && (!status.details_loaded
+                                || (window_focused
+                                    && *index < MAX_REFRESHED_PRS
+                                    && refresh_due(
+                                        status,
+                                        now.saturating_duration_since(fetched_at),
+                                        attention,
+                                    )))
                     }
                     _ => true,
                 }
             })
             .map(|(_, pr)| pr.clone())
-            .take(MAX_BATCH)
-            .collect()
+            .collect();
+        // Stable ordering keeps viewport priority within each group. Initial
+        // loads must not sit behind refreshes of already usable cards.
+        candidates.sort_by_key(|pr| self.entries[pr].status.is_some());
+        // Keep summary and detail requests separate. A lightweight title query
+        // should never inherit the cost of checks/reviews from another card.
+        if let Some(first) = candidates.first() {
+            let initial = self.entries[first].status.is_none();
+            candidates.retain(|pr| self.entries[pr].status.is_none() == initial);
+        }
+        candidates.truncate(MAX_BATCH);
+        candidates
     }
 
     /// Returns PRs that now fall back to the ordinary link preview.
     pub fn apply_result(&mut self, result: GithubPrFetchResult, now: Instant) -> Vec<GithubPrRef> {
-        self.in_flight = false;
+        self.active_batches = self.active_batches.saturating_sub(1);
         for pr in &result.refs {
             if let Some(entry) = self.entries.get_mut(pr) {
                 entry.in_flight = false;
@@ -259,6 +285,16 @@ impl GithubPrService {
                     };
                     match fetch {
                         PrFetch::Found(status) => {
+                            if entry.status.is_none()
+                                && let Some(discovered_at) = entry.discovered_at
+                            {
+                                tracing::debug!(
+                                    load_ms =
+                                        now.saturating_duration_since(discovered_at).as_millis()
+                                            as u64,
+                                    "github pr initial preview ready"
+                                );
+                            }
                             entry.failed = false;
                             entry.status = Some(status);
                             entry.fetched_at = Some(now);
@@ -271,8 +307,11 @@ impl GithubPrService {
                     }
                 }
                 if transient.is_empty() {
-                    self.backoff_until = None;
-                    self.failures = 0;
+                    // A concurrent success must not erase another batch's backoff.
+                    if self.backoff_until.is_none_or(|until| now >= until) {
+                        self.backoff_until = None;
+                        self.failures = 0;
+                    }
                 } else {
                     self.note_failure(now);
                     fallback.extend(self.mark_failed(&transient));
@@ -321,24 +360,55 @@ fn refresh_due(status: &GithubPrStatus, age: Duration, attention: bool) -> bool 
     age >= interval
 }
 
-fn fetch_batch(token: Option<Token>, refs: &[GithubPrRef]) -> FetchOutcome {
+fn fetch_batch(token: Option<Token>, refs: &[GithubPrRef], include_details: bool) -> FetchOutcome {
+    let started = Instant::now();
+    let resolving_token = token.is_none();
     let Some(token) = token.or_else(|| resolve_token().map(Token)) else {
+        tracing::debug!(
+            auth_ms = started.elapsed().as_millis() as u64,
+            "github pr authentication unavailable"
+        );
         return FetchOutcome::NoToken;
     };
+    tracing::debug!(
+        auth_ms = started.elapsed().as_millis() as u64,
+        resolving_token,
+        "github pr authentication ready"
+    );
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     else {
         return FetchOutcome::Failed;
     };
-    runtime.block_on(fetch_batch_async(token, refs))
+    let outcome = runtime.block_on(fetch_batch_async(token, refs, include_details));
+    let outcome_label = match &outcome {
+        FetchOutcome::NoToken => "no_token",
+        FetchOutcome::Unauthorized => "unauthorized",
+        FetchOutcome::RateLimited { .. } => "rate_limited",
+        FetchOutcome::Failed => "failed",
+        FetchOutcome::Fetched { .. } => "fetched",
+    };
+    tracing::debug!(
+        batch_ms = started.elapsed().as_millis() as u64,
+        count = refs.len(),
+        outcome = outcome_label,
+        include_details,
+        "github pr batch finished"
+    );
+    outcome
 }
 
-async fn fetch_batch_async(token: Token, refs: &[GithubPrRef]) -> FetchOutcome {
+async fn fetch_batch_async(
+    token: Token,
+    refs: &[GithubPrRef],
+    include_details: bool,
+) -> FetchOutcome {
     let Ok(client) = reqwest::Client::builder().timeout(FETCH_TIMEOUT).build() else {
         return FetchOutcome::Failed;
     };
-    let body = build_batch_query(refs).to_string();
+    let body = build_batch_query(refs, include_details).to_string();
+    let started = Instant::now();
     let response = match client
         .post(GRAPHQL_URL)
         .header("Authorization", format!("bearer {}", token.0))
@@ -372,6 +442,12 @@ async fn fetch_batch_async(token: Token, refs: &[GithubPrRef]) -> FetchOutcome {
     let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
         return FetchOutcome::Failed;
     };
+    tracing::debug!(
+        request_ms = started.elapsed().as_millis() as u64,
+        include_details,
+        count = refs.len(),
+        "github pr response decoded"
+    );
     parse_batch_response(&value, refs, token, reset_wait)
 }
 
@@ -414,6 +490,11 @@ fn rate_limit_reset_wait(headers: &reqwest::header::HeaderMap) -> Option<Duratio
     Some(Duration::from_secs(reset.saturating_sub(now).max(1)))
 }
 
+const SUMMARY_FRAGMENT: &str = "fragment Pr on PullRequest {
+  title state isDraft additions deletions
+  mergedBy { login }
+}";
+
 const PR_FRAGMENT: &str = "fragment Pr on PullRequest {
   title state isDraft additions deletions
   mergedBy { login }
@@ -426,7 +507,12 @@ const PR_FRAGMENT: &str = "fragment Pr on PullRequest {
   } } } } }
 }";
 
-fn build_batch_query(refs: &[GithubPrRef]) -> Value {
+fn build_batch_query(refs: &[GithubPrRef], include_details: bool) -> Value {
+    let fragment = if include_details {
+        PR_FRAGMENT
+    } else {
+        SUMMARY_FRAGMENT
+    };
     let mut params = Vec::with_capacity(refs.len());
     let mut fields = String::new();
     let mut variables = serde_json::Map::new();
@@ -441,7 +527,7 @@ fn build_batch_query(refs: &[GithubPrRef]) -> Value {
         variables.insert(format!("r{index}"), json!(pr.repo));
         variables.insert(format!("n{index}"), json!(pr.number));
     }
-    let query = format!("query({}) {{\n{fields}}}\n{PR_FRAGMENT}", params.join(", "));
+    let query = format!("query({}) {{\n{fields}}}\n{fragment}", params.join(", "));
     json!({ "query": query, "variables": variables })
 }
 
@@ -535,6 +621,7 @@ fn parse_pr_status(pr: &Value) -> Option<GithubPrStatus> {
 
     Some(GithubPrStatus {
         title,
+        details_loaded: pr.get("reviewThreads").is_some(),
         state,
         merged_by,
         additions: count("additions"),
@@ -698,6 +785,7 @@ mod tests {
     fn status(state: GithubPrState, running: u32) -> GithubPrStatus {
         GithubPrStatus {
             title: "t".into(),
+            details_loaded: true,
             state,
             merged_by: None,
             additions: 0,
@@ -813,7 +901,7 @@ mod tests {
 
     #[test]
     fn batch_query_uses_variables() {
-        let query = build_batch_query(&[pr(7), pr(9)]);
+        let query = build_batch_query(&[pr(7), pr(9)], true);
         assert_eq!(query["variables"]["n1"], json!(9));
         assert_eq!(query["variables"]["o0"], json!("o"));
         assert!(
@@ -821,6 +909,62 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("p1: repository(owner: $o1")
+        );
+    }
+
+    #[test]
+    fn summary_query_omits_expensive_details() {
+        let query = build_batch_query(&[pr(1)], false);
+        let query = query["query"].as_str().unwrap();
+        assert!(query.contains("title state isDraft"));
+        for field in [
+            "reviewThreads",
+            "latestOpinionatedReviews",
+            "commits",
+            "reviewDecision",
+        ] {
+            assert!(!query.contains(field));
+        }
+        let summary = parse_pr_status(&json!({ "title": "Ready first", "state": "OPEN" })).unwrap();
+        assert!(!summary.details_loaded);
+    }
+
+    #[test]
+    fn summaries_receive_details_even_for_merged_prs_and_survive_detail_failures() {
+        let mut service = GithubPrService::new();
+        let now = Instant::now();
+        let mut summary = status(GithubPrState::Merged, 0);
+        summary.details_loaded = false;
+        fetched(&mut service, &[pr(1)], summary, now);
+        assert_eq!(service.select_due(&[pr(1)], true, false, now), vec![pr(1)]);
+        service.apply_result(
+            GithubPrFetchResult {
+                refs: vec![pr(1)],
+                outcome: FetchOutcome::Failed,
+            },
+            now,
+        );
+        let preview = service.preview(&pr(1), now).unwrap();
+        assert!(!preview.status.unwrap().details_loaded);
+        assert!(service.backoff_until.is_some());
+        fetched(
+            &mut service,
+            &[pr(1)],
+            status(GithubPrState::Merged, 0),
+            now + BASE_BACKOFF,
+        );
+        assert!(
+            service
+                .preview(&pr(1), now)
+                .unwrap()
+                .status
+                .unwrap()
+                .details_loaded
+        );
+        assert!(
+            service
+                .select_due(&[pr(1)], true, true, now + OPEN_INTERVAL)
+                .is_empty()
         );
     }
 
@@ -849,7 +993,7 @@ mod tests {
         let later = now + OPEN_INTERVAL;
         assert_eq!(
             service.select_due(&refs, true, false, later).len(),
-            MAX_REFRESHED_PRS
+            MAX_BATCH
         );
         assert!(service.select_due(&refs, false, false, later).is_empty());
 
@@ -864,12 +1008,71 @@ mod tests {
     }
 
     #[test]
+    fn initial_loads_precede_refreshes_and_keep_viewport_order() {
+        let mut service = GithubPrService::new();
+        let now = Instant::now();
+        let cached: Vec<_> = (1..=25).map(pr).collect();
+        fetched(&mut service, &cached, status(GithubPrState::Open, 0), now);
+        service.entries.insert(pr(99), Entry::default());
+        service.entries.insert(pr(98), Entry::default());
+        let mut refs = cached;
+        refs.extend([pr(99), pr(98)]);
+        let due = service.select_due(&refs, true, false, now + OPEN_INTERVAL);
+        assert_eq!(&due[..2], &[pr(99), pr(98)]);
+        assert_eq!(due.len(), 2);
+        service.active_batches = 1;
+        assert_eq!(
+            service.select_due(&refs, true, false, now + OPEN_INTERVAL),
+            vec![pr(99), pr(98)]
+        );
+    }
+
+    #[test]
+    fn concurrent_success_preserves_backoff_and_other_inflight_entries() {
+        let mut service = GithubPrService::new();
+        let now = Instant::now();
+        service.active_batches = 2;
+        for number in [1, 2] {
+            service.entries.insert(
+                pr(number),
+                Entry {
+                    in_flight: true,
+                    ..Entry::default()
+                },
+            );
+        }
+        service.apply_result(
+            GithubPrFetchResult {
+                refs: vec![pr(1)],
+                outcome: FetchOutcome::Failed,
+            },
+            now,
+        );
+        let backoff = service.backoff_until;
+        assert_eq!(service.active_batches, 1);
+        assert!(service.entries[&pr(2)].in_flight);
+        service.apply_result(
+            GithubPrFetchResult {
+                refs: vec![pr(2)],
+                outcome: FetchOutcome::Fetched {
+                    token: Token("t".into()),
+                    statuses: vec![(pr(2), PrFetch::Found(status(GithubPrState::Open, 0)))],
+                },
+            },
+            now,
+        );
+        assert_eq!(service.active_batches, 0);
+        assert_eq!(service.backoff_until, backoff);
+        assert!(!service.entries[&pr(2)].in_flight);
+    }
+
+    #[test]
     fn missing_token_waits_before_retrying() {
         let mut service = GithubPrService::new();
         let (sender, _receiver) = mpsc::channel();
         let now = Instant::now();
         service.entries.insert(pr(1), Entry::default());
-        service.in_flight = true;
+        service.active_batches = 1;
         service.apply_result(
             GithubPrFetchResult {
                 refs: vec![pr(1)],
@@ -879,7 +1082,7 @@ mod tests {
         );
         assert!(service.preview(&pr(1), now).unwrap().needs_auth);
         assert!(!service.poll(&[pr(1)], true, now + Duration::from_secs(10), &sender));
-        assert!(!service.in_flight);
+        assert_eq!(service.active_batches, 0);
     }
 
     #[test]
@@ -926,7 +1129,7 @@ mod tests {
             number: 999_999,
             ..merged.clone()
         };
-        let outcome = fetch_batch(None, &[merged, missing]);
+        let outcome = fetch_batch(None, &[merged, missing], true);
         let FetchOutcome::Fetched { statuses, .. } = outcome else {
             panic!("unexpected outcome: {outcome:?}");
         };
@@ -1016,7 +1219,7 @@ mod tests {
         for r in &refs {
             service.entries.insert(r.clone(), Entry::default());
         }
-        service.in_flight = true;
+        service.active_batches = 1;
         service.apply_result(
             GithubPrFetchResult {
                 refs: refs[..25].to_vec(),
