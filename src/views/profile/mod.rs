@@ -48,6 +48,8 @@ pub fn render_profile_panel(
         .filter(|value| !value.is_empty())
         .unwrap_or(&user_id.0)
         .to_string();
+    let shown_name = crate::domain::user::shown_name(&username, &display_name).to_string();
+    let other_name = crate::domain::user::other_name(&username, &display_name);
     let avatar_asset = profile.and_then(|value| value.avatar_asset.as_deref());
     let presence = profile
         .map(|value| value.presence.clone())
@@ -130,21 +132,23 @@ pub fn render_profile_panel(
                                 .line_height(px(22.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(rgb(text_primary()))
-                                .child(display_name.clone()),
+                                .child(shown_name.clone()),
                         )
                         .children(crate::views::identity_marker(
                             "profile-panel-identity",
                             affinity,
-                            &display_name,
+                            &shown_name,
                             true,
                         )),
                 )
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .text_color(rgb(text_secondary()))
-                        .child(format!("@{username}")),
-                )
+                .when_some(other_name, |container, other_name| {
+                    container.child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(rgb(text_secondary()))
+                            .child(other_name),
+                    )
+                })
                 .when_some(title, |container, title| {
                     container.child(
                         div()
@@ -218,11 +222,8 @@ pub fn render_profile_panel(
         let following_count = graph.following_count.unwrap_or(0);
         let render_entry = |index: usize, entry: &crate::domain::profile::SocialGraphEntry| {
             let entry_user_id = entry.user_id.clone();
-            let entry_name = if entry.display_name.trim().is_empty() {
-                entry.user_id.0.clone()
-            } else {
-                entry.display_name.clone()
-            };
+            let entry_name =
+                crate::domain::user::shown_name(&entry.user_id.0, &entry.display_name).to_string();
             div()
                 .id(("profile-social-entry", index))
                 .h(px(SOCIAL_ENTRY_ESTIMATED_HEIGHT_PX))
@@ -486,6 +487,8 @@ pub fn render_profile_card(
         .filter(|value| !value.is_empty())
         .unwrap_or(&user_id.0)
         .to_string();
+    let shown_name = crate::domain::user::shown_name(&username, &display_name).to_string();
+    let other_name = crate::domain::user::other_name(&username, &display_name);
     let avatar_asset = profile.and_then(|value| value.avatar_asset.as_deref());
     let presence = profile
         .map(|value| value.presence.clone())
@@ -543,21 +546,23 @@ pub fn render_profile_card(
                                     div()
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(rgb(text_primary()))
-                                        .child(display_name.clone()),
+                                        .child(shown_name.clone()),
                                 )
                                 .children(crate::views::identity_marker(
                                     "profile-card-identity",
                                     affinity,
-                                    &display_name,
+                                    &shown_name,
                                     true,
                                 )),
                         )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(text_secondary()))
-                                .child(format!("@{username}")),
-                        ),
+                        .when_some(other_name, |container, other_name| {
+                            container.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(text_secondary()))
+                                    .child(other_name),
+                            )
+                        }),
                 ),
         )
         .when_some(

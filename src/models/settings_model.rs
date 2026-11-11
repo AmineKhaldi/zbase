@@ -29,7 +29,7 @@ pub enum Density {
 
 use std::collections::{HashMap, HashSet};
 
-use crate::domain::channel_details::ConversationNotificationSettings;
+use crate::domain::{channel_details::ConversationNotificationSettings, user::NameStyle};
 
 #[derive(Clone, Debug)]
 pub struct SettingsModel {
@@ -38,6 +38,8 @@ pub struct SettingsModel {
     pub reduced_motion: bool,
     pub show_right_pane: bool,
     pub sidebar_style: SidebarStyle,
+    /// Whether people appear by profile name or by username, everywhere.
+    pub name_style: NameStyle,
     pub emoji_skin_tone: Option<String>,
     pub emoji_recents: Vec<String>,
     pub sidebar_modes: HashMap<String, SidebarMode>,
@@ -60,6 +62,7 @@ impl Default for SettingsModel {
             reduced_motion: false,
             show_right_pane: true,
             sidebar_style: SidebarStyle::Compact,
+            name_style: NameStyle::FullName,
             emoji_skin_tone: None,
             emoji_recents: Vec::new(),
             sidebar_modes: HashMap::new(),

@@ -185,6 +185,10 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             state.thread.loading = false;
             ReducerOutput::default()
         }
+        UiAction::RefreshPeopleNames => {
+            refresh_sidebar(state);
+            ReducerOutput::default()
+        }
         UiAction::SetSidebarFilter(filter) => {
             state.sidebar_filter = filter;
             state.sidebar.filter = state.sidebar_filter.clone();
@@ -1935,13 +1939,11 @@ pub(crate) fn typing_label_for_users(
     let names = users
         .iter()
         .map(|user_id| {
-            profiles
+            let full_name = profiles
                 .get(user_id)
                 .or_else(|| profiles.get(&UserId::new(user_id.0.to_ascii_lowercase())))
-                .map(|profile| profile.display_name.trim())
-                .filter(|name| !name.is_empty())
-                .unwrap_or(user_id.0.as_str())
-                .to_string()
+                .map_or("", |profile| profile.display_name.as_str());
+            crate::domain::user::shown_name(&user_id.0, full_name).to_string()
         })
         .collect::<Vec<_>>();
     crate::util::formatting::typing_indicator_label(&names)
@@ -3024,13 +3026,10 @@ fn dm_display_label(title: &str, user_profiles: &HashMap<UserId, UserProfileStat
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let display_name = user_profiles
+        let full_name = user_profiles
             .get(&UserId::new(username.to_ascii_lowercase()))
-            .map(|profile| profile.display_name.trim())
-            .filter(|name| !name.is_empty())
-            .filter(|name| !name.eq_ignore_ascii_case(username))
-            .unwrap_or(username);
-        participants.push(display_name.to_string());
+            .map_or("", |profile| profile.display_name.as_str());
+        participants.push(crate::domain::user::shown_name(username, full_name).to_string());
     }
     if participants.is_empty() {
         title.to_string()

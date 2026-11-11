@@ -1776,9 +1776,14 @@ impl AppModels {
         self.overlay.sidebar_hover_tooltip = None;
     }
 
-    pub fn show_reaction_hover_tooltip(&mut self, text: String, anchor_x: f32, anchor_y: f32) {
+    pub fn show_reaction_hover_tooltip(
+        &mut self,
+        content: overlay_model::ReactionHoverContent,
+        anchor_x: f32,
+        anchor_y: f32,
+    ) {
         self.overlay.reaction_hover_tooltip = Some(ReactionHoverTooltip {
-            text,
+            content,
             anchor_x,
             anchor_y,
         });
@@ -2394,6 +2399,16 @@ fn quick_switcher_dm_match_candidates(
         )];
     }
     let display_names = quick_switcher_dm_display_names(&usernames, profile_names);
+    // Full names stay searchable when people are shown by username.
+    let full_names = usernames
+        .iter()
+        .map(|username| {
+            profile_names
+                .get(&username.to_ascii_lowercase())
+                .cloned()
+                .unwrap_or_else(|| username.clone())
+        })
+        .collect::<Vec<_>>();
     let username_label = usernames.join(", ");
     let mut candidates = Vec::new();
     candidates.push(quick_switcher_match_candidate(
@@ -2413,6 +2428,14 @@ fn quick_switcher_dm_match_candidates(
             .into_iter()
             .map(|text| quick_switcher_match_candidate(text, false)),
     );
+    if full_names != display_names {
+        candidates.push(quick_switcher_match_candidate(full_names.join(", "), false));
+        candidates.extend(
+            quick_switcher_permutation_labels(&full_names)
+                .into_iter()
+                .map(|text| quick_switcher_match_candidate(text, false)),
+        );
+    }
     dedupe_quick_switcher_match_candidates(candidates)
 }
 
@@ -2480,10 +2503,10 @@ fn quick_switcher_dm_display_names(
     usernames
         .iter()
         .map(|username| {
-            profile_names
+            let full_name = profile_names
                 .get(&username.to_ascii_lowercase())
-                .cloned()
-                .unwrap_or_else(|| username.clone())
+                .map_or("", String::as_str);
+            crate::domain::user::shown_name(username, full_name).to_string()
         })
         .collect()
 }

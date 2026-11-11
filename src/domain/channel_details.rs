@@ -64,6 +64,18 @@ pub struct ChannelMemberPreview {
     pub availability: Option<crate::domain::presence::Availability>,
 }
 
+impl ChannelMemberPreview {
+    /// The name the app shows for this member (see `NameStyle`).
+    pub fn shown_name(&self) -> &str {
+        crate::domain::user::shown_name(&self.user_id.0, &self.display_name)
+    }
+
+    /// The name [`Self::shown_name`] leaves out.
+    pub fn other_name(&self) -> Option<String> {
+        crate::domain::user::other_name(&self.user_id.0, &self.display_name)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ChannelDetails {
     pub conversation_id: ConversationId,

@@ -274,7 +274,7 @@ fn member_section(
                         .text_sm()
                         .text_ellipsis()
                         .text_color(rgb(text_primary()))
-                        .child(member.display_name.clone()),
+                        .child(member.shown_name().to_string()),
                 )
                 .children(member_markers(&member, row_id))
                 .into_any_element()

@@ -3,6 +3,7 @@
 //! its own window (see `settings_window`); every control writes back through the
 //! main window, which owns and persists the settings.
 use crate::{
+    domain::user::NameStyle,
     models::{
         app_model::Connectivity,
         settings_model::{Density, SettingsModel, SidebarMode, SidebarStyle, ThemeMode},
@@ -143,6 +144,28 @@ impl PreferencesView {
             ),
         );
 
+        let names_row = setting_row(
+            "Show people as",
+            "Their profile name, or their Keybase username.",
+            segmented(
+                "preferences-name-style",
+                vec![
+                    (
+                        "Full names",
+                        settings.name_style == NameStyle::FullName,
+                        NameStyle::FullName,
+                    ),
+                    (
+                        "Usernames",
+                        settings.name_style == NameStyle::Username,
+                        NameStyle::Username,
+                    ),
+                ],
+                app,
+                |this, style, cx| this.set_name_style(style, cx),
+            ),
+        );
+
         let side_panel = settings.show_right_pane;
         let side_panel_row = setting_row(
             "Side panel",
@@ -193,7 +216,7 @@ impl PreferencesView {
                     })
                     .child(section(
                         "Appearance",
-                        vec![theme_row.into_any_element(), density_row],
+                        vec![theme_row.into_any_element(), density_row, names_row],
                     ))
                     .child(section(
                         "Layout",

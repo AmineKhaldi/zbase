@@ -361,7 +361,7 @@ fn resolve_thread_reply_author(
         };
         if message.author.id == *author_id {
             return (
-                message.author.display_name.clone(),
+                message.author.shown_name().to_string(),
                 message.author.avatar_asset.clone(),
             );
         }
@@ -1226,7 +1226,7 @@ fn member_markers(
     if let Some(marker) = crate::views::identity_marker(
         SharedString::from(format!("{id_prefix}-identity-{}", member.user_id.0)),
         member.affinity,
-        &member.display_name,
+        member.shown_name(),
         true,
     ) {
         markers.push(marker);
@@ -1324,7 +1324,7 @@ fn find_message(
             return None;
         };
         (&message_row.message.id == root_id).then_some((
-            message_row.author.display_name.clone(),
+            message_row.author.shown_name().to_string(),
             message_row.author.avatar_asset.clone(),
             message_row.message.clone(),
         ))

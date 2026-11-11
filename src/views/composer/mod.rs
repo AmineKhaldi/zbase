@@ -449,13 +449,15 @@ fn render_candidate_row(candidate: &AutocompleteCandidate) -> AnyElement {
                 div()
                     .text_sm()
                     .text_color(rgb(text_primary()))
-                    .child(display_name.clone()),
+                    .child(crate::domain::user::shown_name(username, display_name).to_string()),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(text_secondary()))
-                    .child(format!("@{username}")),
+            .children(
+                crate::domain::user::other_name(username, display_name).map(|other_name| {
+                    div()
+                        .text_xs()
+                        .text_color(rgb(text_secondary()))
+                        .child(other_name)
+                }),
             )
             .into_any_element(),
         AutocompleteCandidate::MentionBroadcast {
