@@ -7,6 +7,7 @@ use crate::domain::{
         attachment_kind_from_path,
     },
     backend::AccountId,
+    channel_details::ConversationNotificationSettings,
     conversation::{ConversationKind, ConversationSummary},
     ids::{ChannelId, ConversationId, DmId, MessageId, SidebarSectionId, UserId, WorkspaceId},
     message::{MessageFragment, MessageRecord, MessageSendState},
@@ -52,6 +53,22 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
     match action {
         UiAction::LeaveChannel { conversation_id } => {
             channel_membership::request_leave(state, conversation_id)
+        }
+        UiAction::SetConversationNotificationSettings {
+            conversation_id,
+            settings,
+            previous,
+        } => {
+            apply_conversation_notification_settings(state, &conversation_id, settings);
+            ReducerOutput {
+                effects: vec![Effect::Backend(
+                    BackendCommand::SetConversationNotificationSettings {
+                        conversation_id,
+                        settings,
+                        previous,
+                    },
+                )],
+            }
         }
         UiAction::StartApp => {
             state.app.boot_phase = BootPhase::HydratingLocalState;
@@ -805,6 +822,12 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                     .message_bindings
                     .insert(binding.message_id.clone(), binding);
             }
+            for (conversation_id, settings) in payload.conversation_notifications {
+                state
+                    .backend
+                    .conversation_notifications
+                    .insert(conversation_id, settings);
+            }
 
             let workspace_id = state
                 .workspace
@@ -941,6 +964,12 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 }
                 return ReducerOutput { effects };
             }
+        }
+        BackendEvent::ConversationNotificationSettingsSynced {
+            conversation_id,
+            settings,
+        } => {
+            apply_conversation_notification_settings(state, &conversation_id, settings);
         }
         BackendEvent::WorkspaceSynced { .. } | BackendEvent::ConversationLoaded { .. } => {}
         BackendEvent::MessagesPrepended {
@@ -1815,6 +1844,15 @@ fn reduce_command_failure(
                 .workspace
                 .leaving_conversation_ids
                 .remove(&conversation_id);
+        }
+        BackendCommand::SetConversationNotificationSettings {
+            conversation_id,
+            previous,
+            ..
+        } => {
+            // The server rejected the change: put the conversation back the way
+            // it was instead of leaving the optimistic choice on screen.
+            apply_conversation_notification_settings(state, &conversation_id, previous);
         }
         BackendCommand::SendMessage {
             client_message_id, ..
@@ -2842,6 +2880,31 @@ fn merge_workspace_conversations(
     (workspace.channels, workspace.direct_messages) = summaries
         .into_iter()
         .partition(|summary| matches!(summary.kind, ConversationKind::Channel));
+}
+
+/// Records a conversation's notification choices locally and mirrors the muted
+/// flag onto its summary so badges react without waiting for the next inbox load.
+fn apply_conversation_notification_settings(
+    state: &mut UiState,
+    conversation_id: &ConversationId,
+    settings: ConversationNotificationSettings,
+) {
+    state
+        .backend
+        .conversation_notifications
+        .insert(conversation_id.clone(), settings);
+    for summary in state
+        .workspace
+        .channels
+        .iter_mut()
+        .chain(state.workspace.direct_messages.iter_mut())
+    {
+        if summary.id == *conversation_id {
+            summary.muted = settings.muted;
+            break;
+        }
+    }
+    refresh_sidebar(state);
 }
 
 fn refresh_sidebar(state: &mut UiState) {

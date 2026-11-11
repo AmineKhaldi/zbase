@@ -14,6 +14,7 @@ use crate::{
             AccountId, BackendCapabilities, BackendId, ProviderConversationRef, ProviderMessageRef,
             ProviderWorkspaceRef,
         },
+        channel_details::{ConversationNotificationSettings, NotificationLevel},
         conversation::{
             ConversationBadgeCounts, ConversationGroup, ConversationKind, ConversationSummary,
             ConversationTeamType,
@@ -365,6 +366,7 @@ impl ChatBackend for KeybaseBackend {
                 | RoutedBackendCommand::CreateConversation { .. }
                 | RoutedBackendCommand::LeaveChannel { .. }
                 | RoutedBackendCommand::JoinChannel { .. }
+                | RoutedBackendCommand::SetConversationNotificationSettings { .. }
                 | RoutedBackendCommand::FollowUser { .. }
                 | RoutedBackendCommand::UnfollowUser { .. } => {
                     return Err(BackendError::OperationFailed(
@@ -1863,6 +1865,39 @@ impl ChatBackend for KeybaseBackend {
                 }
                 Ok(emitted)
             }
+            RoutedBackendCommand::SetConversationNotificationSettings {
+                conversation,
+                settings,
+                ..
+            } => {
+                let raw_id =
+                    provider_ref_to_conversation_id_bytes(&conversation).ok_or_else(|| {
+                        BackendError::OperationFailed(
+                            "invalid provider conversation reference".into(),
+                        )
+                    })?;
+                let path = socket_path().ok_or_else(|| {
+                    BackendError::OperationFailed("Keybase connection is unavailable".into())
+                })?;
+                let runtime = Builder::new_current_thread().enable_all().build()?;
+                let raw_id_for_rpc = raw_id.clone();
+                runtime.block_on(async move {
+                    let transport = FramedMsgpackTransport::connect(&path).await?;
+                    let mut client = KeybaseRpcClient::new(transport);
+                    set_conversation_notification_settings_rpc(
+                        &mut client,
+                        &raw_id_for_rpc,
+                        settings,
+                    )
+                    .await
+                })?;
+                let conversation_id =
+                    ConversationId::new(format!("kb_conv:{}", hex_encode(&raw_id)));
+                Ok(vec![BackendEvent::ConversationNotificationSettingsSynced {
+                    conversation_id,
+                    settings,
+                }])
+            }
             RoutedBackendCommand::LeaveChannel {
                 conversation,
                 workspace_id,
@@ -2348,6 +2383,9 @@ const CHAT_POST_REACTION_NONBLOCK: &str = "chat.1.local.postReactionNonblock";
 const CHAT_DOWNLOAD_FILE_ATTACHMENT_LOCAL: &str = "chat.1.local.DownloadFileAttachmentLocal";
 const CHAT_USER_EMOJIS: &str = "chat.1.local.userEmojis";
 const CHAT_MARK_AS_READ_LOCAL: &str = "chat.1.local.markAsReadLocal";
+const CHAT_SET_CONVERSATION_STATUS_LOCAL: &str = "chat.1.local.SetConversationStatusLocal";
+const CHAT_SET_APP_NOTIFICATION_SETTINGS_LOCAL: &str =
+    "chat.1.local.setAppNotificationSettingsLocal";
 const CHAT_REFRESH_PARTICIPANTS_LOCAL: &str = "chat.1.local.refreshParticipants";
 const CHAT_GET_PARTICIPANTS_LOCAL: &str = "chat.1.local.getParticipants";
 const CHAT_GET_LAST_ACTIVE_FOR_TLF_LOCAL: &str = "chat.1.local.getLastActiveForTLF";
@@ -6624,6 +6662,7 @@ fn bootstrap_payload_from_cache(
         selected_messages,
         unread_marker: seed.unread_marker,
         account_display_name: seed.account_display_name,
+        conversation_notifications: Vec::new(),
     }
 }
 
@@ -11132,8 +11171,12 @@ async fn bootstrap_payload_from_service(
     let mut channels = Vec::new();
     let mut direct_messages = Vec::new();
     let mut conversation_bindings = Vec::new();
+    let mut conversation_notifications = Vec::new();
 
     for conversation in &conversations {
+        if let Some(notifications) = conversation.notifications {
+            conversation_notifications.push((conversation.summary.id.clone(), notifications));
+        }
         match conversation.summary.kind {
             ConversationKind::Channel => channels.push(conversation.summary.clone()),
             ConversationKind::DirectMessage | ConversationKind::GroupDirectMessage => {
@@ -11178,6 +11221,7 @@ async fn bootstrap_payload_from_service(
         selected_messages,
         unread_marker: selected.and_then(|conversation| conversation.read_marker),
         account_display_name,
+        conversation_notifications,
     })
 }
 
@@ -11257,6 +11301,87 @@ async fn fetch_inbox_unboxed(client: &mut KeybaseRpcClient) -> io::Result<Value>
             ])],
         )
         .await
+}
+
+async fn set_conversation_notification_settings_rpc(
+    client: &mut KeybaseRpcClient,
+    raw_id: &[u8],
+    settings: ConversationNotificationSettings,
+) -> io::Result<()> {
+    client
+        .call(
+            CHAT_SET_CONVERSATION_STATUS_LOCAL,
+            vec![conversation_status_rpc_params(raw_id, settings)],
+        )
+        .await?;
+    client
+        .call(
+            CHAT_SET_APP_NOTIFICATION_SETTINGS_LOCAL,
+            vec![app_notification_settings_rpc_params(raw_id, settings)],
+        )
+        .await?;
+    Ok(())
+}
+
+fn conversation_status_rpc_params(
+    raw_id: &[u8],
+    settings: ConversationNotificationSettings,
+) -> Value {
+    let status = if settings.muted {
+        CONVERSATION_STATUS_MUTED
+    } else {
+        CONVERSATION_STATUS_UNFILED
+    };
+    Value::Map(vec![
+        (
+            Value::from("conversationID"),
+            Value::Binary(raw_id.to_vec()),
+        ),
+        (Value::from("status"), Value::from(status)),
+        (
+            Value::from("identifyBehavior"),
+            Value::from(IDENTIFY_BEHAVIOR_CHAT_GUI),
+        ),
+    ])
+}
+
+fn app_notification_settings_rpc_params(
+    raw_id: &[u8],
+    settings: ConversationNotificationSettings,
+) -> Value {
+    let mut notification_settings = Vec::new();
+    for (device, level) in [
+        (NOTIFICATION_DEVICE_DESKTOP, settings.desktop),
+        (NOTIFICATION_DEVICE_MOBILE, settings.mobile),
+    ] {
+        notification_settings.push(Value::Map(vec![
+            (Value::from("deviceType"), Value::from(device)),
+            (
+                Value::from("kind"),
+                Value::from(NOTIFICATION_KIND_AT_MENTION),
+            ),
+            (
+                Value::from("enabled"),
+                Value::from(level == NotificationLevel::MentionsOnly),
+            ),
+        ]));
+        notification_settings.push(Value::Map(vec![
+            (Value::from("deviceType"), Value::from(device)),
+            (Value::from("kind"), Value::from(NOTIFICATION_KIND_GENERIC)),
+            (
+                Value::from("enabled"),
+                Value::from(level == NotificationLevel::All),
+            ),
+        ]));
+    }
+    Value::Map(vec![
+        (Value::from("convID"), Value::Binary(raw_id.to_vec())),
+        (
+            Value::from("channelWide"),
+            Value::from(!settings.ignore_mentions),
+        ),
+        (Value::from("settings"), Value::Array(notification_settings)),
+    ])
 }
 
 fn all_member_statuses() -> Value {
@@ -12261,6 +12386,9 @@ struct BootstrapConversation {
     activity_time: i64,
     read_marker: Option<MessageId>,
     pinned_state: PinnedState,
+    /// `None` when the payload does not carry notification info (for example an
+    /// `InboxUIItem` metadata update); leave the known value alone then.
+    notifications: Option<ConversationNotificationSettings>,
 }
 
 fn conversation_topic_type(value: &Value) -> Option<i64> {
@@ -12431,6 +12559,10 @@ fn parse_inbox_conversations(
         };
 
         let last_message = parse_inbox_last_message(&conversation, &conversation_id);
+        let notifications = Some(parse_conversation_notification_settings(
+            &conversation,
+            status,
+        ));
         let summary = ConversationSummary {
             id: conversation_id,
             title,
@@ -12455,6 +12587,7 @@ fn parse_inbox_conversations(
                 .filter(|value| *value > 0)
                 .map(|value| MessageId::new(value.to_string())),
             pinned_state,
+            notifications,
         });
     }
 
@@ -12611,6 +12744,8 @@ fn parse_inbox_ui_item(
         last_activity_ms: activity_time,
         last_message: parse_inbox_ui_snippet(value, activity_time),
     };
+    let notifications = map_get_any(value, &["notifications", "notifs", "notificationInfo"])
+        .map(|_| parse_conversation_notification_settings(value, status));
 
     Some(BootstrapConversation {
         summary,
@@ -12622,7 +12757,103 @@ fn parse_inbox_ui_item(
             .filter(|v| *v > 0)
             .map(|v| MessageId::new(v.to_string())),
         pinned_state: PinnedState::default(),
+        notifications,
     })
+}
+
+const NOTIFICATION_DEVICE_DESKTOP: i64 = 0;
+const NOTIFICATION_DEVICE_MOBILE: i64 = 1;
+const NOTIFICATION_KIND_GENERIC: i64 = 0;
+const NOTIFICATION_KIND_AT_MENTION: i64 = 1;
+
+/// Keybase's per-conversation notification choices: `channelWide` plus a
+/// device/kind boolean matrix. Missing pieces keep Keybase's defaults.
+fn parse_conversation_notification_settings(
+    conversation: &Value,
+    status: i64,
+) -> ConversationNotificationSettings {
+    let mut settings = ConversationNotificationSettings {
+        muted: status == CONVERSATION_STATUS_MUTED,
+        ..Default::default()
+    };
+    let Some(info) = map_get_any(
+        conversation,
+        &["notifications", "notifs", "notificationInfo"],
+    ) else {
+        return settings;
+    };
+    if matches!(info, Value::Nil) {
+        return settings;
+    }
+    if let Some(channel_wide) =
+        map_get_any(info, &["channelWide", "channelwide", "cw"]).and_then(as_bool)
+    {
+        settings.ignore_mentions = !channel_wide;
+    }
+    let Some(Value::Map(devices)) = map_get_any(info, &["settings", "s"]) else {
+        return settings;
+    };
+    for (device, kinds) in devices {
+        let Some(device) = notification_device_type(device) else {
+            continue;
+        };
+        let Value::Map(kinds) = kinds else {
+            continue;
+        };
+        let mut generic = None;
+        let mut at_mention = None;
+        for (kind, enabled) in kinds {
+            let Some(kind) = notification_kind(kind) else {
+                continue;
+            };
+            let enabled = as_bool(enabled).unwrap_or(false);
+            match kind {
+                NOTIFICATION_KIND_GENERIC => generic = Some(enabled),
+                NOTIFICATION_KIND_AT_MENTION => at_mention = Some(enabled),
+                _ => {}
+            }
+        }
+        if generic.is_none() && at_mention.is_none() {
+            continue;
+        }
+        let level = if generic == Some(true) {
+            NotificationLevel::All
+        } else if at_mention == Some(true) {
+            NotificationLevel::MentionsOnly
+        } else {
+            NotificationLevel::Nothing
+        };
+        match device {
+            NOTIFICATION_DEVICE_DESKTOP => settings.desktop = level,
+            NOTIFICATION_DEVICE_MOBILE => settings.mobile = level,
+            _ => {}
+        }
+    }
+    settings
+}
+
+fn notification_device_type(value: &Value) -> Option<i64> {
+    if let Some(device) = value_to_i64_key(value) {
+        return Some(device);
+    }
+    let name = as_str(value)?.trim().to_ascii_lowercase();
+    match name.as_str() {
+        "desktop" | "desktop_0" => Some(NOTIFICATION_DEVICE_DESKTOP),
+        "mobile" | "mobile_1" => Some(NOTIFICATION_DEVICE_MOBILE),
+        _ => None,
+    }
+}
+
+fn notification_kind(value: &Value) -> Option<i64> {
+    if let Some(kind) = value_to_i64_key(value) {
+        return Some(kind);
+    }
+    let name = as_str(value)?.trim().to_ascii_lowercase();
+    match name.as_str() {
+        "generic" | "generic_0" => Some(NOTIFICATION_KIND_GENERIC),
+        "atmention" | "at_mention" | "atmention_1" => Some(NOTIFICATION_KIND_AT_MENTION),
+        _ => None,
+    }
 }
 
 /// Extract the `conv` (InboxUIItem) from a `NewChatActivity` notification.
@@ -19701,6 +19932,116 @@ mod tests {
                 .summary
                 .last_message,
             None
+        );
+    }
+
+    #[test]
+    fn parse_conversation_notifications_maps_keybase_wire_values() {
+        let conversation = Value::Map(vec![(
+            Value::from("notifications"),
+            Value::Map(vec![
+                (Value::from("channelWide"), Value::from(false)),
+                (
+                    Value::from("settings"),
+                    Value::Map(vec![
+                        (
+                            Value::from(0i64),
+                            Value::Map(vec![
+                                (Value::from(0i64), Value::from(false)),
+                                (Value::from(1i64), Value::from(true)),
+                            ]),
+                        ),
+                        (
+                            Value::from(1i64),
+                            Value::Map(vec![
+                                (Value::from(0i64), Value::from(false)),
+                                (Value::from(1i64), Value::from(false)),
+                            ]),
+                        ),
+                    ]),
+                ),
+            ]),
+        )]);
+        let parsed =
+            parse_conversation_notification_settings(&conversation, CONVERSATION_STATUS_MUTED);
+        assert!(parsed.muted);
+        assert!(parsed.ignore_mentions);
+        assert_eq!(parsed.desktop, NotificationLevel::MentionsOnly);
+        assert_eq!(parsed.mobile, NotificationLevel::Nothing);
+
+        // Conversations without notification info use Keybase's defaults.
+        assert_eq!(
+            parse_conversation_notification_settings(&Value::Nil, 0),
+            ConversationNotificationSettings::default()
+        );
+    }
+
+    #[test]
+    fn conversation_notification_rpc_params_match_keybase_wire_format() {
+        let settings = ConversationNotificationSettings {
+            muted: true,
+            ignore_mentions: true,
+            desktop: NotificationLevel::All,
+            mobile: NotificationLevel::MentionsOnly,
+        };
+
+        let status = conversation_status_rpc_params(&[0xab, 0xcd], settings);
+        assert_eq!(
+            map_get(&status, "status").and_then(as_i64),
+            Some(CONVERSATION_STATUS_MUTED)
+        );
+        assert_eq!(
+            map_get(&status, "identifyBehavior").and_then(as_i64),
+            Some(IDENTIFY_BEHAVIOR_CHAT_GUI)
+        );
+
+        let params = app_notification_settings_rpc_params(&[0xab, 0xcd], settings);
+        assert_eq!(
+            map_get(&params, "channelWide").and_then(as_bool),
+            Some(false)
+        );
+        let entries = map_get(&params, "settings")
+            .and_then(as_array)
+            .expect("settings array");
+        assert_eq!(entries.len(), 4);
+        let enabled = |entry: &Value| {
+            (
+                map_get(entry, "deviceType").and_then(as_i64),
+                map_get(entry, "kind").and_then(as_i64),
+                map_get(entry, "enabled").and_then(as_bool),
+            )
+        };
+        assert_eq!(
+            enabled(&entries[0]),
+            (
+                Some(NOTIFICATION_DEVICE_DESKTOP),
+                Some(NOTIFICATION_KIND_AT_MENTION),
+                Some(false)
+            )
+        );
+        assert_eq!(
+            enabled(&entries[1]),
+            (
+                Some(NOTIFICATION_DEVICE_DESKTOP),
+                Some(NOTIFICATION_KIND_GENERIC),
+                Some(true)
+            )
+        );
+        assert_eq!(
+            enabled(&entries[2]),
+            (
+                Some(NOTIFICATION_DEVICE_MOBILE),
+                Some(NOTIFICATION_KIND_AT_MENTION),
+                Some(true)
+            )
+        );
+        assert_eq!(
+            enabled(&entries[3]),
+            (
+                Some(NOTIFICATION_DEVICE_MOBILE),
+                Some(NOTIFICATION_KIND_GENERIC),
+                Some(false)
+            )
         );
     }
 

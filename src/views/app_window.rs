@@ -13,7 +13,7 @@ use crate::{
         affinity::Affinity,
         attachment::AttachmentSource,
         backend::{BackendCapabilities, ProviderMessageRef},
-        channel_details::{ChannelDetails, ChannelMemberPreview, NotificationLevel},
+        channel_details::{ChannelDetails, ChannelMemberPreview, ConversationNotificationSettings},
         conversation::{ConversationKind, ConversationSummary},
         github_pr::GithubPrRef,
         ids::{ConversationId, MessageId, SidebarSectionId, UserId, WorkspaceId},
@@ -3740,6 +3740,28 @@ impl AppWindow {
         let t0 = Instant::now();
         let snapshot = self.app_store.snapshot();
 
+        let mut notifications_changed = false;
+        for (conversation_id, settings) in &snapshot.backend.conversation_notifications {
+            if self
+                .models
+                .settings
+                .conversation_notifications
+                .get(&conversation_id.0)
+                != Some(settings)
+            {
+                self.models
+                    .settings
+                    .conversation_notifications
+                    .insert(conversation_id.0.clone(), *settings);
+                notifications_changed = true;
+            }
+        }
+        if notifications_changed {
+            // Keep the offline cache in step with what Keybase returned.
+            let _ = SettingsStore::save_to_disk(&self.models.settings);
+            self.sync_cache.sidebar_sections_sig = None;
+        }
+
         self.models.app.connectivity = if snapshot
             .backend
             .accounts
@@ -3941,12 +3963,17 @@ impl AppWindow {
                         .map(|group| (summary.id.0.as_str(), group))
                 })
                 .collect::<HashMap<_, _>>();
+            let overrides = &self.models.settings.conversation_notifications;
             let muted = snapshot
                 .workspace
                 .channels
                 .iter()
                 .chain(&snapshot.workspace.direct_messages)
-                .filter(|summary| summary.muted)
+                .filter(|summary| {
+                    overrides
+                        .get(&summary.id.0)
+                        .map_or(summary.muted, |settings| settings.muted)
+                })
                 .map(|summary| summary.id.0.as_str())
                 .collect::<HashSet<_>>();
             self.models.sidebar.sections = snapshot
@@ -3964,6 +3991,9 @@ impl AppWindow {
                         .iter()
                         .filter_map(|row| {
                             row.route.clone().map(|route| {
+                                let conversation_key = route_conversation_key(&route);
+                                let notification_settings =
+                                    conversation_key.and_then(|id| overrides.get(id));
                                 crate::models::sidebar_model::SidebarRow {
                                     label: row.label.clone(),
                                     team: match &route {
@@ -3973,12 +4003,20 @@ impl AppWindow {
                                         _ => None,
                                     },
                                     unread_count: row.unread_count,
-                                    mention_count: row.mention_count,
-                                    preview: route_conversation_key(&route)
+                                    mention_count: if notification_settings
+                                        .is_some_and(|settings| settings.ignore_mentions)
+                                    {
+                                        0
+                                    } else {
+                                        row.mention_count
+                                    },
+                                    preview: conversation_key
                                         .and_then(|id| self.sidebar_previews.get(id))
                                         .cloned(),
-                                    muted: route_conversation_key(&route)
-                                        .is_some_and(|id| muted.contains(id)),
+                                    muted: notification_settings.map_or_else(
+                                        || conversation_key.is_some_and(|id| muted.contains(id)),
+                                        |settings| settings.muted,
+                                    ),
                                     route,
                                 }
                             })
@@ -4392,6 +4430,10 @@ impl AppWindow {
                     self.models.conversation.is_archived,
                     &snapshot.backend,
                     current_user_id.as_ref(),
+                    self.models.conversation_notification_settings(
+                        &self.models.conversation.summary.id,
+                        self.models.conversation.summary.muted,
+                    ),
                 );
                 details.can_leave &= snapshot
                     .workspace
@@ -6442,6 +6484,64 @@ impl AppWindow {
         if self.models.set_show_right_pane(show) {
             self.persist_settings();
             self.refresh(cx);
+        }
+    }
+
+    pub(crate) fn set_conversation_notification_settings(
+        &mut self,
+        conversation_id: ConversationId,
+        settings: ConversationNotificationSettings,
+        cx: &mut Context<Self>,
+    ) {
+        let previous = self.models.conversation_notification_settings(
+            &conversation_id,
+            self.models.conversation.summary.muted,
+        );
+        if previous == settings {
+            return;
+        }
+        if !self
+            .models
+            .set_conversation_notification_settings(&conversation_id, settings)
+        {
+            return;
+        }
+        // Rebuild the sidebar from the snapshot with the new overrides applied.
+        self.sync_cache.sidebar_sections_sig = None;
+        self.apply_conversation_notifications_to_sidebar(&conversation_id, settings);
+        self.persist_settings();
+        self.dispatch_ui_action(UiAction::SetConversationNotificationSettings {
+            conversation_id,
+            settings,
+            previous,
+        });
+        self.refresh(cx);
+    }
+
+    /// Applies a notification choice to the already-built sidebar rows, so the
+    /// row dims or regains its mention badge without waiting for a backend sync.
+    fn apply_conversation_notifications_to_sidebar(
+        &mut self,
+        conversation_id: &ConversationId,
+        settings: ConversationNotificationSettings,
+    ) {
+        let row_id = conversation_id.0.as_str();
+        let apply = |row: &mut crate::models::sidebar_model::SidebarRow| {
+            if route_conversation_key(&row.route) != Some(row_id) {
+                return;
+            }
+            row.muted = settings.muted;
+            if settings.ignore_mentions {
+                row.mention_count = 0;
+            }
+        };
+        for section in &mut self.models.sidebar.sections {
+            for row in &mut section.rows {
+                apply(row);
+            }
+        }
+        for recent in &mut self.models.sidebar.recent_rows {
+            apply(&mut recent.row);
         }
     }
 
@@ -9028,11 +9128,29 @@ impl AppWindow {
     /// for DMs, Keybase's badge count for channels.
     fn sync_dock_badge(&mut self) {
         let workspace = &self.app_store.snapshot().workspace;
-        let channels = workspace.channels.iter().map(|c| c.mention_count);
+        let overrides = &self.models.settings.conversation_notifications;
+        let notifications_for = |id: &str, muted: bool| {
+            overrides
+                .get(id)
+                .copied()
+                .unwrap_or(ConversationNotificationSettings {
+                    muted,
+                    ..Default::default()
+                })
+        };
+        let channels = workspace
+            .channels
+            .iter()
+            .filter(|conversation| !notifications_for(&conversation.id.0, conversation.muted).muted)
+            .filter(|conversation| {
+                !notifications_for(&conversation.id.0, conversation.muted).ignore_mentions
+            })
+            .map(|conversation| conversation.mention_count);
         let dms = workspace
             .direct_messages
             .iter()
-            .map(|c| c.unread_count.max(c.mention_count));
+            .filter(|conversation| !notifications_for(&conversation.id.0, conversation.muted).muted)
+            .map(|conversation| conversation.unread_count.max(conversation.mention_count));
         let count: u32 = channels.chain(dms).sum();
         if self.dock_badge_count == Some(count) {
             return;
@@ -10228,6 +10346,7 @@ fn build_channel_details(
     is_archived: bool,
     backend: &crate::state::state::BackendRuntimeState,
     current_user_id: Option<&UserId>,
+    notifications: ConversationNotificationSettings,
 ) -> ChannelDetails {
     let mut members = Vec::new();
     let team_role_map = backend
@@ -10315,11 +10434,6 @@ fn build_channel_details(
         .and_then(|user_id| team_role_map.and_then(|roles| roles.get(user_id)))
         .copied();
     let can_manage_members = matches!(role, Some(TeamRoleKind::Admin | TeamRoleKind::Owner));
-    let notification_level = if summary.muted {
-        NotificationLevel::Nothing
-    } else {
-        NotificationLevel::All
-    };
     let topic = summary.topic.trim().to_string();
 
     let derived_member_count = if let Some(state) = backend.conversation_members.get(&summary.id) {
@@ -10339,7 +10453,7 @@ fn build_channel_details(
         member_count: derived_member_count,
         members,
         member_preview,
-        notification_level,
+        notifications,
         pinned_items: backend
             .conversation_pins
             .get(&summary.id)

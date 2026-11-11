@@ -4,6 +4,7 @@ use crate::{
             AccountId, BackendCapabilities, BackendId, ProviderConversationRef, ProviderMessageRef,
             ProviderWorkspaceRef,
         },
+        channel_details::ConversationNotificationSettings,
         conversation::ConversationKind,
         ids::{CallId, ConversationId, UserId, WorkspaceId},
         profile::SocialGraphListType,
@@ -208,6 +209,11 @@ pub enum RoutedBackendCommand {
         account_id: AccountId,
         conversation: ProviderConversationRef,
         workspace_id: WorkspaceId,
+    },
+    SetConversationNotificationSettings {
+        account_id: AccountId,
+        conversation: ProviderConversationRef,
+        settings: ConversationNotificationSettings,
     },
 }
 

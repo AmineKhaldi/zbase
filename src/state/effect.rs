@@ -1,6 +1,7 @@
 use crate::domain::{
     attachment::AttachmentKind,
     backend::AccountId,
+    channel_details::ConversationNotificationSettings,
     conversation::ConversationKind,
     ids::{CallId, ConversationId, MessageId, UserId, WorkspaceId},
     profile::SocialGraphListType,
@@ -162,6 +163,11 @@ pub enum BackendCommand {
     LeaveChannel {
         workspace_id: WorkspaceId,
         conversation_id: ConversationId,
+    },
+    SetConversationNotificationSettings {
+        conversation_id: ConversationId,
+        settings: ConversationNotificationSettings,
+        previous: ConversationNotificationSettings,
     },
 }
 

@@ -1,7 +1,10 @@
 use super::{member_avatar, member_markers, pane_header, pane_with_header, truncate_with_ellipsis};
 use crate::{
     domain::{
-        backend::BackendCapabilities, channel_details::ChannelMemberPreview,
+        backend::BackendCapabilities,
+        channel_details::{
+            ChannelMemberPreview, ConversationNotificationSettings, NotificationLevel,
+        },
         conversation::ConversationKind,
     },
     models::{
@@ -9,14 +12,15 @@ use crate::{
         timeline_model::{TimelineModel, TimelineRow},
     },
     views::{
-        accent, app_window::AppWindow, avatar::Avatar, badge, border, danger, panel_alt_bg,
-        panel_alt_surface, panel_surface, subtle_surface, text_primary, text_secondary,
+        accent, app_window::AppWindow, avatar::Avatar, badge, border, danger, field_border,
+        panel_alt_bg, panel_alt_surface, panel_surface, subtle_surface, text_primary,
+        text_secondary,
     },
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, Context, CursorStyle, Div, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, StatefulInteractiveElement, Styled, div, px, rgb,
+    ParentElement, StatefulInteractiveElement, Styled, div, px, rgb, svg,
 };
 
 fn details_card() -> Div {
@@ -38,6 +42,200 @@ fn section_heading(title: &str) -> AnyElement {
         .font_weight(FontWeight::MEDIUM)
         .text_color(rgb(text_secondary()))
         .child(title.to_owned())
+        .into_any_element()
+}
+
+/// The conversation's notification choices, matching Keybase's Settings tab:
+/// mute, ignore channel-wide mentions, and desktop/mobile levels.
+fn notification_settings_card(
+    conversation_id: &crate::domain::ids::ConversationId,
+    notifications: ConversationNotificationSettings,
+    cx: &mut Context<AppWindow>,
+) -> AnyElement {
+    let base = notifications;
+    let mut rows = Vec::new();
+
+    rows.push(notification_check_row(
+        "details-notifications-mute",
+        "Mute all notifications",
+        notifications.muted,
+        cx,
+        {
+            let conversation_id = conversation_id.clone();
+            move |this: &mut AppWindow, cx| {
+                let mut next = base;
+                next.muted = !base.muted;
+                this.set_conversation_notification_settings(conversation_id.clone(), next, cx);
+            }
+        },
+    ));
+    rows.push(notification_check_row(
+        "details-notifications-ignore-mentions",
+        "Ignore @here and @channel mentions",
+        notifications.ignore_mentions,
+        cx,
+        {
+            let conversation_id = conversation_id.clone();
+            move |this: &mut AppWindow, cx| {
+                let mut next = base;
+                next.ignore_mentions = !base.ignore_mentions;
+                this.set_conversation_notification_settings(conversation_id.clone(), next, cx);
+            }
+        },
+    ));
+
+    rows.push(notification_group_heading("Desktop notifications"));
+    for level in [
+        NotificationLevel::All,
+        NotificationLevel::MentionsOnly,
+        NotificationLevel::Nothing,
+    ] {
+        rows.push(notification_radio_row(
+            match level {
+                NotificationLevel::All => "details-notifications-desktop-all",
+                NotificationLevel::MentionsOnly => "details-notifications-desktop-mentions",
+                NotificationLevel::Nothing => "details-notifications-desktop-never",
+            },
+            level.label(),
+            notifications.desktop == level,
+            cx,
+            {
+                let conversation_id = conversation_id.clone();
+                move |this: &mut AppWindow, cx| {
+                    let mut next = base;
+                    next.desktop = level;
+                    this.set_conversation_notification_settings(conversation_id.clone(), next, cx);
+                }
+            },
+        ));
+    }
+
+    rows.push(notification_group_heading("Mobile notifications"));
+    for level in [
+        NotificationLevel::All,
+        NotificationLevel::MentionsOnly,
+        NotificationLevel::Nothing,
+    ] {
+        rows.push(notification_radio_row(
+            match level {
+                NotificationLevel::All => "details-notifications-mobile-all",
+                NotificationLevel::MentionsOnly => "details-notifications-mobile-mentions",
+                NotificationLevel::Nothing => "details-notifications-mobile-never",
+            },
+            level.label(),
+            notifications.mobile == level,
+            cx,
+            {
+                let conversation_id = conversation_id.clone();
+                move |this: &mut AppWindow, cx| {
+                    let mut next = base;
+                    next.mobile = level;
+                    this.set_conversation_notification_settings(conversation_id.clone(), next, cx);
+                }
+            },
+        ));
+    }
+
+    details_card()
+        .gap_1()
+        .child(section_heading("Notifications"))
+        .children(rows)
+        .into_any_element()
+}
+
+fn notification_check_row(
+    id: &'static str,
+    label: &'static str,
+    checked: bool,
+    cx: &mut Context<AppWindow>,
+    on_click: impl Fn(&mut AppWindow, &mut Context<AppWindow>) + 'static,
+) -> AnyElement {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_2()
+        .py_1p5()
+        .rounded_md()
+        .cursor(CursorStyle::PointingHand)
+        .hover(|style| style.bg(subtle_surface()))
+        .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
+        .child(notification_check_mark(checked))
+        .child(div().text_sm().text_color(rgb(text_primary())).child(label))
+        .into_any_element()
+}
+
+fn notification_radio_row(
+    id: &'static str,
+    label: &'static str,
+    selected: bool,
+    cx: &mut Context<AppWindow>,
+    on_click: impl Fn(&mut AppWindow, &mut Context<AppWindow>) + 'static,
+) -> AnyElement {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_2()
+        .py_1p5()
+        .rounded_md()
+        .cursor(CursorStyle::PointingHand)
+        .hover(|style| style.bg(subtle_surface()))
+        .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
+        .child(notification_radio_mark(selected))
+        .child(div().text_sm().text_color(rgb(text_primary())).child(label))
+        .into_any_element()
+}
+
+fn notification_group_heading(label: &'static str) -> AnyElement {
+    div()
+        .px_2()
+        .pt_2()
+        .pb_1()
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(rgb(text_secondary()))
+        .child(label)
+        .into_any_element()
+}
+
+fn notification_check_mark(checked: bool) -> AnyElement {
+    div()
+        .size(px(17.))
+        .flex_shrink_0()
+        .rounded(px(4.))
+        .border_1()
+        .border_color(rgb(if checked { accent() } else { field_border() }))
+        .when(checked, |mark| mark.bg(rgb(accent())))
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(checked, |mark| {
+            mark.child(
+                svg()
+                    .path("assets/icons/check.svg")
+                    .size(px(11.))
+                    .text_color(rgb(0xffffff)),
+            )
+        })
+        .into_any_element()
+}
+
+fn notification_radio_mark(selected: bool) -> AnyElement {
+    div()
+        .size(px(17.))
+        .flex_shrink_0()
+        .rounded_full()
+        .border_1()
+        .border_color(rgb(if selected { accent() } else { field_border() }))
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(selected, |mark| {
+            mark.child(div().size(px(9.)).rounded_full().bg(rgb(accent())))
+        })
         .into_any_element()
 }
 
@@ -143,6 +341,9 @@ pub(super) fn render_details_panel(
         ConversationKind::DirectMessage => "Direct message",
         ConversationKind::GroupDirectMessage => "Group conversation",
     };
+    let notifications = details
+        .map(|details| details.notifications)
+        .unwrap_or_default();
 
     let body =
         div()
@@ -204,7 +405,7 @@ pub(super) fn render_details_panel(
                                     text_secondary(),
                                 ))
                             })
-                            .when(conversation.summary.muted, |row| {
+                            .when(notifications.muted, |row| {
                                 row.child(badge("Muted", panel_alt_bg(), text_secondary()))
                             }),
                     ),
@@ -222,6 +423,11 @@ pub(super) fn render_details_panel(
                         ),
                 )
             })
+            .child(notification_settings_card(
+                &conversation.summary.id,
+                notifications,
+                cx,
+            ))
             .when(has_members, |panel| {
                 panel.child(member_section(
                     &format!("Members ({})", people.len()),

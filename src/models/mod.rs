@@ -33,6 +33,7 @@ use crate::domain::{
     affinity::Affinity,
     attachment::{AttachmentKind, AttachmentSource, AttachmentSummary, attachment_kind_from_path},
     call::CallStatus,
+    channel_details::ConversationNotificationSettings,
     conversation::{ConversationKind, ConversationSummary},
     ids::{ChannelId, ConversationId, DmId, MessageId, SidebarSectionId, UserId, WorkspaceId},
     message::{BroadcastKind, EditMeta, MessageFragment, MessageRecord, MessageSendState},
@@ -1970,6 +1971,50 @@ impl AppModels {
         changed
     }
 
+    /// Notification choices for a conversation. Conversations the user has not
+    /// configured keep the backend's muted state and Keybase's defaults.
+    pub fn conversation_notification_settings(
+        &self,
+        conversation_id: &ConversationId,
+        backend_muted: bool,
+    ) -> ConversationNotificationSettings {
+        self.settings
+            .conversation_notifications
+            .get(&conversation_id.0)
+            .copied()
+            .unwrap_or(ConversationNotificationSettings {
+                muted: backend_muted,
+                ..Default::default()
+            })
+    }
+
+    pub fn set_conversation_notification_settings(
+        &mut self,
+        conversation_id: &ConversationId,
+        settings: ConversationNotificationSettings,
+    ) -> bool {
+        if self
+            .settings
+            .conversation_notifications
+            .get(&conversation_id.0)
+            .is_some_and(|current| *current == settings)
+        {
+            return false;
+        }
+        if self.conversation.summary.id == *conversation_id {
+            self.conversation.summary.muted = settings.muted;
+        }
+        if let Some(details) = self.conversation.details.as_mut()
+            && details.conversation_id == *conversation_id
+        {
+            details.notifications = settings;
+        }
+        self.settings
+            .conversation_notifications
+            .insert(conversation_id.0.clone(), settings);
+        true
+    }
+
     pub fn dismiss_current_pinned_banner(&mut self) -> bool {
         let conversation_id = self.conversation.summary.id.0.clone();
         let Some(pinned_item_id) = self
@@ -3428,7 +3473,7 @@ mod tests {
     #[test]
     fn mention_autocomplete_matches_username_or_profile_name() {
         use crate::domain::channel_details::{
-            ChannelDetails, ChannelMemberPreview, NotificationLevel,
+            ChannelDetails, ChannelMemberPreview, ConversationNotificationSettings,
         };
 
         let mut models = AppModels::empty_with_settings(SettingsModel::default());
@@ -3451,7 +3496,7 @@ mod tests {
             member_count: 1,
             members: vec![member.clone()],
             member_preview: vec![member],
-            notification_level: NotificationLevel::All,
+            notifications: ConversationNotificationSettings::default(),
             pinned_items: Vec::new(),
             can_edit_topic: false,
             can_manage_members: false,
@@ -3514,7 +3559,7 @@ mod tests {
     #[test]
     fn mention_autocomplete_resolves_display_name_to_username() {
         use crate::domain::channel_details::{
-            ChannelDetails, ChannelMemberPreview, NotificationLevel,
+            ChannelDetails, ChannelMemberPreview, ConversationNotificationSettings,
         };
 
         let mut models = AppModels::empty_with_settings(SettingsModel::default());
@@ -3537,7 +3582,7 @@ mod tests {
             member_count: 1,
             members: vec![member.clone()],
             member_preview: vec![member],
-            notification_level: NotificationLevel::All,
+            notifications: ConversationNotificationSettings::default(),
             pinned_items: Vec::new(),
             can_edit_topic: false,
             can_manage_members: false,
@@ -3601,6 +3646,63 @@ mod tests {
                 AutocompleteCandidate::MentionBroadcast { .. }
             )),
             "Channel mention autocomplete should include broadcast mentions even before details load"
+        );
+    }
+
+    #[test]
+    fn conversation_notification_settings_fall_back_to_backend_and_update_details() {
+        use crate::domain::channel_details::{ChannelDetails, NotificationLevel};
+
+        let mut models = AppModels::empty_with_settings(SettingsModel::default());
+        let conversation_id = models.conversation.summary.id.clone();
+
+        let defaults = models.conversation_notification_settings(&conversation_id, true);
+        assert!(defaults.muted);
+        assert_eq!(defaults.desktop, NotificationLevel::All);
+        assert_eq!(defaults.mobile, NotificationLevel::All);
+
+        let custom = ConversationNotificationSettings {
+            muted: false,
+            ignore_mentions: true,
+            desktop: NotificationLevel::All,
+            mobile: NotificationLevel::Nothing,
+        };
+        models.conversation.details = Some(ChannelDetails {
+            conversation_id: conversation_id.clone(),
+            title: "general".to_string(),
+            topic: String::new(),
+            kind: ConversationKind::Channel,
+            group: None,
+            member_count: 0,
+            members: Vec::new(),
+            member_preview: Vec::new(),
+            notifications: ConversationNotificationSettings::default(),
+            pinned_items: Vec::new(),
+            can_edit_topic: false,
+            can_manage_members: false,
+            can_archive: false,
+            is_leaving: false,
+            leave_error: None,
+            can_leave: true,
+            can_post: true,
+            created_at: None,
+            description: None,
+            is_archived: false,
+        });
+        assert!(models.set_conversation_notification_settings(&conversation_id, custom));
+        assert!(!models.set_conversation_notification_settings(&conversation_id, custom));
+        assert!(!models.conversation.summary.muted);
+        assert_eq!(
+            models.conversation_notification_settings(&conversation_id, true),
+            custom
+        );
+        assert_eq!(
+            models
+                .conversation
+                .details
+                .as_ref()
+                .map(|details| details.notifications),
+            Some(custom)
         );
     }
 }

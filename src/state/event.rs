@@ -1,6 +1,7 @@
 use crate::domain::{
     affinity::Affinity,
     call::{CallStatus, ParticipantSummary},
+    channel_details::ConversationNotificationSettings,
     conversation::{ConversationBadgeCounts, ConversationSummary},
     ids::{CallId, ConversationId, MessageId, UserId, WorkspaceId},
     message::{EmojiSourceRef, MessageRecord},
@@ -39,6 +40,8 @@ pub struct BootstrapPayload {
     pub selected_messages: Vec<MessageRecord>,
     pub unread_marker: Option<MessageId>,
     pub account_display_name: Option<String>,
+    /// Notification choices Keybase returned for conversations in this inbox.
+    pub conversation_notifications: Vec<(ConversationId, ConversationNotificationSettings)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -135,6 +138,11 @@ pub enum BackendEvent {
     ConversationLoaded {
         conversation_id: ConversationId,
         payload: ConversationPayload,
+    },
+    /// The server confirmed a conversation's notification choices.
+    ConversationNotificationSettingsSynced {
+        conversation_id: ConversationId,
+        settings: ConversationNotificationSettings,
     },
     MessagesPrepended {
         key: TimelineKey,

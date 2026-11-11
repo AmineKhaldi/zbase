@@ -5,11 +5,50 @@ use crate::domain::{
     pins::PinnedItem,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NotificationLevel {
+    #[default]
     All,
     MentionsOnly,
     Nothing,
+}
+
+impl NotificationLevel {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "On any activity",
+            Self::MentionsOnly => "Only when @mentioned",
+            Self::Nothing => "Never",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::MentionsOnly => "mentions",
+            Self::Nothing => "nothing",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "all" => Some(Self::All),
+            "mentions" => Some(Self::MentionsOnly),
+            "nothing" => Some(Self::Nothing),
+            _ => None,
+        }
+    }
+}
+
+/// Per-conversation notification choices, as in Keybase's conversation
+/// Settings tab. `muted` maps to Keybase's MUTED conversation status; the rest
+/// live in the conversation's notification settings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConversationNotificationSettings {
+    pub muted: bool,
+    pub ignore_mentions: bool,
+    pub desktop: NotificationLevel,
+    pub mobile: NotificationLevel,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,7 +76,7 @@ pub struct ChannelDetails {
     pub members: Vec<ChannelMemberPreview>,
     /// Small subset used for compact UI previews (e.g. Details pane).
     pub member_preview: Vec<ChannelMemberPreview>,
-    pub notification_level: NotificationLevel,
+    pub notifications: ConversationNotificationSettings,
     pub pinned_items: Vec<PinnedItem>,
     pub can_edit_topic: bool,
     pub can_manage_members: bool,
