@@ -18,6 +18,12 @@ enum Transition {
     InFlight(ResizeRequest),
 }
 
+/// How far left to slide a window so a `width`-wide window keeps its right
+/// edge on screen. Never slides past the display's left edge.
+pub(super) fn left_shift_for_width(left: f32, width: f32, display_width: f32) -> f32 {
+    (left + width - display_width).clamp(0., left.max(0.))
+}
+
 impl Transition {
     fn request(self) -> ResizeRequest {
         match self {
@@ -171,6 +177,15 @@ impl PaneWindowSizing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expansion_slides_left_only_when_the_window_would_cross_the_screen_edge() {
+        assert_eq!(left_shift_for_width(100., 800., 1000.), 0.);
+        assert_eq!(left_shift_for_width(600., 800., 1000.), 400.);
+        // A window already at the display's left edge cannot slide further.
+        assert_eq!(left_shift_for_width(0., 900., 1000.), 0.);
+        assert_eq!(left_shift_for_width(200., 900., 1000.), 100.);
+    }
 
     #[test]
     fn native_resize_transition_retains_chat_layout_until_size_is_observed() {

@@ -446,63 +446,56 @@ impl ConversationHeader {
             conversation.summary.title.clone()
         };
         let subtitle = Self::subtitle(conversation);
-        let title_block = div()
-            .flex_1()
+        let title_content = div()
             .flex()
-            .items_center()
-            .gap_3()
+            .flex_col()
             .min_w(px(0.))
-            .child(Self::conversation_badge(conversation))
+            .max_w_full()
             .child(
                 div()
-                    .flex_1()
                     .flex()
-                    .flex_col()
+                    .items_center()
+                    .gap_1()
                     .min_w(px(0.))
+                    .max_w_full()
                     .child(
                         div()
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .gap_1()
+                            .text_size(px(17.))
+                            .line_height(px(22.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(text_primary()))
                             .min_w(px(0.))
-                            .child(
-                                div()
-                                    .text_size(px(17.))
-                                    .line_height(px(22.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(rgb(text_primary()))
-                                    .min_w(px(0.))
-                                    .truncate()
-                                    .child(title),
-                            )
-                            .when(is_channel || is_dm, |row| {
-                                row.child(chevron_down_icon(text_secondary()))
-                            }),
+                            .truncate()
+                            .child(title),
                     )
-                    .when_some(subtitle, |block, subtitle| {
-                        block.child(
-                            div().w_full().flex().child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .text_size(px(12.))
-                                    .line_height(px(16.))
-                                    .text_color(rgb(text_secondary()))
-                                    .whitespace_normal()
-                                    .line_clamp(1)
-                                    .text_ellipsis()
-                                    .child(subtitle),
-                            ),
-                        )
+                    .when(is_channel || is_dm, |row| {
+                        row.child(chevron_down_icon(text_secondary()))
                     }),
-            );
-        let title_row = if is_channel {
+            )
+            .when_some(subtitle, |block, subtitle| {
+                block.child(
+                    div().flex().min_w(px(0.)).max_w_full().child(
+                        div()
+                            .min_w(px(0.))
+                            .max_w_full()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(rgb(text_secondary()))
+                            .whitespace_normal()
+                            .line_clamp(1)
+                            .text_ellipsis()
+                            .child(subtitle),
+                    ),
+                )
+            });
+        // Only the conversation name/subtitle opens the details or profile.
+        // The empty space beside it stays available for window dragging.
+        let title_content = if is_channel {
             div()
                 .id("conversation-header-title")
-                .flex_1()
                 .flex()
                 .min_w(px(0.))
+                .max_w_full()
                 .cursor(CursorStyle::PointingHand)
                 .tooltip(TextTooltip::with_shortcut(
                     "Conversation details".to_string(),
@@ -511,29 +504,39 @@ impl ConversationHeader {
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.toggle_pane(RightPaneMode::Details, window, cx);
                 }))
-                .child(title_block)
+                .child(title_content)
                 .into_any_element()
         } else if is_dm {
             div()
                 .id("conversation-header-title")
-                .flex_1()
                 .flex()
                 .min_w(px(0.))
+                .max_w_full()
                 .cursor(CursorStyle::PointingHand)
                 .tooltip(TextTooltip::single_line("View profile".to_string()))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.open_dm_header_profile(cx);
                 }))
-                .child(title_block)
+                .child(title_content)
                 .into_any_element()
         } else {
-            div()
-                .flex_1()
-                .flex()
-                .min_w(px(0.))
-                .child(title_block)
-                .into_any_element()
+            title_content.into_any_element()
         };
+        let title_row = div()
+            .flex_1()
+            .flex()
+            .min_w(px(0.))
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .min_w(px(0.))
+                    .child(Self::conversation_badge(conversation))
+                    .child(title_content),
+            )
+            .into_any_element();
 
         let member_count = conversation
             .details

@@ -2,7 +2,7 @@ pub(crate) mod downloads;
 mod files;
 mod update_notes;
 mod updates;
-use super::pane_window::PaneWindowSizing;
+use super::pane_window::{PaneWindowSizing, left_shift_for_width};
 use crate::models::conversation_model::AvatarParticipant;
 use crate::services::github_pr_service::{GithubPrFetchResult, GithubPrService};
 use crate::services::og_service::{OgFetchResult, OgService};
@@ -241,6 +241,16 @@ pub struct AppWindow {
     update_ui: updates::UpdateUi,
     models: AppModels,
     pane_window_sizing: PaneWindowSizing,
+    /// How far left the window was moved to fit an expanded pane on screen.
+    pane_window_shift: f32,
+    /// The window x before that move, so repeated pane resizes stay anchored.
+    pane_window_base_x: Option<f32>,
+    /// The window x after that move, so a user drag can be told apart from it.
+    pane_window_shift_expected_x: Option<f32>,
+    /// Where the window sat when the current mouse press began. A native window
+    /// drag can leave the pressed button under the cursor, so release clicks are
+    /// ignored when the window moved.
+    mouse_down_window_origin: Option<gpui_kit::Point<gpui_kit::Pixels>>,
     /// The sidebar's width changed (Previews are wider); on the next frame the
     /// window grows to keep the conversation's width, or the sidebar narrows.
     sidebar_fit_pending: bool,
@@ -882,6 +892,10 @@ impl AppWindow {
             update_ui: updates::UpdateUi::new(),
             models,
             pane_window_sizing: PaneWindowSizing::default(),
+            pane_window_shift: 0.,
+            pane_window_base_x: None,
+            pane_window_shift_expected_x: None,
+            mouse_down_window_origin: None,
             sidebar_fit_pending: true,
             view_menu_mode: None,
             dock_badge_count: None,
@@ -5543,6 +5557,10 @@ impl AppWindow {
         let viewport = window.viewport_size();
         let pane_width = (!matches!(self.models.navigation.right_pane, RightPaneMode::Hidden))
             .then_some(self.models.thread_pane.width_px);
+        if pane_width.is_some() {
+            self.pane_window_base_x
+                .get_or_insert(window.bounds().origin.x.into());
+        }
         let layout = shell_layout(
             &self.models.navigation.right_pane,
             self.models.thread_pane.width_px,
@@ -5564,16 +5582,87 @@ impl AppWindow {
             // frame rather than changing the platform window during rendering.
             let generation = self.pane_window_sizing.queued_generation().unwrap();
             let owner = cx.weak_entity();
+            let pane_was_open = pane_width.is_some();
             window.on_next_frame(move |window, cx| {
                 if window.is_fullscreen() || window.is_maximized() {
                     return;
                 }
+                let current_x: f32 = window.bounds().origin.x.into();
+                let display_width = window
+                    .display(cx)
+                    .map(|display| f32::from(display.bounds().size.width))
+                    .unwrap_or(f32::from(window.viewport_size().width));
                 let _ = owner.update(cx, |this, _| {
                     if this.pane_window_sizing.submit(generation) {
+                        let mut move_after_resize = None;
+                        if pane_was_open {
+                            // If the expanded window would cross the right edge,
+                            // slide it left so the whole pane stays visible.
+                            let base_x = this.pane_window_base_x.unwrap_or(current_x);
+                            let total_shift = left_shift_for_width(base_x, width, display_width);
+                            let delta = total_shift - this.pane_window_shift;
+                            if delta.abs() > 0.5
+                                && crate::app::platform::move_window_by_x(window, -delta)
+                            {
+                                this.pane_window_shift = total_shift;
+                                this.pane_window_shift_expected_x = Some(base_x - total_shift);
+                            } else if delta.abs() <= 0.5 {
+                                this.pane_window_shift = total_shift;
+                                this.pane_window_shift_expected_x =
+                                    (total_shift > 0.5).then_some(base_x - total_shift);
+                            }
+                        } else if this.pane_window_shift > 0.5 {
+                            // Put the window back where it was, unless the user
+                            // dragged it somewhere else while the pane was open.
+                            let expected_matches = this
+                                .pane_window_shift_expected_x
+                                .is_none_or(|expected| (current_x - expected).abs() <= 1.);
+                            if expected_matches {
+                                // Shrink first, then move right, so the wider
+                                // window never pops past the screen edge.
+                                move_after_resize = Some(this.pane_window_shift);
+                                this.pane_window_shift = 0.;
+                            }
+                            this.pane_window_shift_expected_x = None;
+                        } else {
+                            this.pane_window_shift_expected_x = None;
+                        }
                         window.resize(gpui_kit::size(px(width), viewport.height));
+                        if let Some(dx) = move_after_resize {
+                            crate::app::platform::move_window_by_x(window, dx);
+                        }
                     }
                 });
             });
+        }
+    }
+
+    fn record_mouse_down_window_origin(
+        &mut self,
+        _: &MouseDownEvent,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        self.mouse_down_window_origin = Some(window.bounds().origin);
+    }
+
+    /// A press that turns into a native window drag keeps the original control
+    /// under the pointer. Don't turn its release into a click.
+    fn suppress_click_after_window_move(
+        &mut self,
+        _: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(origin) = self.mouse_down_window_origin.take() else {
+            return;
+        };
+        if self.thread_resize_drag.is_some() || self.sidebar_resize_drag.is_some() {
+            return;
+        }
+        let current = window.bounds().origin;
+        if (current.x - origin.x).abs() > px(1.) || (current.y - origin.y).abs() > px(1.) {
+            cx.stop_propagation();
         }
     }
 
@@ -5593,6 +5682,18 @@ impl AppWindow {
             .observed_window_bounds
             .is_none_or(|old| old.x != observed.x || old.y != observed.y);
         self.observed_window_bounds = Some(observed);
+        if moved && !self.pane_window_sizing.automatic_resize() {
+            let expected_matches = self
+                .pane_window_shift_expected_x
+                .is_some_and(|expected| (observed.x - expected).abs() <= 1.);
+            if !expected_matches {
+                // The user moved the window: remember where they put it and
+                // don't slide it back when a pane closes.
+                self.pane_window_base_x = Some(observed.x);
+                self.pane_window_shift = 0.;
+                self.pane_window_shift_expected_x = Some(observed.x);
+            }
+        }
         let mut preferred = self.window_preferences.unwrap_or(observed);
         if moved && !self.pane_window_sizing.automatic_resize() {
             preferred.x = observed.x;
@@ -9925,6 +10026,8 @@ impl Render for AppWindow {
                     .overflow_hidden()
                     .track_focus(&self.focus_handle)
                     .key_context("Workspace")
+                    .capture_any_mouse_down(cx.listener(Self::record_mouse_down_window_origin))
+                    .capture_any_mouse_up(cx.listener(Self::suppress_click_after_window_move))
                     .on_action(cx.listener(Self::go_back_action))
                     .on_action(cx.listener(Self::go_forward_action))
                     .on_action(cx.listener(Self::show_home_action))
