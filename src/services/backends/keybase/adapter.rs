@@ -4,6 +4,7 @@ use crate::domain::message_formatting::{
 mod attachment_hydration;
 mod channel_membership;
 mod outbox;
+mod team_channels;
 mod user_search;
 use super::history_progress::{EnvelopeDisposition, PageProgress};
 use crate::{
@@ -1916,57 +1917,36 @@ impl ChatBackend for KeybaseBackend {
                 );
                 Ok(Vec::new())
             }
+            RoutedBackendCommand::LoadTeamChannels {
+                account_id,
+                workspace_id,
+                team_name,
+                request_id,
+            } => {
+                self.ensure_listener_started();
+                let sender = self.inbound_sender.clone().ok_or_else(|| {
+                    BackendError::OperationFailed("Keybase is unavailable".into())
+                })?;
+                team_channels::start_load(sender, account_id, workspace_id, team_name, request_id);
+                Ok(Vec::new())
+            }
             RoutedBackendCommand::JoinChannel {
                 conversation,
                 workspace_id,
+                summary,
                 ..
             } => {
-                if let Some(path) = socket_path()
-                    && let Ok(runtime) = Builder::new_current_thread().enable_all().build()
-                {
-                    let join_result = runtime.block_on(async move {
-                        let transport = FramedMsgpackTransport::connect(&path).await?;
-                        let mut client = KeybaseRpcClient::new(transport);
-                        let raw_conversation_id = provider_ref_to_conversation_id_bytes(
-                            &conversation,
-                        )
-                        .ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidInput,
-                                "invalid provider conversation reference",
-                            )
-                        })?;
-                        let response =
-                            call_join_conversation_by_id_local(&mut client, &raw_conversation_id)
-                                .await?;
-                        channel_membership::ensure_online(&response)?;
-                        Ok::<_, io::Error>(raw_conversation_id)
-                    });
-                    match join_result {
-                        Ok(raw_conversation_id) => {
-                            let conversation_id = ConversationId::new(format!(
-                                "kb_conv:{}",
-                                hex_encode(&raw_conversation_id)
-                            ));
-                            self.local_store
-                                .set_conversation_left(&conversation_id, false)
-                                .map_err(|error| {
-                                    BackendError::OperationFailed(error.to_string())
-                                })?;
-                            tracing::info!(
-                                "JoinChannel: successfully joined {}",
-                                conversation_id.0
-                            );
-                            return Ok(vec![BackendEvent::ChannelJoined {
-                                workspace_id,
-                                conversation_id,
-                            }]);
-                        }
-                        Err(e) => {
-                            tracing::warn!("JoinChannel: RPC error: {e}");
-                        }
-                    }
-                }
+                self.ensure_listener_started();
+                let sender = self.inbound_sender.clone().ok_or_else(|| {
+                    BackendError::OperationFailed("Keybase is unavailable".into())
+                })?;
+                team_channels::start_join(
+                    sender,
+                    Arc::clone(&self.local_store),
+                    workspace_id,
+                    conversation,
+                    *summary,
+                );
                 Ok(Vec::new())
             }
             _ => Ok(Vec::new()),

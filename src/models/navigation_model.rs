@@ -6,6 +6,7 @@ pub enum RightPaneMode {
     Hidden,
     Thread,
     Details,
+    TeamDetails,
     Members,
     Files,
     Search,

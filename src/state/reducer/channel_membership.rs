@@ -35,6 +35,21 @@ pub(super) fn channel_left(
     workspace_id: WorkspaceId,
     conversation_id: ConversationId,
 ) -> ReducerOutput {
+    if state.team_details.loading {
+        state
+            .team_details
+            .membership_changes
+            .insert(conversation_id.clone(), false);
+    }
+    state.workspace.joining_channels.remove(&conversation_id);
+    if let Some(channel) = state
+        .team_details
+        .channels
+        .iter_mut()
+        .find(|c| c.conversation.id == conversation_id)
+    {
+        channel.joined = false;
+    }
     state
         .workspace
         .leave_channel_errors

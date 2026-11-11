@@ -1,7 +1,7 @@
 use super::{
     CompactRow, ROW_AVATAR_SIZE_PX, RowActivity, RowColors, RowLook, Sidebar, SidebarHost,
     preview_row::{PREVIEW_AVATAR_PX, PreviewRow, title_segments},
-    team_asset,
+    team_asset, team_logo_link,
 };
 use crate::views::typography;
 use crate::{
@@ -138,6 +138,7 @@ fn render_row<H: SidebarHost>(
                     Sidebar::leading_element(row, &route_key, avatars, &colors, PREVIEW_AVATAR_PX)
                 }
             };
+            let lead = team_logo_link(lead, row, &row_id, cx);
             PreviewRow {
                 row,
                 id: row_id,
@@ -166,6 +167,7 @@ fn render_row<H: SidebarHost>(
                     Sidebar::leading_element(row, &route_key, avatars, &colors, ROW_AVATAR_SIZE_PX)
                 }
             };
+            let leading = team_logo_link(leading, row, &row_id, cx);
             CompactRow {
                 id: row_id,
                 row,

@@ -106,6 +106,11 @@ pub enum BootstrapSource {
 
 #[derive(Clone, Debug)]
 pub enum BackendEvent {
+    TeamChannelsLoaded {
+        request_id: u64,
+        channels: Vec<crate::domain::channel_details::TeamChannel>,
+        conversation_bindings: Vec<ConversationBinding>,
+    },
     BenchmarkPulse(std::time::Instant),
     AccountConnected {
         account_id: crate::domain::backend::AccountId,

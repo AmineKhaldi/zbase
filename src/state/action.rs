@@ -18,6 +18,12 @@ pub enum DraftKey {
 #[derive(Clone, Debug)]
 pub enum UiAction {
     StartApp,
+    LoadTeamDetails {
+        team: crate::domain::conversation::ConversationGroup,
+    },
+    JoinChannel {
+        conversation: Box<crate::domain::conversation::ConversationSummary>,
+    },
     LeaveChannel {
         conversation_id: ConversationId,
     },

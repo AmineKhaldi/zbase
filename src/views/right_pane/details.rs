@@ -24,7 +24,7 @@ use gpui_kit::{
     ParentElement, StatefulInteractiveElement, Styled, div, px, rgb, svg,
 };
 
-fn details_card() -> Div {
+pub(super) fn details_card() -> Div {
     div()
         .flex_shrink_0()
         .min_w(px(0.))
@@ -253,16 +253,10 @@ pub(super) fn render_details_panel(
     } else {
         member_count
     };
-    let group_name = details
+    let team = details
         .and_then(|details| details.group.as_ref())
-        .map(|group| group.display_name.clone())
-        .or_else(|| {
-            conversation
-                .summary
-                .group
-                .as_ref()
-                .map(|group| group.display_name.clone())
-        });
+        .or(conversation.summary.group.as_ref());
+    let group_name = team.map(|team| team.display_name.clone());
 
     let title = if conversation.summary.kind == ConversationKind::Channel {
         format!("#{}", conversation.summary.title)
@@ -323,9 +317,17 @@ pub(super) fn render_details_panel(
                     .when_some(group_name, |card, group| {
                         card.child(
                             div()
+                                .id("channel-details-team")
                                 .text_size(typography::body())
                                 .text_center()
-                                .text_color(rgb(text_secondary()))
+                                .text_color(rgb(accent()))
+                                .cursor(CursorStyle::PointingHand)
+                                .hover(|style| style.bg(subtle_surface()))
+                                .when_some(team.cloned(), |link, team| {
+                                    link.on_click(cx.listener(move |this, _, _, cx| {
+                                        this.open_team_details(team.clone(), cx);
+                                    }))
+                                })
                                 .child(group),
                         )
                     })

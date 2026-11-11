@@ -531,7 +531,7 @@ impl ConversationHeader {
                     .items_center()
                     .gap_3()
                     .min_w(px(0.))
-                    .child(Self::conversation_badge(conversation))
+                    .child(Self::conversation_badge(conversation, cx))
                     .child(title_content),
             )
             .into_any_element();
@@ -723,7 +723,10 @@ impl ConversationHeader {
             .into_any_element()
     }
 
-    fn conversation_badge(conversation: &ConversationModel) -> AnyElement {
+    fn conversation_badge(
+        conversation: &ConversationModel,
+        cx: &mut Context<AppWindow>,
+    ) -> AnyElement {
         match conversation.summary.kind {
             ConversationKind::Channel => {
                 let team_name = conversation
@@ -732,7 +735,22 @@ impl ConversationHeader {
                     .as_ref()
                     .map(|group| group.display_name.as_str())
                     .unwrap_or(conversation.summary.title.as_str());
-                Avatar::render_team(team_name, conversation.avatar_asset.as_deref(), 32.)
+                let badge =
+                    Avatar::render_team(team_name, conversation.avatar_asset.as_deref(), 32.);
+                if let Some(team) = conversation.summary.group.clone() {
+                    div()
+                        .id("chat-header-team-details")
+                        .cursor(CursorStyle::PointingHand)
+                        .tooltip(TextTooltip::single_line("Team details".into()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.open_team_details(team.clone(), cx);
+                        }))
+                        .child(badge)
+                        .into_any_element()
+                } else {
+                    badge
+                }
             }
             ConversationKind::DirectMessage | ConversationKind::GroupDirectMessage => {
                 Avatar::render_participants_on(

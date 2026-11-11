@@ -423,6 +423,12 @@ impl ToolbarButton {
 pub struct Sidebar;
 
 pub trait SidebarHost: Sized + 'static {
+    fn sidebar_open_conversation_team(&mut self, route: Route, cx: &mut Context<Self>);
+    fn sidebar_open_team_details(
+        &mut self,
+        team: crate::domain::conversation::ConversationGroup,
+        cx: &mut Context<Self>,
+    );
     fn sidebar_show_updates(&mut self, window: &mut Window, cx: &mut Context<Self>);
     fn sidebar_set_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>);
     fn sidebar_toggle_quick_switcher(&mut self, cx: &mut Context<Self>);
@@ -980,13 +986,20 @@ impl Sidebar {
             RowLook::Compact | RowLook::Channel => CompactRow {
                 height: context.look.row_px(),
                 title: title_segments(row.label.clone(), None, &colors, emphasized),
-                leading: Self::leading_element(
-                    row,
-                    &route_label,
-                    context.avatars,
-                    &colors,
-                    ROW_AVATAR_SIZE_PX,
-                ),
+                leading: {
+                    let lead = Self::leading_element(
+                        row,
+                        &route_label,
+                        context.avatars,
+                        &colors,
+                        ROW_AVATAR_SIZE_PX,
+                    );
+                    if row.team.is_none() {
+                        team_logo_link(lead, row, &row_id, cx)
+                    } else {
+                        lead
+                    }
+                },
                 id: row_id,
                 row,
                 colors: &colors,
@@ -1045,6 +1058,31 @@ impl Sidebar {
     }
 }
 
+/// Keep logo actions separate from the surrounding conversation row.
+fn team_logo_link<H: SidebarHost>(
+    logo: AnyElement,
+    row: &SidebarRow,
+    id: &str,
+    cx: &mut Context<H>,
+) -> AnyElement {
+    if !matches!(row.route, Route::Channel { .. }) {
+        return logo;
+    }
+    let route = row.route.clone();
+    div()
+        .id(SharedString::from(format!("{id}-team-details")))
+        .cursor_pointer()
+        .tooltip(SidebarTooltip::single_line("Team details".into()))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            cx.stop_propagation();
+            this.sidebar_open_conversation_team(route.clone(), cx);
+        }))
+        .child(logo)
+        .into_any_element()
+}
+
+/// A header's disclosure chevron, at its right edge. Shown while collapsed;
+/// revealed by hovering `group` while expanded.
 pub(super) fn disclosure(collapsed: bool, group: SharedString) -> AnyElement {
     svg()
         .path(if collapsed {
