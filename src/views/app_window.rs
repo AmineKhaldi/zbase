@@ -372,6 +372,7 @@ pub struct AppWindow {
     splash_shown_at: Instant,
     splash_boot_ready: bool,
     pending_file_upload_caption_focus: bool,
+    pending_emoji_picker_focus: bool,
     sidebar_handles: SidebarHandles,
 }
 
@@ -1013,6 +1014,7 @@ impl AppWindow {
             splash_shown_at: Instant::now(),
             splash_boot_ready: false,
             pending_file_upload_caption_focus: false,
+            pending_emoji_picker_focus: false,
             sidebar_handles,
         }
     }
@@ -7563,6 +7565,7 @@ impl AppWindow {
 
     pub(crate) fn toggle_emoji_picker(&mut self, cx: &mut Context<Self>) {
         self.models.toggle_emoji_picker();
+        self.pending_emoji_picker_focus = self.models.overlay.emoji_picker_open;
         self.sync_inputs_from_models(cx);
         self.refresh(cx);
     }
@@ -8047,6 +8050,7 @@ impl AppWindow {
 
     pub(crate) fn react_to_message(&mut self, message_id: MessageId, cx: &mut Context<Self>) {
         self.models.open_reaction_picker_for_message(&message_id);
+        self.pending_emoji_picker_focus = true;
         self.sync_inputs_from_models(cx);
         self.refresh(cx);
     }
@@ -9815,6 +9819,11 @@ impl AppWindow {
             self.close_update_panel(window, cx, true);
             return;
         }
+        if self.models.overlay.emoji_picker_open {
+            self.dismiss_overlays(cx);
+            self.restore_chat_focus(window, cx);
+            return;
+        }
         if let Some(target) = self.autocomplete_target_for_focused_input(window, cx) {
             let dismissed_signature = self.current_autocomplete_dismiss_signature(target, cx);
             if self.clear_autocomplete_for_target(target, cx) {
@@ -9903,6 +9912,12 @@ impl Render for AppWindow {
         self.fit_window_to_sidebar(window, cx);
         self.sync_pane_window_size(window, cx);
         self.remember_window_preferences(window);
+        if self.pending_emoji_picker_focus {
+            self.pending_emoji_picker_focus = false;
+            if self.models.overlay.emoji_picker_open {
+                window.focus(&self.emoji_picker_input.focus_handle(cx), cx);
+            }
+        }
         if self.pending_file_upload_caption_focus {
             self.pending_file_upload_caption_focus = false;
             window.focus(&self.file_upload_caption_input.focus_handle(cx), cx);
