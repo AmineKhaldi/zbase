@@ -145,9 +145,6 @@ impl ConversationView {
                     .flex_col()
                     .overflow_hidden()
                     .child(TimelineList.render(timeline, timeline_list_state, reduced_motion, cx))
-                    .when(timeline.scrolled_from_top, |container| {
-                        container.child(crate::views::scroll_edge_shadow())
-                    })
                     .when(show_jump, |container| {
                         container.child(
                             div()

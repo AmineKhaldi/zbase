@@ -3424,8 +3424,6 @@ impl AppWindow {
         self.timeline_bottom_distance =
             crate::views::timeline::layout_anchor::bottom_distance(&self.timeline_list_state);
         self.timeline_near_bottom = self.timeline_bottom_distance <= px(24.);
-        let top = self.timeline_list_state.logical_scroll_top();
-        self.models.timeline.scrolled_from_top = top.item_ix > 0 || top.offset_in_item > px(0.);
     }
 
     fn timeline_is_near_top(&self) -> bool {

@@ -1348,24 +1348,6 @@ pub fn scroll_edge_fade_bottom(surface: Hsla) -> AnyElement {
         .into_any_element()
 }
 
-/// Thin shadow under a header while the content below it is scrolled, so the
-/// first visible row reads as passing under the header, not as loose furniture.
-pub fn scroll_edge_shadow() -> AnyElement {
-    let shade = tint(0x000000, if is_dark_theme() { 0.32 } else { 0.07 });
-    div()
-        .absolute()
-        .top_0()
-        .left_0()
-        .right_0()
-        .h(px(6.))
-        .bg(gpui_kit::linear_gradient(
-            180.,
-            gpui_kit::linear_color_stop(shade, 0.),
-            gpui_kit::linear_color_stop(gpui_kit::Hsla { a: 0., ..shade }, 1.),
-        ))
-        .into_any_element()
-}
-
 /// A file attachment that has no inline preview: a compact 32px row with a
 /// document icon, the file name and its size.
 pub fn attachment_file_row(attachment: &AttachmentSummary) -> AnyElement {

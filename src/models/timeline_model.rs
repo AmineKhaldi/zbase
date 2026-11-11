@@ -81,7 +81,6 @@ pub enum TimelineRow {
 #[derive(Clone, Debug, Default)]
 pub struct TimelineModel {
     pub conversation_id: ConversationId,
-    pub scrolled_from_top: bool,
     pub current_user_id: Option<UserId>,
     pub rows: Vec<TimelineRow>,
     pub highlighted_message_id: Option<MessageId>,
