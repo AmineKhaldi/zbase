@@ -61,13 +61,9 @@ fn windows_resources() {
     if env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
         return;
     }
-    // GPUI calls TaskDialogIndirect, which only Common Controls v6 provides.
-    println!("cargo:rustc-link-arg-bin=zbase=/MANIFEST:EMBED");
-    println!(
-        "cargo:rustc-link-arg-bin=zbase=/MANIFESTDEPENDENCY:type='win32' \
-         name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
-         processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
-    );
+    // Kit's platform backend embeds the application manifest, including Common
+    // Controls v6 and DPI awareness. Only add our icon here: /MANIFEST:EMBED
+    // would generate another resource with the same ID and fail MSVC linking.
     println!("cargo:rerun-if-changed=assets/windows/zbase.rc");
     println!("cargo:rerun-if-changed=assets/windows/zBase.ico");
     embed_resource::compile_for("assets/windows/zbase.rc", ["zbase"], embed_resource::NONE)
