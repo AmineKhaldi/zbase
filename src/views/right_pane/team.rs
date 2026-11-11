@@ -51,12 +51,6 @@ pub(super) fn render_team_panel(
                 .text_color(rgb(text_secondary()))
                 .child("Channels"),
         )
-        .child(
-            div()
-                .text_size(typography::body())
-                .text_color(rgb(text_secondary()))
-                .child("Everyone on this team can read its channels. Join a channel to add it to your sidebar."),
-        )
         .when(state.loading, |card| {
             card.child(div().text_size(typography::body()).child("Loading channels…"))
         })

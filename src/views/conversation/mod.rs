@@ -196,7 +196,7 @@ impl ConversationView {
                 div()
                     .text_size(typography::body())
                     .text_color(rgb(text_secondary()))
-                    .child("You can read this channel, but need to join to send messages."),
+                    .child("Join to send messages."),
             )
             .child(
                 div()
