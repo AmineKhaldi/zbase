@@ -70,7 +70,7 @@ if [[ $BUILD == 1 ]]; then
   echo "==> Building demo binary"
   # ffmpeg-next needs ffmpeg 8; Homebrew's default ffmpeg may be newer.
   (cd "$ROOT" && PKG_CONFIG_PATH=/opt/homebrew/opt/ffmpeg@8/lib/pkgconfig \
-    cargo build --locked --features demo-fixtures,gpui/runtime_shaders)
+    cargo build --locked --features demo-fixtures)
 fi
 [[ -x "$BIN" ]] || { echo "missing $BIN; run without --no-build" >&2; exit 1; }
 

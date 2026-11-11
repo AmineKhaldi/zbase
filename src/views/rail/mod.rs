@@ -8,7 +8,7 @@ use crate::{
         subtle_surface, tint,
     },
 };
-use gpui::{
+use gpui_kit::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, div, px, rgb,
 };
@@ -26,7 +26,7 @@ fn workspace_button(label: impl Into<SharedString>) -> AnyElement {
         .justify_center()
         .bg(tint(accent_soft(), 0.90))
         .text_color(rgb(accent()))
-        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
         .child(label.into())
         .into_any_element()
 }

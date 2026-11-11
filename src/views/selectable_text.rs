@@ -12,7 +12,7 @@ use crate::{
         link, selection,
     },
 };
-use gpui::{
+use gpui_kit::{
     App, AvailableSpace, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, Entity,
     FocusHandle, Focusable, FontStyle, FontWeight, GlobalElementId, Hsla, InteractiveElement,
     IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
@@ -374,7 +374,7 @@ impl SelectableText {
         cx: &mut Context<Self>,
     ) {
         self.is_selecting = true;
-        window.focus(&self.focus_handle(cx));
+        window.focus(&self.focus_handle(cx), cx);
         let offset = self.index_for_mouse_position(event.position);
 
         if !event.modifiers.shift {
@@ -488,7 +488,7 @@ impl SelectableText {
         cx.notify();
     }
 
-    fn build_text_runs(&self, base_color: Hsla, font: gpui::Font) -> Vec<TextRun> {
+    fn build_text_runs(&self, base_color: Hsla, font: gpui_kit::Font) -> Vec<TextRun> {
         build_text_runs_for_content(
             &self.content,
             &self.link_ranges,
@@ -505,7 +505,7 @@ fn build_text_runs_for_content(
     link_ranges: &[LinkRange],
     styled_ranges: &[StyledRange],
     base_color: Hsla,
-    font: gpui::Font,
+    font: gpui_kit::Font,
     link_foreground: u32,
 ) -> Vec<TextRun> {
     let text_len = content.len();
@@ -793,7 +793,7 @@ impl Element for SelectableTextElement {
     fn request_layout(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
@@ -868,7 +868,7 @@ impl Element for SelectableTextElement {
     fn prepaint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         window: &mut Window,
@@ -965,7 +965,7 @@ impl Element for SelectableTextElement {
     fn paint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         prepaint: &mut Self::PrepaintState,
@@ -1013,7 +1013,8 @@ impl Element for SelectableTextElement {
 
         for attachment in &prepaint.attachments {
             let resource = resource_from_attachment_source(&attachment.source);
-            let Some(Ok(render_image)) = window.use_asset::<gpui::ImgResourceLoader>(&resource, cx)
+            let Some(Ok(render_image)) =
+                window.use_asset::<gpui_kit::ImgResourceLoader>(&resource, cx)
             else {
                 continue;
             };
@@ -1030,7 +1031,8 @@ impl Element for SelectableTextElement {
             );
             let _ = window.paint_image(
                 Bounds::new(origin, size(draw_width, draw_height)),
-                gpui::Corners::default(),
+                Bounds::new(origin, size(draw_width, draw_height)),
+                gpui_kit::Corners::default(),
                 render_image,
                 0,
                 false,
@@ -1539,7 +1541,7 @@ fn resource_from_attachment_source(source: &str) -> Resource {
 
     let lower = trimmed.to_ascii_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") {
-        if trimmed.parse::<gpui::http_client::Uri>().is_ok() {
+        if trimmed.parse::<gpui_kit::http_client::Uri>().is_ok() {
             return Resource::Uri(trimmed.to_string().into());
         }
         return Resource::Embedded(trimmed.to_string().into());
@@ -1667,7 +1669,7 @@ mod tests {
                     }],
                     &[],
                     rgb(0xd9d9d9).into(),
-                    gpui::font(".SystemUIFont"),
+                    gpui_kit::font(".SystemUIFont"),
                     captured.link,
                 )
             });
@@ -1698,16 +1700,16 @@ mod tests {
             &parsed.link_ranges,
             &parsed.styled_ranges,
             rgb(0x223344).into(),
-            gpui::font(".SystemUIFont"),
+            gpui_kit::font(".SystemUIFont"),
             link(),
         );
         assert_eq!(runs.len(), 3);
-        assert_eq!(runs[0].font.family, gpui::font(".SystemUIFont").family);
+        assert_eq!(runs[0].font.family, gpui_kit::font(".SystemUIFont").family);
         assert_eq!(runs[0].font.weight, FontWeight::BOLD);
         assert_eq!(runs[2].len, "λvalue".len());
         assert_eq!(
             runs[2].font.family,
-            gpui::font(crate::views::mono_font_family()).family
+            gpui_kit::font(crate::views::mono_font_family()).family
         );
         assert_eq!(runs[2].color, rgb(code.color.unwrap()).into());
         assert_eq!(
@@ -1754,7 +1756,7 @@ mod tests {
                 },
             ],
             rgb(0x223344).into(),
-            gpui::font(".SystemUIFont"),
+            gpui_kit::font(".SystemUIFont"),
             link(),
         );
 
@@ -1783,7 +1785,7 @@ mod tests {
                 meta: false,
             }],
             rgb(0x223344).into(),
-            gpui::font(".SystemUIFont"),
+            gpui_kit::font(".SystemUIFont"),
             link(),
         );
 
@@ -1812,7 +1814,7 @@ mod tests {
                 meta: false,
             }],
             rgb(0x223344).into(),
-            gpui::font(".SystemUIFont"),
+            gpui_kit::font(".SystemUIFont"),
             link(),
         );
 
@@ -1850,7 +1852,7 @@ mod tests {
                 },
             ],
             rgb(0x223344).into(),
-            gpui::font(".SystemUIFont"),
+            gpui_kit::font(".SystemUIFont"),
             link(),
         );
 

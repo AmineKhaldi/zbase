@@ -71,14 +71,14 @@ use crate::{
         subtle_surface, text_primary, text_secondary, tint, with_theme, with_window_active,
     },
 };
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     AnyElement, AnyView, App, AppContext, AsyncApp, ClickEvent, ClipboardItem, Context,
     CursorStyle, DispatchPhase, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
     ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, PathPromptOptions, Render, RenderImage, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, StatefulInteractiveElement, StyleRefinement, Styled, Subscription,
-    UniformListScrollHandle, WeakEntity, Window, canvas, div, px, rgb,
+    MouseUpEvent, ParentElement, PathPromptOptions, Render, RenderImage, ScrollEvent, ScrollHandle,
+    StatefulInteractiveElement, StyleRefinement, Styled, Subscription, UniformListScrollHandle,
+    WeakEntity, Window, canvas, div, px, rgb,
 };
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -280,6 +280,10 @@ pub struct AppWindow {
     profile_scroll: ScrollHandle,
     profile_social_scroll: ScrollHandle,
     timeline_unseen_count: usize,
+    /// Scroll chrome is sampled after input/model changes, outside render so Fast
+    /// can reuse rows when only the list offset changes.
+    timeline_near_bottom: bool,
+    timeline_bottom_distance: gpui_kit::Pixels,
     thread_unseen_count: usize,
     last_timeline_message_count: usize,
     last_timeline_latest_message_id: Option<MessageId>,
@@ -333,7 +337,7 @@ pub struct AppWindow {
     github_pr_attention_key: Option<(ConversationId, bool)>,
     last_mark_read_attempt: HashMap<String, (String, Instant)>,
     window_is_focused: bool,
-    settings_window: Option<gpui::WindowHandle<crate::views::settings_window::SettingsWindow>>,
+    settings_window: Option<gpui_kit::AnyWindowHandle>,
     hover_settle_seq: u64,
     hover_clear_seq: u64,
     hover_clear_pending: bool,
@@ -413,6 +417,7 @@ struct SyncCache {
 #[derive(Clone, Debug, PartialEq)]
 struct SidebarViewState {
     update_available: bool,
+    reduced_motion: bool,
     sidebar: SidebarModel,
     connectivity: Connectivity,
     current_user_display_name: String,
@@ -557,6 +562,7 @@ impl Render for CachedSidebarView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chrome = SidebarChrome {
             update_available: self.state.update_available,
+            reduced_motion: self.state.reduced_motion,
             can_go_back: self.state.can_go_back,
             can_go_forward: self.state.can_go_forward,
             search_open: matches!(self.state.current_route, Route::Search { .. }),
@@ -914,6 +920,8 @@ impl AppWindow {
             profile_scroll: ScrollHandle::new(),
             profile_social_scroll: ScrollHandle::new(),
             timeline_unseen_count: 0,
+            timeline_near_bottom: true,
+            timeline_bottom_distance: px(0.),
             thread_unseen_count: 0,
             last_timeline_message_count,
             last_timeline_latest_message_id,
@@ -2508,7 +2516,11 @@ impl AppWindow {
         .detach();
     }
 
-    fn start_bench_script_loop(&mut self, handle: gpui::AnyWindowHandle, cx: &mut Context<Self>) {
+    fn start_bench_script_loop(
+        &mut self,
+        handle: gpui_kit::AnyWindowHandle,
+        cx: &mut Context<Self>,
+    ) {
         let Some(script) = self.bench_script else {
             return;
         };
@@ -2535,9 +2547,13 @@ impl AppWindow {
                             if env_flag("ZBASE_BENCH_FORCE_DRAW")
                                 && script.scenario != BenchScriptScenario::Idle
                             {
-                                window.refresh();
+                                // Forced rebuilds are an explicit diagnostic mode. A full
+                                // refresh defeats Fast's retained rendering and scroll layers.
+                                if env_flag("ZBASE_BENCH_FORCE_REBUILD") {
+                                    window.refresh();
+                                }
                                 let frame_started = Instant::now();
-                                window.draw(cx).clear();
+                                window.draw(cx).clear(cx);
                                 let _ = this.update(cx, |this, _cx| {
                                     this.perf_harness.record_duration(
                                         PerfTimer::FrameBuild,
@@ -2785,11 +2801,11 @@ impl AppWindow {
 
     fn scroll_handle_by(handle: &ScrollHandle, delta_y_px: f32) -> bool {
         let max = handle.max_offset();
-        if max.height <= px(0.) {
+        if max.y <= px(0.) {
             return false;
         }
         let mut offset = handle.offset();
-        let next_y = (offset.y + px(delta_y_px)).clamp(-max.height, px(0.));
+        let next_y = (offset.y + px(delta_y_px)).clamp(-max.y, px(0.));
         if next_y == offset.y {
             return false;
         }
@@ -3028,14 +3044,14 @@ impl AppWindow {
             }
             DemoScene::Inactive => {
                 self.toggle_members_pane_action(&commands::ToggleMembersPane, window, cx);
-                window.focus(&self.composer_input.focus_handle(cx));
+                window.focus(&self.composer_input.focus_handle(cx), cx);
             }
             DemoScene::MembersFilterEmpty => {
                 self.toggle_members_pane_action(&commands::ToggleMembersPane, window, cx);
                 self.members_filter_input.update(cx, |input, cx| {
                     input.set_text(demo::DEMO_MEMBERS_EMPTY_FILTER, cx)
                 });
-                window.focus(&self.members_filter_input.focus_handle(cx));
+                window.focus(&self.members_filter_input.focus_handle(cx), cx);
             }
             DemoScene::Thread => {
                 self.open_thread(MessageId::new(demo::DEMO_THREAD_ROOT_ID), window, cx);
@@ -3050,7 +3066,7 @@ impl AppWindow {
                         cx,
                     );
                 });
-                window.focus(&self.composer_input.focus_handle(cx));
+                window.focus(&self.composer_input.focus_handle(cx), cx);
                 self.composer_format_menu =
                     Some(crate::views::composer::ComposerTarget::Conversation);
                 self.refresh(cx);
@@ -3224,6 +3240,7 @@ impl AppWindow {
     fn sidebar_view_state(&self) -> SidebarViewState {
         SidebarViewState {
             update_available: self.update_ui.snapshot.has_reminder(),
+            reduced_motion: self.models.settings.reduced_motion,
             sidebar: self.models.sidebar.clone(),
             connectivity: self.models.app.connectivity.clone(),
             current_user_display_name: self.models.app.current_user_display_name.clone(),
@@ -3266,6 +3283,8 @@ impl AppWindow {
         self.sync_sidebar_view_state(cx);
         self.sync_composer_placeholder(cx);
         self.sync_timeline_list_state_len(self.models.timeline.rows.len());
+        self.sync_timeline_scroll_chrome();
+        self.sync_timeline_view_markers();
         self.perf_harness.record_refresh();
         cx.notify();
     }
@@ -3401,6 +3420,14 @@ impl AppWindow {
         self.models.sidebar.live_previews = live;
     }
 
+    fn sync_timeline_scroll_chrome(&mut self) {
+        self.timeline_bottom_distance =
+            crate::views::timeline::layout_anchor::bottom_distance(&self.timeline_list_state);
+        self.timeline_near_bottom = self.timeline_bottom_distance <= px(24.);
+        let top = self.timeline_list_state.logical_scroll_top();
+        self.models.timeline.scrolled_from_top = top.item_ix > 0 || top.offset_in_item > px(0.);
+    }
+
     fn timeline_is_near_top(&self) -> bool {
         is_list_near_top(&self.timeline_list_state)
     }
@@ -3413,7 +3440,7 @@ impl AppWindow {
             || self.suppress_next_timeline_bottom_snap;
         if crate::views::timeline::layout_anchor::should_follow_latest(
             previous_height,
-            self.timeline_is_near_bottom(),
+            self.timeline_bottom_distance,
             explicit_scroll_pending,
         ) {
             self.scroll_timeline_list_to_bottom();
@@ -4648,7 +4675,7 @@ impl AppWindow {
         if self.jump_to_message_active
             && (conversation_changed
                 || (self.models.timeline.pending_scroll_target.is_none()
-                    && self.timeline_list_state.max_offset_for_scrollbar().height > px(0.)))
+                    && self.timeline_list_state.max_offset_for_scrollbar().y > px(0.)))
         {
             self.jump_to_message_active = false;
         }
@@ -5416,7 +5443,7 @@ impl AppWindow {
         if !window.is_fullscreen() && !window.is_maximized() && room >= required {
             window.on_next_frame(move |window, _| {
                 if !window.is_fullscreen() && !window.is_maximized() {
-                    window.resize(gpui::size(px(required), viewport.height));
+                    window.resize(gpui_kit::size(px(required), viewport.height));
                 }
             });
         } else {
@@ -5461,7 +5488,7 @@ impl AppWindow {
                 }
                 let _ = owner.update(cx, |this, _| {
                     if this.pane_window_sizing.submit(generation) {
-                        window.resize(gpui::size(px(width), viewport.height));
+                        window.resize(gpui_kit::size(px(width), viewport.height));
                     }
                 });
             });
@@ -5507,7 +5534,7 @@ impl AppWindow {
         flush: tokio::sync::oneshot::Receiver<()>,
     ) {
         window
-            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+            .spawn(cx, move |cx: &mut gpui_kit::AsyncWindowContext| {
                 let mut cx = cx.clone();
                 async move {
                     let _ = flush.await;
@@ -5672,7 +5699,7 @@ impl AppWindow {
         self.reset_thread_scroll_state();
         self.pending_thread_scroll_to_bottom = true;
         self.sync_inputs_from_models(cx);
-        window.focus(&self.thread_input.focus_handle(cx));
+        window.focus(&self.thread_input.focus_handle(cx), cx);
         self.refresh(cx);
     }
 
@@ -5740,23 +5767,14 @@ impl AppWindow {
         )
     }
 
-    pub(crate) fn timeline_scrolled(
-        &mut self,
-        event: &ScrollWheelEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn timeline_scrolled(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.timeline_interactions_blocked_by_overlay() {
             return;
         }
-        let boost = match event.delta {
-            ScrollDelta::Pixels(delta) => -delta.y,
-            ScrollDelta::Lines(delta) => px(-delta.y * 20.),
-        };
-        if boost != px(0.) {
-            self.timeline_scroll_seq = self.timeline_scroll_seq.wrapping_add(1);
-            self.timeline_list_state.scroll_by(boost);
-        }
+        // Kit owns scrolling. Observe actual movement for anchors, pagination and reads.
+        self.timeline_scroll_seq = self.timeline_scroll_seq.wrapping_add(1);
+        self.sync_timeline_scroll_chrome();
+        self.sync_timeline_view_markers();
         let mut should_refresh = self.sync_scroll_indicators();
         if self.timeline_is_near_top() && self.request_timeline_older_page_if_needed() {
             should_refresh = true;
@@ -5824,7 +5842,7 @@ impl AppWindow {
 
     pub(crate) fn thread_scrolled(
         &mut self,
-        _: &ScrollWheelEvent,
+        _: &ScrollEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -5838,7 +5856,7 @@ impl AppWindow {
 
     pub(crate) fn profile_scrolled(
         &mut self,
-        _: &ScrollWheelEvent,
+        _: &ScrollEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -6122,7 +6140,7 @@ impl AppWindow {
             let edited_text = self.models.composer.draft_text.trim().to_string();
             if edited_text.is_empty() {
                 self.delete_message(message_id, cx);
-                window.focus(&self.composer_input.focus_handle(cx));
+                window.focus(&self.composer_input.focus_handle(cx), cx);
                 return;
             }
             let was_near_bottom = self.timeline_is_near_bottom();
@@ -6141,7 +6159,7 @@ impl AppWindow {
             if was_near_bottom && self.models.timeline.pending_scroll_target.is_none() {
                 self.scroll_timeline_list_to_bottom();
             }
-            window.focus(&self.composer_input.focus_handle(cx));
+            window.focus(&self.composer_input.focus_handle(cx), cx);
             if let Some(pending) = pending {
                 self.schedule_pending_send(pending, cx);
             }
@@ -6169,7 +6187,7 @@ impl AppWindow {
 
         self.sync_inputs_from_models(cx);
         self.refresh(cx);
-        window.focus(&self.composer_input.focus_handle(cx));
+        window.focus(&self.composer_input.focus_handle(cx), cx);
 
         if let Some(pending) = pending {
             self.schedule_pending_send(pending, cx);
@@ -6210,7 +6228,7 @@ impl AppWindow {
 
         self.sync_inputs_from_models(cx);
         self.refresh(cx);
-        window.focus(&self.thread_input.focus_handle(cx));
+        window.focus(&self.thread_input.focus_handle(cx), cx);
 
         if let Some(pending) = pending {
             self.schedule_pending_send(pending, cx);
@@ -6433,7 +6451,7 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.focus(&self.search_input.focus_handle(cx));
+        window.focus(&self.search_input.focus_handle(cx), cx);
     }
 
     pub(crate) fn focus_members_filter_input(
@@ -6442,7 +6460,7 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.focus(&self.members_filter_input.focus_handle(cx));
+        window.focus(&self.members_filter_input.focus_handle(cx), cx);
     }
 
     pub(crate) fn focus_find_in_chat_input(
@@ -6451,7 +6469,7 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.focus(&self.find_in_chat_input.focus_handle(cx));
+        window.focus(&self.find_in_chat_input.focus_handle(cx), cx);
     }
 
     pub(crate) fn focus_quick_switcher_input(
@@ -6460,7 +6478,7 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.focus(&self.quick_switcher_input.focus_handle(cx));
+        window.focus(&self.quick_switcher_input.focus_handle(cx), cx);
     }
 
     pub(crate) fn focus_new_chat_input(
@@ -6469,7 +6487,7 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.focus(&self.new_chat_input.focus_handle(cx));
+        window.focus(&self.new_chat_input.focus_handle(cx), cx);
     }
 
     pub(crate) fn focus_emoji_picker_input(
@@ -6478,7 +6496,7 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.focus(&self.emoji_picker_input.focus_handle(cx));
+        window.focus(&self.emoji_picker_input.focus_handle(cx), cx);
     }
 
     pub(crate) fn focus_file_upload_caption_input(
@@ -6487,7 +6505,7 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.focus(&self.file_upload_caption_input.focus_handle(cx));
+        window.focus(&self.file_upload_caption_input.focus_handle(cx), cx);
     }
 
     pub(crate) fn focus_composer_input(
@@ -6497,7 +6515,7 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         cx.stop_propagation();
-        window.focus(&self.composer_input.focus_handle(cx));
+        window.focus(&self.composer_input.focus_handle(cx), cx);
     }
 
     pub(crate) fn restore_chat_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -6519,23 +6537,23 @@ impl AppWindow {
             self.models.navigation.current,
             Route::Channel { .. } | Route::DirectMessage { .. }
         ) {
-            window.focus(&self.focus_handle);
+            window.focus(&self.focus_handle, cx);
             return;
         }
         if !self.models.conversation.can_post {
-            window.focus(&self.focus_handle);
+            window.focus(&self.focus_handle, cx);
             return;
         }
         if self.models.navigation.right_pane == RightPaneMode::Thread {
             let composer_focused = self.composer_input.focus_handle(cx).is_focused(window);
             let thread_focused = self.thread_input.focus_handle(cx).is_focused(window);
             if composer_focused && !thread_focused {
-                window.focus(&self.composer_input.focus_handle(cx));
+                window.focus(&self.composer_input.focus_handle(cx), cx);
             } else {
-                window.focus(&self.thread_input.focus_handle(cx));
+                window.focus(&self.thread_input.focus_handle(cx), cx);
             }
         } else {
-            window.focus(&self.composer_input.focus_handle(cx));
+            window.focus(&self.composer_input.focus_handle(cx), cx);
         }
     }
 
@@ -6546,7 +6564,7 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         cx.stop_propagation();
-        window.focus(&self.thread_input.focus_handle(cx));
+        window.focus(&self.thread_input.focus_handle(cx), cx);
     }
 
     pub(crate) fn focus_sidebar_filter_input(
@@ -6555,7 +6573,7 @@ impl AppWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.focus(&self.sidebar_filter_input.focus_handle(cx));
+        window.focus(&self.sidebar_filter_input.focus_handle(cx), cx);
     }
 
     pub(crate) fn back_click(
@@ -6634,7 +6652,7 @@ impl AppWindow {
                 .position(|recent| &recent.row.route == route)
         {
             self.sidebar_recent_scroll
-                .scroll_to_item(index, gpui::ScrollStrategy::Center);
+                .scroll_to_item(index, gpui_kit::ScrollStrategy::Center);
         }
     }
 
@@ -6775,7 +6793,7 @@ impl AppWindow {
 
     fn update_thread_resize_drag_on_drag(
         &mut self,
-        event: &gpui::DragMoveEvent<RightPaneResizeDrag>,
+        event: &gpui_kit::DragMoveEvent<RightPaneResizeDrag>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -7002,8 +7020,8 @@ impl AppWindow {
         self.refresh(cx);
         if let Some(target) = target {
             match target {
-                UploadTarget::Composer => window.focus(&self.composer_input.focus_handle(cx)),
-                UploadTarget::Thread => window.focus(&self.thread_input.focus_handle(cx)),
+                UploadTarget::Composer => window.focus(&self.composer_input.focus_handle(cx), cx),
+                UploadTarget::Thread => window.focus(&self.thread_input.focus_handle(cx), cx),
             }
         }
     }
@@ -7048,8 +7066,8 @@ impl AppWindow {
         self.refresh(cx);
         if let Some(target) = target {
             match target {
-                UploadTarget::Composer => window.focus(&self.composer_input.focus_handle(cx)),
-                UploadTarget::Thread => window.focus(&self.thread_input.focus_handle(cx)),
+                UploadTarget::Composer => window.focus(&self.composer_input.focus_handle(cx), cx),
+                UploadTarget::Thread => window.focus(&self.thread_input.focus_handle(cx), cx),
             }
         }
     }
@@ -7169,7 +7187,7 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         let editor = self.composer_editor(target).clone();
-        window.focus(&editor.focus_handle(cx));
+        window.focus(&editor.focus_handle(cx), cx);
         editor.update(cx, |input, cx| {
             let text = input.text();
             let caret = input.selected_range().start.min(text.len());
@@ -7220,7 +7238,7 @@ impl AppWindow {
             );
             input.replace_all_and_select(text, selection, cx);
         });
-        window.focus(&editor.focus_handle(cx));
+        window.focus(&editor.focus_handle(cx), cx);
         self.composer_format_menu = None;
         self.sync_drafts_from_inputs(cx);
         self.refresh(cx);
@@ -7540,7 +7558,7 @@ impl AppWindow {
         window_left: f32,
         window_top: f32,
         window_width: f32,
-        viewport_size: gpui::Size<f32>,
+        viewport_size: gpui_kit::Size<f32>,
         cx: &mut Context<Self>,
     ) {
         if self.models.timeline.hovered_message_id.as_ref() != Some(&message_id)
@@ -7577,7 +7595,7 @@ impl AppWindow {
 
     pub(crate) fn cursor_over_selectable_link(
         &self,
-        position: gpui::Point<gpui::Pixels>,
+        position: gpui_kit::Point<gpui_kit::Pixels>,
         cx: &Context<Self>,
     ) -> bool {
         self.selectable_texts
@@ -7627,7 +7645,8 @@ impl AppWindow {
         .detach();
     }
 
-    /// Hides the strip immediately. Use for clicks and overlay open, not for mouse leave.
+    /// Clear transient message hover immediately on window exit, clicks or overlays.
+    /// Row-to-strip movement inside the window still uses the delayed clear.
     pub(crate) fn clear_hovered_message_immediate(&mut self, cx: &mut Context<Self>) {
         self.cancel_hover_clear();
         let mut needs_refresh = false;
@@ -7882,7 +7901,7 @@ impl AppWindow {
     ) {
         if self.models.edit_message(&message_id) {
             self.sync_inputs_from_models(cx);
-            window.focus(&self.composer_input.focus_handle(cx));
+            window.focus(&self.composer_input.focus_handle(cx), cx);
         }
         self.refresh(cx);
     }
@@ -8016,7 +8035,7 @@ impl AppWindow {
         self.models.overlay.new_chat_open = true;
         self.sync_inputs_from_models(cx);
         self.refresh(cx);
-        window.focus(&self.new_chat_input.focus_handle(cx));
+        window.focus(&self.new_chat_input.focus_handle(cx), cx);
     }
 
     pub(crate) fn new_chat_add_participant(&mut self, user: UserSummary, cx: &mut Context<Self>) {
@@ -8034,9 +8053,9 @@ impl AppWindow {
         self.sync_inputs_from_models(cx);
         self.refresh(cx);
         if self.models.overlay.new_chat_open {
-            window.focus(&self.new_chat_input.focus_handle(cx));
+            window.focus(&self.new_chat_input.focus_handle(cx), cx);
         } else {
-            window.focus(&self.composer_input.focus_handle(cx));
+            window.focus(&self.composer_input.focus_handle(cx), cx);
         }
     }
 
@@ -8071,7 +8090,7 @@ impl AppWindow {
             .open_for_conversation(conversation_id, anchor_timestamp_ms);
         self.sync_inputs_from_models(cx);
         self.refresh(cx);
-        window.focus(&self.find_in_chat_input.focus_handle(cx));
+        window.focus(&self.find_in_chat_input.focus_handle(cx), cx);
     }
 
     pub(crate) fn close_find_in_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -8090,7 +8109,7 @@ impl AppWindow {
         self.scroll_timeline_list_to_bottom();
         self.sync_inputs_from_models(cx);
         self.refresh(cx);
-        window.focus(&self.composer_input.focus_handle(cx));
+        window.focus(&self.composer_input.focus_handle(cx), cx);
     }
 
     pub(crate) fn close_find_in_chat_click(
@@ -8404,7 +8423,7 @@ impl AppWindow {
 
     pub(crate) fn consume_scroll_wheel(
         &mut self,
-        _: &ScrollWheelEvent,
+        _: &ScrollEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -8875,7 +8894,7 @@ impl AppWindow {
             ToastAction::OpenPreferences => self.navigate_to(Route::Preferences, window, cx),
             ToastAction::FocusComposer => {
                 self.navigate_to(self.current_conversation_route(), window, cx);
-                window.focus(&self.composer_input.focus_handle(cx));
+                window.focus(&self.composer_input.focus_handle(cx), cx);
             }
             ToastAction::OpenThread => {
                 if let Some(root_id) = self.models.thread_pane.root_message_id.clone() {
@@ -8885,7 +8904,7 @@ impl AppWindow {
             ToastAction::FocusThreadReply => {
                 if let Some(root_id) = self.models.thread_pane.root_message_id.clone() {
                     self.open_thread(root_id, window, cx);
-                    window.focus(&self.thread_input.focus_handle(cx));
+                    window.focus(&self.thread_input.focus_handle(cx), cx);
                 } else {
                     self.refresh(cx);
                 }
@@ -9365,7 +9384,7 @@ impl AppWindow {
     ) {
         self.toggle_quick_switcher(cx);
         if self.models.overlay.quick_switcher_open {
-            window.focus(&self.quick_switcher_input.focus_handle(cx));
+            window.focus(&self.quick_switcher_input.focus_handle(cx), cx);
         } else {
             self.restore_chat_focus(window, cx);
         }
@@ -9426,7 +9445,7 @@ impl AppWindow {
     ) {
         self.find_next_match(cx);
         if self.models.find_in_chat.open {
-            window.focus(&self.find_in_chat_input.focus_handle(cx));
+            window.focus(&self.find_in_chat_input.focus_handle(cx), cx);
         }
     }
 
@@ -9438,7 +9457,7 @@ impl AppWindow {
     ) {
         self.find_previous_match(cx);
         if self.models.find_in_chat.open {
-            window.focus(&self.find_in_chat_input.focus_handle(cx));
+            window.focus(&self.find_in_chat_input.focus_handle(cx), cx);
         }
     }
 
@@ -9486,7 +9505,7 @@ impl AppWindow {
     ) {
         let flush = self.window_preferences_writer.flush();
         window
-            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+            .spawn(cx, move |cx: &mut gpui_kit::AsyncWindowContext| {
                 let mut cx = cx.clone();
                 async move {
                     let _ = flush.await;
@@ -9575,6 +9594,26 @@ impl AppWindow {
     }
 }
 
+/// Window exit must reach us even when a floating strip blocks hover on its
+/// ancestors. Element mouse-exit callbacks are gated on their own hover hitbox.
+pub(super) fn window_exit_observer(
+    listener: impl Fn(&gpui_kit::MouseExitEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    canvas(
+        |_, _, _| (),
+        move |_, _, window, _| {
+            window.on_mouse_event(move |event: &gpui_kit::MouseExitEvent, phase, window, cx| {
+                if phase == DispatchPhase::Capture {
+                    listener(event, window, cx);
+                }
+            });
+        },
+    )
+    .absolute()
+    .inset_0()
+    .into_any_element()
+}
+
 impl Render for AppWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let render_t0 = Instant::now();
@@ -9585,19 +9624,25 @@ impl Render for AppWindow {
         self.remember_window_preferences(window);
         if self.pending_file_upload_caption_focus {
             self.pending_file_upload_caption_focus = false;
-            window.focus(&self.file_upload_caption_input.focus_handle(cx));
+            window.focus(&self.file_upload_caption_input.focus_handle(cx), cx);
         }
-        if !window.is_window_hovered() && self.models.timeline.hovered_message_id.is_some() {
-            self.schedule_hover_clear(cx);
+        if !window.is_window_hovered() {
+            if self.models.timeline.hovered_message_id.is_some()
+                || self.models.overlay.reaction_hover_tooltip.is_some()
+            {
+                self.clear_hovered_message_immediate(cx);
+            }
+            self.clear_sidebar_hover_tooltip(cx);
         }
         let resolved_theme = resolve_theme(&self.models.settings.theme_mode, window.appearance());
         let theme_changed = self.resolved_theme != resolved_theme;
         self.resolved_theme = resolved_theme;
         if theme_changed {
             self.sync_sidebar_view_state(cx);
+            // The custom palette uses scoped thread-local values. Invalidate all
+            // retained children when it changes, including independently cached text.
+            window.refresh();
         }
-
-        self.sync_timeline_view_markers();
 
         // A background window keeps keyboard focus but shows no focus rings.
         let window_active = window.is_window_active();
@@ -9611,399 +9656,409 @@ impl Render for AppWindow {
                 .focus_handle(cx)
                 .is_focused(window);
         let search_contexts = self.search_result_contexts();
-        let element =
-            with_theme(resolved_theme, || {
-                with_window_active(window_active, || {
-                    let mut shell_layout = shell_layout(
-                        &self.models.navigation.right_pane,
-                        self.models.thread_pane.width_px,
-                        self.models.sidebar.width_px,
-                        f32::from(window.viewport_size().width),
-                    );
-                    if self.pane_window_sizing.expanding() {
-                        shell_layout.show_right_pane = false;
-                        shell_layout.overlay_right_pane = false;
-                    }
-                    let closing = self.pane_window_sizing.closing_width().is_some()
-                        && self.models.navigation.right_pane == RightPaneMode::Hidden;
-                    if !closing {
-                        self.closing_pane = None;
-                    }
-                    if closing && self.closing_pane.is_some() {
-                        shell_layout.show_right_pane = true;
-                        shell_layout.overlay_right_pane = false;
-                    }
-                    let closing_main_width = self.pane_window_sizing.closing_width().map(|width| {
-                        (width
-                            - self.models.sidebar.width_px
-                            - RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX
-                            - SHELL_HORIZONTAL_PADDING_PX
-                            - SHELL_GAP_PX)
-                            .max(MAIN_PANEL_MIN_WIDTH_PX)
-                    });
-                    let capabilities = current_backend_capabilities(self.app_store.snapshot());
+        let element = with_theme(resolved_theme, || {
+            with_window_active(window_active, || {
+                let mut shell_layout = shell_layout(
+                    &self.models.navigation.right_pane,
+                    self.models.thread_pane.width_px,
+                    self.models.sidebar.width_px,
+                    f32::from(window.viewport_size().width),
+                );
+                if self.pane_window_sizing.expanding() {
+                    shell_layout.show_right_pane = false;
+                    shell_layout.overlay_right_pane = false;
+                }
+                let closing = self.pane_window_sizing.closing_width().is_some()
+                    && self.models.navigation.right_pane == RightPaneMode::Hidden;
+                if !closing {
+                    self.closing_pane = None;
+                }
+                if closing && self.closing_pane.is_some() {
+                    shell_layout.show_right_pane = true;
+                    shell_layout.overlay_right_pane = false;
+                }
+                let closing_main_width = self.pane_window_sizing.closing_width().map(|width| {
+                    (width
+                        - self.models.sidebar.width_px
+                        - RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX
+                        - SHELL_HORIZONTAL_PADDING_PX
+                        - SHELL_GAP_PX)
+                        .max(MAIN_PANEL_MIN_WIDTH_PX)
+                });
+                let capabilities = current_backend_capabilities(self.app_store.snapshot());
 
-                    let t_right = Instant::now();
-                    let right_pane = shell_layout.show_right_pane.then(|| {
-                        let (navigation, thread, conversation, profile) = match &self.closing_pane {
-                            Some(pane) if closing => (
-                                &pane.navigation,
-                                &pane.thread,
-                                &pane.conversation,
-                                &pane.profile,
-                            ),
-                            _ => (
-                                &self.models.navigation,
-                                &self.models.thread_pane,
-                                &self.models.conversation,
-                                &self.models.profile_panel,
-                            ),
-                        };
-                        let pane = RightPaneHost.render(
-                            navigation,
-                            thread,
-                            conversation,
-                            profile,
-                            &self.models.search,
-                            &self.models.timeline,
-                            self.files_pane_state(&self.models.timeline.conversation_id),
-                            &self.video_render_cache,
-                            &mut self.code_highlight_cache,
-                            &mut self.selectable_texts,
-                            &self.thread_input,
-                            crate::views::composer::ComposerFieldState {
-                                can_send: self.thread_has_text,
-                                send_notice: self.models.app.connectivity.send_notice(),
-                                format_menu_open: self.composer_format_menu
-                                    == Some(crate::views::composer::ComposerTarget::Thread),
-                            },
-                            &self.members_filter_input,
-                            members_filter_focused,
-                            &search_contexts,
-                            &self.thread_scroll,
-                            &self.profile_scroll,
-                            &self.profile_social_scroll,
-                            self.thread_unseen_count,
-                            &capabilities,
-                            cx,
-                        );
-                        div()
-                            .h_full()
-                            .w(px(self.models.thread_pane.width_px))
-                            .flex_shrink_0()
-                            .when(shell_layout.overlay_right_pane, |pane| {
-                                pane.absolute()
-                                    .right_0()
-                                    .top_0()
-                                    .bottom_0()
-                                    .block_mouse_except_scroll()
-                            })
-                            .child(pane)
-                            .into_any_element()
-                    });
-                    let right_elapsed = t_right.elapsed();
-                    self.perf_harness
-                        .record_duration(PerfTimer::RightPaneRender, right_elapsed);
-
-                    let call_dock = self
-                        .models
-                        .call
-                        .active_call
-                        .as_ref()
-                        .map(|_| MiniCallDock.render(&self.models.call, cx));
-
-                    div()
-                .size_full()
-                .relative()
-                .flex()
-                // No fill here: each pane paints its own, and the sidebar's is
-                // translucent over the window's blurred backdrop.
-                .overflow_hidden()
-                .track_focus(&self.focus_handle)
-                .key_context("Workspace")
-                .on_action(cx.listener(Self::go_back_action))
-                .on_action(cx.listener(Self::go_forward_action))
-                .on_action(cx.listener(Self::show_home_action))
-                .on_action(cx.listener(Self::open_quick_switcher_recent_2_action))
-                .on_action(cx.listener(Self::open_quick_switcher_recent_3_action))
-                .on_action(cx.listener(Self::open_quick_switcher_recent_4_action))
-                .on_action(cx.listener(Self::open_quick_switcher_recent_5_action))
-                .on_action(cx.listener(Self::show_activity_action))
-                .on_action(cx.listener(Self::open_preferences_action))
-                .on_action(cx.listener(Self::check_for_updates_action))
-                .on_action(cx.listener(Self::sort_sidebar_by_recent_action))
-                .on_action(cx.listener(Self::group_sidebar_by_team_action))
-                .on_action(cx.listener(Self::toggle_thread_pane_action))
-                .on_action(cx.listener(Self::toggle_members_pane_action))
-                .on_action(cx.listener(Self::toggle_details_pane_action))
-                .on_action(cx.listener(Self::open_files_pane_action))
-                .on_action(cx.listener(Self::open_search_pane_action))
-                .on_action(cx.listener(Self::open_search_action))
-                .on_action(cx.listener(Self::accept_autocomplete_action))
-                .on_action(cx.listener(Self::confirm_primary_action))
-                .on_action(cx.listener(Self::select_previous_action))
-                .on_action(cx.listener(Self::select_next_action))
-                .on_action(cx.listener(Self::select_sidebar_previous_action))
-                .on_action(cx.listener(Self::select_sidebar_next_action))
-                .on_action(cx.listener(Self::activate_sidebar_selection_action))
-                .on_action(cx.listener(Self::toggle_quick_switcher_action))
-                .on_action(cx.listener(Self::open_new_chat_action))
-                .on_action(cx.listener(Self::toggle_find_in_chat_action))
-                .on_action(cx.listener(Self::close_find_in_chat_action))
-                .on_action(cx.listener(Self::find_next_match_action))
-                .on_action(cx.listener(Self::find_prev_match_action))
-                .on_action(cx.listener(Self::toggle_command_palette_action))
-                .on_action(cx.listener(Self::toggle_keybase_inspector_action))
-                .on_action(cx.listener(Self::toggle_splash_screen_action))
-                .on_action(cx.listener(Self::close_window_action))
-                .on_action(cx.listener(Self::quit_app_action))
-                .on_action(cx.listener(Self::toggle_benchmark_capture_action))
-                .on_action(cx.listener(Self::dismiss_overlays_action))
-                .on_action(cx.listener(Self::dismiss_hover_toolbar_action))
-                .on_action(cx.listener(Self::open_url_action))
-                .on_action(cx.listener(Self::format_bold_action))
-                .on_action(cx.listener(Self::format_italic_action))
-                .on_action(cx.listener(Self::format_code_action))
-                .on_action(cx.listener(Self::start_new_chat_action))
-                .on_drag_move::<RightPaneResizeDrag>(
-                    cx.listener(Self::update_thread_resize_drag_on_drag),
-                )
-                .on_mouse_move(cx.listener(Self::update_thread_resize_drag))
-                .on_mouse_move(cx.listener(|this, _, _, cx| {
-                    this.clear_hovered_message(cx);
-                    this.clear_sidebar_hover_tooltip(cx);
-                }))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        // Click-away: dismiss hover toolbar when clicking anywhere outside it.
-                        if this.models.timeline.hover_toolbar_settled
-                            && this.models.timeline.hovered_message_id.is_some()
-                        {
-                            this.clear_hovered_message_immediate(cx);
-                        }
-                    }),
-                )
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(Self::finish_thread_resize_drag),
-                )
-                .on_mouse_up_out(
-                    MouseButton::Left,
-                    cx.listener(Self::finish_thread_resize_drag),
-                )
-                .child({
-                    let t = Instant::now();
-                    let sidebar_row_count: usize = self
-                        .models
-                        .sidebar
-                        .sections
-                        .iter()
-                        .fold(0usize, |total, section| {
-                            total.saturating_add(section.rows.len())
-                        });
-                    let el = self.sidebar_view.as_ref().map_or_else(
-                        || {
-                            Sidebar.render(
-                                &self.models.sidebar,
-                                &self.models.app.connectivity,
-                                &self.models.app.current_user_display_name,
-                                self.models.app.current_user_avatar_asset.as_deref(),
-                                &self.sidebar_conversation_avatars,
-                                &self.models.navigation.current,
-                                None,
-                                &self.sidebar_scroll_handle,
-                                &self.sidebar_recent_scroll,
-                                SidebarChrome {
-                                    update_available: self.update_ui.snapshot.has_reminder(),
-                                    can_go_back: !self.models.navigation.back_stack.is_empty(),
-                                    can_go_forward: !self
-                                        .models
-                                        .navigation
-                                        .forward_stack
-                                        .is_empty(),
-                                    search_open: matches!(
-                                        self.models.navigation.current,
-                                        Route::Search { .. }
-                                    ),
-                                    menu: None,
-                                },
-                                cx,
-                            )
-                        },
-                        |sidebar_view| {
-                            AnyView::from(sidebar_view.clone())
-                                .cached(
-                                    StyleRefinement::default()
-                                        .w(px(self.models.sidebar.width_px))
-                                        .flex_shrink_0()
-                                        .h_full(),
-                                )
-                                .into_any_element()
-                        },
-                    );
-                    let e = t.elapsed();
-                    self.perf_harness
-                        .record_duration(PerfTimer::SidebarRender, e);
-                    if self.perf_harness.is_capturing() && e.as_millis() > 1 {
-                        tracing::warn!(
-                            "  sidebar.render: {e:?} ({sidebar_row_count} rows, {} sections)",
-                            self.models.sidebar.sections.len()
-                        );
-                    }
-                    el
-                })
-                .child(
-                    div()
-                        .w(px(RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX))
-                        .flex_shrink_0()
-                        .h_full()
-                        .bg(crate::views::sidebar_surface())
-                        // 1px hairline where the sidebar meets the conversation.
-                        .border_r_1()
-                        .border_color(shell_border())
-                        .cursor(CursorStyle::ResizeColumn)
-                        .id("sidebar-resize-handle")
-                        .flex_shrink_0()
-                        .on_mouse_down(MouseButton::Left, cx.listener(Self::begin_sidebar_resize))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .group("resize-handle-sidebar")
-                        .child(
-                            div()
-                                .w(px(2.))
-                                .h(px(640.))
-                                .rounded_full()
-                                .opacity(0.)
-                                .group_hover("resize-handle-sidebar", |s| s.opacity(1.))
-                                .bg(rgb(border())),
+                let t_right = Instant::now();
+                let right_pane = shell_layout.show_right_pane.then(|| {
+                    let (navigation, thread, conversation, profile) = match &self.closing_pane {
+                        Some(pane) if closing => (
+                            &pane.navigation,
+                            &pane.thread,
+                            &pane.conversation,
+                            &pane.profile,
                         ),
-                )
-                .child({
-                    let t = Instant::now();
-                    let el = MainPanelHost.render(
-                        &self.models,
-                        closing_main_width,
+                        _ => (
+                            &self.models.navigation,
+                            &self.models.thread_pane,
+                            &self.models.conversation,
+                            &self.models.profile_panel,
+                        ),
+                    };
+                    let pane = RightPaneHost.render(
+                        navigation,
+                        thread,
+                        conversation,
+                        profile,
+                        &self.models.search,
+                        &self.models.timeline,
+                        self.files_pane_state(&self.models.timeline.conversation_id),
                         &self.video_render_cache,
-                        &self.search_input,
-                        &search_contexts,
-                        search_input_focused,
-                        &self.find_in_chat_input,
-                        &self.composer_input,
+                        &mut self.code_highlight_cache,
+                        &mut self.selectable_texts,
+                        &self.thread_input,
                         crate::views::composer::ComposerFieldState {
-                            can_send: self.composer_has_text
-                                || !self.models.composer.attachments.is_empty(),
+                            can_send: self.thread_has_text,
                             send_notice: self.models.app.connectivity.send_notice(),
                             format_menu_open: self.composer_format_menu
-                                == Some(crate::views::composer::ComposerTarget::Conversation),
+                                == Some(crate::views::composer::ComposerTarget::Thread),
                         },
-                        &self.timeline_list_state,
-                        self.timeline_unseen_count,
-                        !self.timeline_is_near_bottom() && !self.models.timeline.rows.is_empty(),
+                        &self.members_filter_input,
+                        members_filter_focused,
+                        &search_contexts,
+                        &self.thread_scroll,
+                        &self.profile_scroll,
+                        &self.profile_social_scroll,
+                        self.thread_unseen_count,
+                        &capabilities,
                         cx,
                     );
-                    let e = t.elapsed();
-                    self.perf_harness
-                        .record_duration(PerfTimer::MainPanelRender, e);
-                    if self.perf_harness.is_capturing() && e.as_millis() > 1 {
-                        tracing::warn!(
-                            "  main_panel.render: {e:?} ({} timeline rows)",
-                            self.models.timeline.rows.len()
-                        );
-                    }
-                    if self.perf_harness.is_capturing() && right_elapsed.as_millis() > 1 {
-                        tracing::warn!("  right_pane.render: {right_elapsed:?}");
-                    }
-                    el
-                })
-                .when_some(right_pane, |div, pane| div.child(pane))
-                .when_some(call_dock, |div, dock| div.child(dock))
-                .child(self.sidebar_resize_capture(cx))
-                .child({
-                    let overlay_t0 = Instant::now();
-                    let quick_switcher_indexing_status = self.quick_switcher_indexing_status_text();
-                    let quick_switcher_hits = self.quick_switcher_hit_contexts();
-                    let snapshot = self.app_store.snapshot();
-                    let custom_emoji_index =
-                        snapshot
-                            .timeline
-                            .conversation_id
-                            .as_ref()
-                            .and_then(|conversation_id| {
-                                snapshot.backend.conversation_emojis.get(conversation_id)
-                            });
-                    let supports_custom_emoji = snapshot
-                        .backend
-                        .accounts
-                        .values()
-                        .find(|account| {
-                            matches!(account.connection_state, ConnectionState::Connected)
+                    div()
+                        .h_full()
+                        .w(px(self.models.thread_pane.width_px))
+                        .flex_shrink_0()
+                        .when(shell_layout.overlay_right_pane, |pane| {
+                            pane.absolute()
+                                .right_0()
+                                .top_0()
+                                .bottom_0()
+                                .block_mouse_except_scroll()
                         })
-                        .or_else(|| snapshot.backend.accounts.values().next())
-                        .map(|account| account.capabilities.supports_custom_emoji)
-                        .unwrap_or(false);
-                    let overlay = OverlayHost.render(
-                        &self.models.overlay,
-                        &self.models.profile_panel,
-                        &self.models.notifications,
-                        &self.models.quick_switcher,
-                        &self.models.new_chat,
-                        &self.quick_switcher_input,
-                        &self.new_chat_input,
-                        new_chat_input_focused,
-                        &self.file_upload_caption_input,
-                        &self.models.emoji_picker,
-                        &self.emoji_picker_input,
-                        custom_emoji_index,
-                        supports_custom_emoji,
-                        quick_switcher_indexing_status.as_deref(),
-                        &quick_switcher_hits,
-                        &self.sidebar_conversation_avatars,
-                        window.viewport_size(),
-                        cx,
-                    );
-                    if self.models.overlay.quick_switcher_open {
-                        tracing::debug!(
-                            target: "zbase.quick_switcher.perf",
-                            overlay_render_ms = overlay_t0.elapsed().as_millis(),
-                            rendered_rows = self.models.quick_switcher.results.len(),
-                            "quick_switcher_overlay_render"
+                        .child(pane)
+                        .into_any_element()
+                });
+                let right_elapsed = t_right.elapsed();
+                self.perf_harness
+                    .record_duration(PerfTimer::RightPaneRender, right_elapsed);
+
+                let call_dock = self
+                    .models
+                    .call
+                    .active_call
+                    .as_ref()
+                    .map(|_| MiniCallDock.render(&self.models.call, cx));
+
+                div()
+                    .size_full()
+                    .relative()
+                    .flex()
+                    // No fill here: each pane paints its own, and the sidebar's is
+                    // translucent over the window's blurred backdrop.
+                    .overflow_hidden()
+                    .track_focus(&self.focus_handle)
+                    .key_context("Workspace")
+                    .on_action(cx.listener(Self::go_back_action))
+                    .on_action(cx.listener(Self::go_forward_action))
+                    .on_action(cx.listener(Self::show_home_action))
+                    .on_action(cx.listener(Self::open_quick_switcher_recent_2_action))
+                    .on_action(cx.listener(Self::open_quick_switcher_recent_3_action))
+                    .on_action(cx.listener(Self::open_quick_switcher_recent_4_action))
+                    .on_action(cx.listener(Self::open_quick_switcher_recent_5_action))
+                    .on_action(cx.listener(Self::show_activity_action))
+                    .on_action(cx.listener(Self::open_preferences_action))
+                    .on_action(cx.listener(Self::check_for_updates_action))
+                    .on_action(cx.listener(Self::sort_sidebar_by_recent_action))
+                    .on_action(cx.listener(Self::group_sidebar_by_team_action))
+                    .on_action(cx.listener(Self::toggle_thread_pane_action))
+                    .on_action(cx.listener(Self::toggle_members_pane_action))
+                    .on_action(cx.listener(Self::toggle_details_pane_action))
+                    .on_action(cx.listener(Self::open_files_pane_action))
+                    .on_action(cx.listener(Self::open_search_pane_action))
+                    .on_action(cx.listener(Self::open_search_action))
+                    .on_action(cx.listener(Self::accept_autocomplete_action))
+                    .on_action(cx.listener(Self::confirm_primary_action))
+                    .on_action(cx.listener(Self::select_previous_action))
+                    .on_action(cx.listener(Self::select_next_action))
+                    .on_action(cx.listener(Self::select_sidebar_previous_action))
+                    .on_action(cx.listener(Self::select_sidebar_next_action))
+                    .on_action(cx.listener(Self::activate_sidebar_selection_action))
+                    .on_action(cx.listener(Self::toggle_quick_switcher_action))
+                    .on_action(cx.listener(Self::open_new_chat_action))
+                    .on_action(cx.listener(Self::toggle_find_in_chat_action))
+                    .on_action(cx.listener(Self::close_find_in_chat_action))
+                    .on_action(cx.listener(Self::find_next_match_action))
+                    .on_action(cx.listener(Self::find_prev_match_action))
+                    .on_action(cx.listener(Self::toggle_command_palette_action))
+                    .on_action(cx.listener(Self::toggle_keybase_inspector_action))
+                    .on_action(cx.listener(Self::toggle_splash_screen_action))
+                    .on_action(cx.listener(Self::close_window_action))
+                    .on_action(cx.listener(Self::quit_app_action))
+                    .on_action(cx.listener(Self::toggle_benchmark_capture_action))
+                    .on_action(cx.listener(Self::dismiss_overlays_action))
+                    .on_action(cx.listener(Self::dismiss_hover_toolbar_action))
+                    .on_action(cx.listener(Self::open_url_action))
+                    .on_action(cx.listener(Self::format_bold_action))
+                    .on_action(cx.listener(Self::format_italic_action))
+                    .on_action(cx.listener(Self::format_code_action))
+                    .on_action(cx.listener(Self::start_new_chat_action))
+                    .on_drag_move::<RightPaneResizeDrag>(
+                        cx.listener(Self::update_thread_resize_drag_on_drag),
+                    )
+                    .on_mouse_move(cx.listener(Self::update_thread_resize_drag))
+                    .on_mouse_move(cx.listener(|this, _, _, cx| {
+                        this.clear_hovered_message(cx);
+                        this.clear_sidebar_hover_tooltip(cx);
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            // Click-away: dismiss hover toolbar when clicking anywhere outside it.
+                            if this.models.timeline.hover_toolbar_settled
+                                && this.models.timeline.hovered_message_id.is_some()
+                            {
+                                this.clear_hovered_message_immediate(cx);
+                            }
+                        }),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(Self::finish_thread_resize_drag),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(Self::finish_thread_resize_drag),
+                    )
+                    .child(window_exit_observer(cx.listener(|this, _, _, cx| {
+                        this.clear_hovered_message_immediate(cx);
+                        this.clear_sidebar_hover_tooltip(cx);
+                    })))
+                    .child({
+                        let t = Instant::now();
+                        let sidebar_row_count: usize = self
+                            .models
+                            .sidebar
+                            .sections
+                            .iter()
+                            .fold(0usize, |total, section| {
+                                total.saturating_add(section.rows.len())
+                            });
+                        let el = self.sidebar_view.as_ref().map_or_else(
+                            || {
+                                Sidebar.render(
+                                    &self.models.sidebar,
+                                    &self.models.app.connectivity,
+                                    &self.models.app.current_user_display_name,
+                                    self.models.app.current_user_avatar_asset.as_deref(),
+                                    &self.sidebar_conversation_avatars,
+                                    &self.models.navigation.current,
+                                    None,
+                                    &self.sidebar_scroll_handle,
+                                    &self.sidebar_recent_scroll,
+                                    SidebarChrome {
+                                        update_available: self.update_ui.snapshot.has_reminder(),
+                                        reduced_motion: self.models.settings.reduced_motion,
+                                        can_go_back: !self.models.navigation.back_stack.is_empty(),
+                                        can_go_forward: !self
+                                            .models
+                                            .navigation
+                                            .forward_stack
+                                            .is_empty(),
+                                        search_open: matches!(
+                                            self.models.navigation.current,
+                                            Route::Search { .. }
+                                        ),
+                                        menu: None,
+                                    },
+                                    cx,
+                                )
+                            },
+                            |sidebar_view| {
+                                AnyView::from(sidebar_view.clone())
+                                    .cached(
+                                        StyleRefinement::default()
+                                            .w(px(self.models.sidebar.width_px))
+                                            .flex_shrink_0()
+                                            .h_full(),
+                                    )
+                                    .into_any_element()
+                            },
                         );
-                    }
-                    overlay
-                })
-                .child(self.render_inline_autocomplete_overlay(&shell_layout, window, cx))
-                .when_some(
-                    self.models.overlay.sidebar_hover_tooltip.as_ref(),
-                    |div, tooltip| div.child(render_sidebar_hover_tooltip(tooltip, window)),
-                )
-                .when_some(
-                    self.models.overlay.reaction_hover_tooltip.as_ref(),
-                    |div, tooltip| div.child(render_reaction_hover_tooltip(tooltip, window)),
-                )
-                .when(self.update_ui.open, |div| div.child(self.render_update_panel(cx)))
-                .when(self.keybase_inspector.open, |div| {
-                    div.child(self.render_keybase_inspector_modal(cx))
-                })
-                .when(self.splash_open, |div| {
-                    let snapshot = self.app_store.snapshot();
-                    let status = if !snapshot.app.boot_status.is_empty() {
-                        snapshot.app.boot_status.clone()
-                    } else {
-                        match snapshot.app.boot_phase {
-                            BootPhase::Launching => "Starting up…".to_string(),
-                            BootPhase::HydratingLocalState => "Loading local data…".to_string(),
-                            BootPhase::ConnectingBackend => "Connecting to Keybase…".to_string(),
-                            BootPhase::Ready => String::new(),
-                            BootPhase::Degraded => "Connection degraded".to_string(),
-                            BootPhase::FatalError => "Failed to connect".to_string(),
+                        let e = t.elapsed();
+                        self.perf_harness
+                            .record_duration(PerfTimer::SidebarRender, e);
+                        if self.perf_harness.is_capturing() && e.as_millis() > 1 {
+                            tracing::warn!(
+                                "  sidebar.render: {e:?} ({sidebar_row_count} rows, {} sections)",
+                                self.models.sidebar.sections.len()
+                            );
                         }
-                    };
-                    div.child(crate::views::splash::SplashView.render(&status, cx))
-                })
-                })
-            });
+                        el
+                    })
+                    .child(
+                        div()
+                            .w(px(RIGHT_PANE_RESIZE_HANDLE_WIDTH_PX))
+                            .flex_shrink_0()
+                            .h_full()
+                            .bg(crate::views::sidebar_surface())
+                            // 1px hairline where the sidebar meets the conversation.
+                            .border_r_1()
+                            .border_color(shell_border())
+                            .cursor(CursorStyle::ResizeColumn)
+                            .id("sidebar-resize-handle")
+                            .flex_shrink_0()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(Self::begin_sidebar_resize),
+                            )
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .group("resize-handle-sidebar")
+                            .child(
+                                div()
+                                    .w(px(2.))
+                                    .h(px(640.))
+                                    .rounded_full()
+                                    .opacity(0.)
+                                    .group_hover("resize-handle-sidebar", |s| s.opacity(1.))
+                                    .bg(rgb(border())),
+                            ),
+                    )
+                    .child({
+                        let t = Instant::now();
+                        let el = MainPanelHost.render(
+                            &self.models,
+                            closing_main_width,
+                            &self.video_render_cache,
+                            &self.search_input,
+                            &search_contexts,
+                            search_input_focused,
+                            &self.find_in_chat_input,
+                            &self.composer_input,
+                            crate::views::composer::ComposerFieldState {
+                                can_send: self.composer_has_text
+                                    || !self.models.composer.attachments.is_empty(),
+                                send_notice: self.models.app.connectivity.send_notice(),
+                                format_menu_open: self.composer_format_menu
+                                    == Some(crate::views::composer::ComposerTarget::Conversation),
+                            },
+                            &self.timeline_list_state,
+                            self.timeline_unseen_count,
+                            !self.timeline_near_bottom && !self.models.timeline.rows.is_empty(),
+                            cx,
+                        );
+                        let e = t.elapsed();
+                        self.perf_harness
+                            .record_duration(PerfTimer::MainPanelRender, e);
+                        if self.perf_harness.is_capturing() && e.as_millis() > 1 {
+                            tracing::warn!(
+                                "  main_panel.render: {e:?} ({} timeline rows)",
+                                self.models.timeline.rows.len()
+                            );
+                        }
+                        if self.perf_harness.is_capturing() && right_elapsed.as_millis() > 1 {
+                            tracing::warn!("  right_pane.render: {right_elapsed:?}");
+                        }
+                        el
+                    })
+                    .when_some(right_pane, |div, pane| div.child(pane))
+                    .when_some(call_dock, |div, dock| div.child(dock))
+                    .child(self.sidebar_resize_capture(cx))
+                    .child({
+                        let overlay_t0 = Instant::now();
+                        let quick_switcher_indexing_status =
+                            self.quick_switcher_indexing_status_text();
+                        let quick_switcher_hits = self.quick_switcher_hit_contexts();
+                        let snapshot = self.app_store.snapshot();
+                        let custom_emoji_index =
+                            snapshot.timeline.conversation_id.as_ref().and_then(
+                                |conversation_id| {
+                                    snapshot.backend.conversation_emojis.get(conversation_id)
+                                },
+                            );
+                        let supports_custom_emoji = snapshot
+                            .backend
+                            .accounts
+                            .values()
+                            .find(|account| {
+                                matches!(account.connection_state, ConnectionState::Connected)
+                            })
+                            .or_else(|| snapshot.backend.accounts.values().next())
+                            .map(|account| account.capabilities.supports_custom_emoji)
+                            .unwrap_or(false);
+                        let overlay = OverlayHost.render(
+                            &self.models.overlay,
+                            &self.models.profile_panel,
+                            &self.models.notifications,
+                            &self.models.quick_switcher,
+                            &self.models.new_chat,
+                            &self.quick_switcher_input,
+                            &self.new_chat_input,
+                            new_chat_input_focused,
+                            &self.file_upload_caption_input,
+                            &self.models.emoji_picker,
+                            &self.emoji_picker_input,
+                            custom_emoji_index,
+                            supports_custom_emoji,
+                            quick_switcher_indexing_status.as_deref(),
+                            &quick_switcher_hits,
+                            &self.sidebar_conversation_avatars,
+                            window.viewport_size(),
+                            cx,
+                        );
+                        if self.models.overlay.quick_switcher_open {
+                            tracing::debug!(
+                                target: "zbase.quick_switcher.perf",
+                                overlay_render_ms = overlay_t0.elapsed().as_millis(),
+                                rendered_rows = self.models.quick_switcher.results.len(),
+                                "quick_switcher_overlay_render"
+                            );
+                        }
+                        overlay
+                    })
+                    .child(self.render_inline_autocomplete_overlay(&shell_layout, window, cx))
+                    .when_some(
+                        self.models.overlay.sidebar_hover_tooltip.as_ref(),
+                        |div, tooltip| div.child(render_sidebar_hover_tooltip(tooltip, window)),
+                    )
+                    .when_some(
+                        self.models.overlay.reaction_hover_tooltip.as_ref(),
+                        |div, tooltip| div.child(render_reaction_hover_tooltip(tooltip, window)),
+                    )
+                    .when(self.update_ui.open, |div| {
+                        div.child(self.render_update_panel(cx))
+                    })
+                    .when(self.keybase_inspector.open, |div| {
+                        div.child(self.render_keybase_inspector_modal(cx))
+                    })
+                    .when(self.splash_open, |div| {
+                        let snapshot = self.app_store.snapshot();
+                        let status = if !snapshot.app.boot_status.is_empty() {
+                            snapshot.app.boot_status.clone()
+                        } else {
+                            match snapshot.app.boot_phase {
+                                BootPhase::Launching => "Starting up…".to_string(),
+                                BootPhase::HydratingLocalState => "Loading local data…".to_string(),
+                                BootPhase::ConnectingBackend => {
+                                    "Connecting to Keybase…".to_string()
+                                }
+                                BootPhase::Ready => String::new(),
+                                BootPhase::Degraded => "Connection degraded".to_string(),
+                                BootPhase::FatalError => "Failed to connect".to_string(),
+                            }
+                        };
+                        div.child(crate::views::splash::SplashView.render(&status, cx))
+                    })
+            })
+        });
 
         let render_elapsed = render_t0.elapsed();
         self.perf_harness
@@ -10058,9 +10113,9 @@ fn render_reaction_hover_tooltip(
     // proportional fonts and multi-line actor lists wrong. Anchor the bottom
     // edge above the pointer, then fit the measured bounds inside the window.
     let max_width = (f32::from(window.viewport_size().width) - 16.).clamp(1., 520.);
-    gpui::anchored()
-        .anchor(gpui::Corner::BottomLeft)
-        .position(gpui::point(px(tooltip.anchor_x), px(tooltip.anchor_y)))
+    gpui_kit::anchored()
+        .anchor(gpui_kit::Anchor::BottomLeft)
+        .position(gpui_kit::point(px(tooltip.anchor_x), px(tooltip.anchor_y)))
         .snap_to_window_with_margin(px(8.))
         .child(
             div()
@@ -10305,11 +10360,11 @@ fn build_channel_details(
 
 fn is_near_bottom(handle: &ScrollHandle) -> bool {
     let max_offset = handle.max_offset();
-    if max_offset.height <= px(0.) {
+    if max_offset.y <= px(0.) {
         return true;
     }
 
-    let distance_from_bottom = (handle.offset().y + max_offset.height).abs();
+    let distance_from_bottom = (handle.offset().y + max_offset.y).abs();
     distance_from_bottom <= px(24.)
 }
 
@@ -10318,20 +10373,7 @@ fn is_near_top(handle: &ScrollHandle) -> bool {
 }
 
 fn is_list_near_bottom(state: &ListState) -> bool {
-    let max_offset = state.max_offset_for_scrollbar();
-    if max_offset.height <= px(0.) {
-        return true;
-    }
-
-    let scroll_offset = state.scroll_px_offset_for_scrollbar().y.abs();
-    // If the user "overscrolls" past the bottom (e.g. elastic scrolling),
-    // treat that as still being at the bottom.
-    let distance_from_bottom = if scroll_offset >= max_offset.height {
-        px(0.)
-    } else {
-        max_offset.height - scroll_offset
-    };
-    distance_from_bottom <= px(24.)
+    crate::views::timeline::layout_anchor::bottom_distance(state) <= px(24.)
 }
 
 fn is_list_near_top(state: &ListState) -> bool {
@@ -10340,10 +10382,7 @@ fn is_list_near_top(state: &ListState) -> bool {
 }
 
 fn scroll_list_to_bottom(state: &ListState) {
-    state.scroll_to(ListOffset {
-        item_ix: state.item_count(),
-        offset_in_item: px(0.),
-    });
+    state.scroll_to_end();
 }
 
 fn quick_switcher_seq_from_query_id(query_id: &str) -> Option<u64> {

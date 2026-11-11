@@ -9,8 +9,8 @@ use crate::{
         text_primary, text_secondary, tint, tooltip::shortcut_label,
     },
 };
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     AnyElement, Context, Entity, FontWeight, HighlightStyle, Hsla, InteractiveElement, IntoElement,
     ParentElement, StatefulInteractiveElement, Styled, StyledText, div, px, rgb,
 };
@@ -239,7 +239,7 @@ pub fn render_new_chat_modal(
                 .pb_2()
                 .id("new-chat-results-scroll")
                 .overflow_y_scroll()
-                .on_scroll_wheel(cx.listener(AppWindow::consume_scroll_wheel))
+                .on_scroll(cx.listener(AppWindow::consume_scroll_wheel))
                 .child(results),
         )
         .child(
@@ -318,7 +318,7 @@ fn person_row(
     // they are underlined too (never a yellow box on blue).
     let bold = HighlightStyle {
         font_weight: Some(FontWeight::BOLD),
-        underline: highlighted.then(|| gpui::UnderlineStyle {
+        underline: highlighted.then(|| gpui_kit::UnderlineStyle {
             thickness: px(1.),
             color: None,
             wavy: false,
@@ -381,7 +381,7 @@ fn person_row(
                             ),
                         ))
                         .children(crate::views::identity_marker_tinted(
-                            gpui::SharedString::from(format!("new-chat-identity-{username}")),
+                            gpui_kit::SharedString::from(format!("new-chat-identity-{username}")),
                             user.affinity,
                             &name,
                             true,

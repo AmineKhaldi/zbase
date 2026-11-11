@@ -13,8 +13,8 @@ use crate::{
         panel_alt_surface, panel_surface, subtle_surface, text_primary, text_secondary,
     },
 };
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     AnyElement, Context, CursorStyle, Div, FontWeight, InteractiveElement, IntoElement,
     ParentElement, StatefulInteractiveElement, Styled, div, px, rgb,
 };

@@ -1,10 +1,10 @@
 use crate::app::assets::KbuiAssets;
 use crate::app::commands;
 use crate::app::window::open_main_window;
-use gpui::{Application, Menu, MenuItem, SystemMenuType};
+use gpui_kit::{Menu, MenuItem, SystemMenuType};
 
 pub fn run() {
-    let application = Application::new().with_assets(KbuiAssets {});
+    let application = gpui_kit::application().with_assets(KbuiAssets {});
 
     // On macOS, clicking the Dock icon to re-open an already-running app should restore a window.
     // If we have no windows, create one.
@@ -15,9 +15,10 @@ pub fn run() {
     });
 
     application.run(|cx| {
+        gpui_kit::init(cx);
         // On platforms without a Dock/Menu affordance, quit when the last window closes.
         if !cfg!(target_os = "macos") {
-            cx.on_window_closed(|cx| {
+            cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
                 }
@@ -36,6 +37,7 @@ pub fn run() {
 fn app_menus() -> Vec<Menu> {
     vec![
         Menu {
+            disabled: false,
             name: "zBase".into(),
             items: vec![
                 MenuItem::action("Check for Updates…", commands::CheckForUpdates),
@@ -48,6 +50,7 @@ fn app_menus() -> Vec<Menu> {
         },
         // The sidebar order; the main window keeps the check mark on the current one.
         Menu {
+            disabled: false,
             name: VIEW_MENU.into(),
             items: vec![
                 MenuItem::action(SORT_BY_RECENT_ITEM, commands::SortSidebarByRecent),

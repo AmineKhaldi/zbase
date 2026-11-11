@@ -1,4 +1,4 @@
-use gpui::{AssetSource, Result, SharedString};
+use gpui_kit::{AssetSource, Result, SharedString};
 use rust_embed::RustEmbed;
 use std::borrow::Cow;
 
@@ -11,7 +11,10 @@ pub struct KbuiAssets;
 
 impl AssetSource for KbuiAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        Ok(EmbeddedAssets::get(path).map(|file| file.data))
+        if let Some(file) = EmbeddedAssets::get(path) {
+            return Ok(Some(file.data));
+        }
+        Ok(gpui_kit::assets::Assets::get(path).map(|file| file.data))
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
@@ -20,9 +23,14 @@ impl AssetSource for KbuiAssets {
         } else {
             format!("{path}/")
         };
-        Ok(EmbeddedAssets::iter()
-            .filter(|name| name.starts_with(&prefix))
-            .map(|name| SharedString::from(name.into_owned()))
-            .collect())
+        let mut assets = gpui_kit::assets::Assets.list(path)?;
+        assets.extend(
+            EmbeddedAssets::iter()
+                .filter(|name| name.starts_with(&prefix))
+                .map(|name| SharedString::from(name.into_owned())),
+        );
+        assets.sort();
+        assets.dedup();
+        Ok(assets)
     }
 }

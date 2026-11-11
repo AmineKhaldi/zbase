@@ -9,6 +9,8 @@ pub mod home;
 pub mod inbox;
 pub mod inline_markdown;
 pub mod input;
+#[cfg(test)]
+mod kit_tests;
 pub mod main_panel;
 pub mod overlays;
 mod pane_window;
@@ -27,8 +29,8 @@ pub mod timeline;
 pub mod tooltip;
 pub mod truncated_line;
 
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     AnyElement, Background, BoxShadow, FontWeight, Hsla, ImageSource, IntoElement, ParentElement,
     SharedString, Styled, div, linear_color_stop, linear_gradient, point, px, rgb, svg,
 };
@@ -285,7 +287,7 @@ pub fn mono_font_family() -> &'static str {
     }
 }
 
-pub fn mono_font_size() -> gpui::Pixels {
+pub fn mono_font_size() -> gpui_kit::Pixels {
     px(12.5)
 }
 
@@ -371,6 +373,7 @@ pub fn new_messages() -> u32 {
 /// Soft ring drawn around a focused field, outside its accent border.
 pub fn focus_ring() -> BoxShadow {
     BoxShadow {
+        inset: false,
         color: tint(accent(), if is_dark_theme() { 0.30 } else { 0.22 }),
         offset: point(px(0.), px(0.)),
         blur_radius: px(0.),
@@ -487,7 +490,7 @@ pub fn syntax_colors() -> SyntaxColors {
     }
 }
 
-pub fn inline_code_font_size() -> gpui::Pixels {
+pub fn inline_code_font_size() -> gpui_kit::Pixels {
     px(12.)
 }
 
@@ -643,6 +646,7 @@ pub fn sidebar_card_bg() -> u32 {
 
 pub fn sidebar_card_shadow() -> Vec<BoxShadow> {
     let edge = |color: Hsla| BoxShadow {
+        inset: false,
         color,
         offset: point(px(0.), px(0.)),
         blur_radius: px(0.),
@@ -653,6 +657,7 @@ pub fn sidebar_card_shadow() -> Vec<BoxShadow> {
     } else {
         vec![
             BoxShadow {
+                inset: false,
                 color: tint(0x000000, 0.08),
                 offset: point(px(0.), px(1.)),
                 blur_radius: px(2.),
@@ -667,12 +672,14 @@ pub fn floating_shadow() -> Vec<BoxShadow> {
     if is_dark_theme() {
         vec![
             BoxShadow {
+                inset: false,
                 color: tint(0x000000, 0.28),
                 offset: point(px(0.), px(18.)),
                 blur_radius: px(42.),
                 spread_radius: px(0.),
             },
             BoxShadow {
+                inset: false,
                 color: tint(0x000000, 0.14),
                 offset: point(px(0.), px(6.)),
                 blur_radius: px(18.),
@@ -682,12 +689,14 @@ pub fn floating_shadow() -> Vec<BoxShadow> {
     } else {
         vec![
             BoxShadow {
+                inset: false,
                 color: tint(0x2b3440, 0.07),
                 offset: point(px(0.), px(18.)),
                 blur_radius: px(42.),
                 spread_radius: px(0.),
             },
             BoxShadow {
+                inset: false,
                 color: tint(0x2b3440, 0.03),
                 offset: point(px(0.), px(6.)),
                 blur_radius: px(18.),
@@ -701,12 +710,14 @@ pub fn card_shadow() -> Vec<BoxShadow> {
     if is_dark_theme() {
         vec![
             BoxShadow {
+                inset: false,
                 color: tint(0x000000, 0.20),
                 offset: point(px(0.), px(10.)),
                 blur_radius: px(24.),
                 spread_radius: px(0.),
             },
             BoxShadow {
+                inset: false,
                 color: tint(0x000000, 0.10),
                 offset: point(px(0.), px(2.)),
                 blur_radius: px(8.),
@@ -716,12 +727,14 @@ pub fn card_shadow() -> Vec<BoxShadow> {
     } else {
         vec![
             BoxShadow {
+                inset: false,
                 color: tint(0x2b3440, 0.05),
                 offset: point(px(0.), px(10.)),
                 blur_radius: px(24.),
                 spread_radius: px(0.),
             },
             BoxShadow {
+                inset: false,
                 color: tint(0x2b3440, 0.02),
                 offset: point(px(0.), px(2.)),
                 blur_radius: px(8.),
@@ -1130,7 +1143,7 @@ pub fn crown_icon(color: u32) -> AnyElement {
 /// that marks a verified proof), a warning for a broken identity. Names
 /// themselves stay neutral; the marker carries the meaning and explains it.
 pub fn identity_marker(
-    id: impl Into<gpui::ElementId>,
+    id: impl Into<gpui_kit::ElementId>,
     affinity: crate::domain::affinity::Affinity,
     display_name: &str,
     include_following: bool,
@@ -1141,14 +1154,14 @@ pub fn identity_marker(
 /// [`identity_marker`] drawn in `color` instead of its semantic color, for use
 /// on an accent-filled selected row.
 pub fn identity_marker_tinted(
-    id: impl Into<gpui::ElementId>,
+    id: impl Into<gpui_kit::ElementId>,
     affinity: crate::domain::affinity::Affinity,
     display_name: &str,
     include_following: bool,
     override_color: Option<u32>,
 ) -> Option<AnyElement> {
     use crate::domain::affinity::Affinity;
-    use gpui::{InteractiveElement, StatefulInteractiveElement};
+    use gpui_kit::{InteractiveElement, StatefulInteractiveElement};
     let (icon, color, tooltip) = match affinity {
         Affinity::None => return None,
         Affinity::Positive if !include_following => return None,
@@ -1176,8 +1189,8 @@ pub fn identity_marker_tinted(
 }
 
 /// Team role crown with an explanatory tooltip ("Team owner", "Team admin").
-pub fn role_crown_badge(id: impl Into<gpui::ElementId>, label: &'static str) -> AnyElement {
-    use gpui::{InteractiveElement, StatefulInteractiveElement};
+pub fn role_crown_badge(id: impl Into<gpui_kit::ElementId>, label: &'static str) -> AnyElement {
+    use gpui_kit::{InteractiveElement, StatefulInteractiveElement};
     div()
         .id(id)
         .flex()
@@ -1310,10 +1323,10 @@ pub fn scroll_edge_fade(surface: Hsla) -> AnyElement {
         .left_0()
         .right_0()
         .h(px(16.))
-        .bg(gpui::linear_gradient(
+        .bg(gpui_kit::linear_gradient(
             180.,
-            gpui::linear_color_stop(surface, 0.),
-            gpui::linear_color_stop(gpui::Hsla { a: 0., ..surface }, 1.),
+            gpui_kit::linear_color_stop(surface, 0.),
+            gpui_kit::linear_color_stop(gpui_kit::Hsla { a: 0., ..surface }, 1.),
         ))
         .into_any_element()
 }
@@ -1327,10 +1340,10 @@ pub fn scroll_edge_fade_bottom(surface: Hsla) -> AnyElement {
         .left_0()
         .right_0()
         .h(px(16.))
-        .bg(gpui::linear_gradient(
+        .bg(gpui_kit::linear_gradient(
             0.,
-            gpui::linear_color_stop(surface, 0.),
-            gpui::linear_color_stop(gpui::Hsla { a: 0., ..surface }, 1.),
+            gpui_kit::linear_color_stop(surface, 0.),
+            gpui_kit::linear_color_stop(gpui_kit::Hsla { a: 0., ..surface }, 1.),
         ))
         .into_any_element()
 }
@@ -1345,10 +1358,10 @@ pub fn scroll_edge_shadow() -> AnyElement {
         .left_0()
         .right_0()
         .h(px(6.))
-        .bg(gpui::linear_gradient(
+        .bg(gpui_kit::linear_gradient(
             180.,
-            gpui::linear_color_stop(shade, 0.),
-            gpui::linear_color_stop(gpui::Hsla { a: 0., ..shade }, 1.),
+            gpui_kit::linear_color_stop(shade, 0.),
+            gpui_kit::linear_color_stop(gpui_kit::Hsla { a: 0., ..shade }, 1.),
         ))
         .into_any_element()
 }
@@ -1374,7 +1387,7 @@ pub fn attachment_file_row(attachment: &AttachmentSummary) -> AnyElement {
             div()
                 .min_w(px(0.))
                 .text_size(px(13.))
-                .font_weight(gpui::FontWeight::MEDIUM)
+                .font_weight(gpui_kit::FontWeight::MEDIUM)
                 .text_color(rgb(text_primary()))
                 .truncate()
                 .child(attachment.name.clone()),
@@ -1426,7 +1439,7 @@ pub fn attachment_upload_row(
                 .flex_1()
                 .min_w(px(0.))
                 .text_size(px(13.))
-                .font_weight(gpui::FontWeight::MEDIUM)
+                .font_weight(gpui_kit::FontWeight::MEDIUM)
                 .text_color(rgb(text_primary()))
                 .truncate()
                 .child(attachment.name.clone()),
@@ -1449,7 +1462,7 @@ pub fn attachment_upload_row(
                 .child(
                     div()
                         .h_full()
-                        .w(gpui::relative(fraction))
+                        .w(gpui_kit::relative(fraction))
                         .bg(rgb(accent_strong())),
                 ),
         )
@@ -1526,8 +1539,8 @@ pub fn page_header(
 }
 
 /// 28px "Back" button for utility pages, with its ⌘[ shortcut in the tooltip.
-pub fn back_button(id: impl Into<gpui::ElementId>) -> gpui::Stateful<gpui::Div> {
-    use gpui::{InteractiveElement, StatefulInteractiveElement};
+pub fn back_button(id: impl Into<gpui_kit::ElementId>) -> gpui_kit::Stateful<gpui_kit::Div> {
+    use gpui_kit::{InteractiveElement, StatefulInteractiveElement};
     div()
         .id(id)
         .size(px(28.))
@@ -1536,7 +1549,7 @@ pub fn back_button(id: impl Into<gpui::ElementId>) -> gpui::Stateful<gpui::Div> 
         .flex()
         .items_center()
         .justify_center()
-        .cursor(gpui::CursorStyle::PointingHand)
+        .cursor(gpui_kit::CursorStyle::PointingHand)
         .hover(|style| style.bg(tint(text_primary(), 0.07)))
         .tooltip(tooltip::TextTooltip::with_shortcut(
             "Back".to_string(),
@@ -1551,7 +1564,7 @@ pub fn back_button(id: impl Into<gpui::ElementId>) -> gpui::Stateful<gpui::Div> 
 
 /// Group label above a list section ("Owners & admins", "Unread"), the same
 /// 12px semibold secondary style as the sidebar's "Recent".
-pub fn section_label(text: impl Into<SharedString>) -> gpui::Div {
+pub fn section_label(text: impl Into<SharedString>) -> gpui_kit::Div {
     div()
         .text_size(px(12.))
         .line_height(px(16.))
@@ -1588,7 +1601,7 @@ pub fn empty_state(
     icon: &'static str,
     title: impl Into<SharedString>,
     body: Option<String>,
-) -> gpui::Div {
+) -> gpui_kit::Div {
     div()
         .w_full()
         .py(px(32.))
@@ -1642,8 +1655,8 @@ pub fn search_field_shell(
     input: AnyElement,
     focused: bool,
     height: f32,
-) -> gpui::Stateful<gpui::Div> {
-    use gpui::InteractiveElement;
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    use gpui_kit::InteractiveElement;
     div()
         .id(id)
         .h(px(height))
@@ -1658,7 +1671,7 @@ pub fn search_field_shell(
         .border_color(rgb(if focused { accent() } else { field_border() }))
         .when(focused, |field| field.shadow(vec![focus_ring()]))
         .bg(rgb(field_bg()))
-        .cursor(gpui::CursorStyle::IBeam)
+        .cursor(gpui_kit::CursorStyle::IBeam)
         .text_size(px(13.))
         .line_height(px(18.))
         .text_color(rgb(text_primary()))
@@ -1668,10 +1681,10 @@ pub fn search_field_shell(
 
 /// Accent-filled button for the one primary action of a surface ("Message").
 pub fn primary_button(
-    id: impl Into<gpui::ElementId>,
+    id: impl Into<gpui_kit::ElementId>,
     label: impl Into<SharedString>,
-) -> gpui::Stateful<gpui::Div> {
-    use gpui::InteractiveElement;
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    use gpui_kit::InteractiveElement;
     div()
         .id(id)
         .h(px(28.))
@@ -1682,7 +1695,7 @@ pub fn primary_button(
         .rounded(px(6.))
         .bg(rgb(accent_strong()))
         .hover(|style| style.bg(rgb(accent())))
-        .cursor(gpui::CursorStyle::PointingHand)
+        .cursor(gpui_kit::CursorStyle::PointingHand)
         .text_size(px(13.))
         .font_weight(FontWeight::MEDIUM)
         .text_color(rgb(0xffffff))
@@ -1691,10 +1704,10 @@ pub fn primary_button(
 
 /// Bordered neutral button for secondary actions ("Unfollow", "Close").
 pub fn secondary_button(
-    id: impl Into<gpui::ElementId>,
+    id: impl Into<gpui_kit::ElementId>,
     label: impl Into<SharedString>,
-) -> gpui::Stateful<gpui::Div> {
-    use gpui::InteractiveElement;
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    use gpui_kit::InteractiveElement;
     div()
         .id(id)
         .h(px(28.))
@@ -1707,7 +1720,7 @@ pub fn secondary_button(
         .border_color(rgb(field_border()))
         .bg(rgb(field_bg()))
         .hover(|style| style.bg(tint(text_primary(), 0.07)))
-        .cursor(gpui::CursorStyle::PointingHand)
+        .cursor(gpui_kit::CursorStyle::PointingHand)
         .text_size(px(13.))
         .font_weight(FontWeight::MEDIUM)
         .text_color(rgb(text_primary()))

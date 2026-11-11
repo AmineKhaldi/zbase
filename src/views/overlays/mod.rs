@@ -27,8 +27,8 @@ use crate::{
         truncated_line::{Segment, TruncatedLine},
     },
 };
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     AnyElement, Context, Entity, FontWeight, InteractiveElement, IntoElement, ObjectFit,
     ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, StyledImage, div, img,
     px, rgb,
@@ -74,7 +74,7 @@ impl OverlayHost {
         quick_switcher_indexing_status: Option<&str>,
         quick_switcher_hits: &HashMap<usize, SearchResultContext>,
         conversation_avatars: &HashMap<String, crate::models::sidebar_model::SidebarAvatar>,
-        viewport: gpui::Size<Pixels>,
+        viewport: gpui_kit::Size<Pixels>,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         if overlay.active_modal.is_none()
@@ -103,7 +103,7 @@ impl OverlayHost {
             .flex_col()
             .items_center()
             .id("overlay-root")
-            .on_scroll_wheel(cx.listener(AppWindow::consume_scroll_wheel))
+            .on_scroll(cx.listener(AppWindow::consume_scroll_wheel))
             .on_mouse_move(cx.listener(AppWindow::consume_mouse_move))
             .when(has_backdrop, |d| {
                 d.bg(tint(0x000000, if is_dark_theme() { 0.50 } else { 0.25 }))
@@ -198,7 +198,7 @@ impl OverlayHost {
 
     fn render_fullscreen_image_overlay(
         image: &FullscreenImageOverlay,
-        viewport: gpui::Size<Pixels>,
+        viewport: gpui_kit::Size<Pixels>,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         let caption = image
@@ -211,7 +211,7 @@ impl OverlayHost {
             return div()
                 .id("overlay-fullscreen-image-unavailable")
                 .on_mouse_down(
-                    gpui::MouseButton::Left,
+                    gpui_kit::MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
                         this.dismiss_overlays(cx);
                         cx.stop_propagation();
@@ -231,7 +231,7 @@ impl OverlayHost {
                         .text_color(rgb(text_primary()))
                         .id("lightbox-error-card")
                         .on_mouse_down(
-                            gpui::MouseButton::Left,
+                            gpui_kit::MouseButton::Left,
                             cx.listener(|_, _, _, cx| cx.stop_propagation()),
                         )
                         .child("Unable to load image preview."),
@@ -249,7 +249,7 @@ impl OverlayHost {
         div()
             .id("overlay-fullscreen-image")
             .on_mouse_down(
-                gpui::MouseButton::Left,
+                gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     this.dismiss_overlays(cx);
                     cx.stop_propagation();
@@ -284,7 +284,7 @@ impl OverlayHost {
                                     .h(px(frame_height))
                                     .flex_shrink_0()
                                     .on_mouse_down(
-                                        gpui::MouseButton::Left,
+                                        gpui_kit::MouseButton::Left,
                                         cx.listener(|_, _, _, cx| cx.stop_propagation()),
                                     )
                                     .child(
@@ -318,7 +318,7 @@ impl OverlayHost {
                             div()
                                 .id("lightbox-caption")
                                 .on_mouse_down(
-                                    gpui::MouseButton::Left,
+                                    gpui_kit::MouseButton::Left,
                                     cx.listener(|_, _, _, cx| cx.stop_propagation()),
                                 )
                                 .max_w(px(900.))
@@ -747,7 +747,7 @@ impl OverlayHost {
                     .min_h(px(0.))
                     .id("quick-switcher-results-scroll")
                     .overflow_y_scroll()
-                    .on_scroll_wheel(cx.listener(AppWindow::consume_scroll_wheel))
+                    .on_scroll(cx.listener(AppWindow::consume_scroll_wheel))
                     .scrollbar_width(px(8.))
                     .child(results),
             )
@@ -831,9 +831,9 @@ impl OverlayHost {
         } else {
             modal_surface()
         };
-        let primary_color: gpui::Hsla = rgb(text_primary()).into();
-        let secondary_color: gpui::Hsla = rgb(text_secondary()).into();
-        let match_color: gpui::Hsla = rgb(accent_strong()).into();
+        let primary_color: gpui_kit::Hsla = rgb(text_primary()).into();
+        let secondary_color: gpui_kit::Hsla = rgb(text_secondary()).into();
+        let match_color: gpui_kit::Hsla = rgb(accent_strong()).into();
         let is_message = result.kind == QuickSwitcherResultKind::Message;
         let is_dm = matches!(result.route, Route::DirectMessage { .. });
         let unread = result.kind == QuickSwitcherResultKind::UnreadChannel;
@@ -922,7 +922,7 @@ impl OverlayHost {
             .when(!selected, |row| {
                 row.hover(|style| style.bg(tint(text_primary(), 0.06)))
             })
-            .cursor(gpui::CursorStyle::PointingHand)
+            .cursor(gpui_kit::CursorStyle::PointingHand)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.open_quick_switcher_result_at(index, window, cx);
             }))
@@ -992,7 +992,7 @@ impl OverlayHost {
             .when(!selected, |row| {
                 row.hover(|style| style.bg(tint(text_primary(), 0.06)))
             })
-            .cursor(gpui::CursorStyle::PointingHand)
+            .cursor(gpui_kit::CursorStyle::PointingHand)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.open_quick_switcher_result_at(index, window, cx);
             }))
@@ -1008,7 +1008,7 @@ impl OverlayHost {
         is_dm: bool,
         team_name: Option<&str>,
         conversation_avatars: &HashMap<String, crate::models::sidebar_model::SidebarAvatar>,
-        surface: gpui::Hsla,
+        surface: gpui_kit::Hsla,
         glyph_color: u32,
     ) -> AnyElement {
         use crate::models::sidebar_model::{SidebarAvatar, team_avatar_key};
@@ -1227,8 +1227,8 @@ fn split_channel_label(
 fn highlight_segments(
     text: &str,
     ranges: &[(usize, usize)],
-    color: gpui::Hsla,
-    match_color: gpui::Hsla,
+    color: gpui_kit::Hsla,
+    match_color: gpui_kit::Hsla,
     weight: FontWeight,
 ) -> Vec<Segment> {
     let mut ranges: Vec<(usize, usize)> = ranges
@@ -1334,6 +1334,6 @@ mod image_viewer_tests {
 
 /// The quick switcher's keyboard selection: a grey a step stronger than a
 /// row's hover, kept opaque because avatar rings are cut from it.
-fn switcher_selection_bg() -> gpui::Hsla {
+fn switcher_selection_bg() -> gpui_kit::Hsla {
     modal_surface().blend(tint(text_primary(), 0.10))
 }

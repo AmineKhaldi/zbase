@@ -1,5 +1,5 @@
 use crate::views::{app_bg, app_window::AppWindow, is_dark_theme, text_primary, tint};
-use gpui::{
+use gpui_kit::{
     AnyElement, BoxShadow, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
     ParentElement, SharedString, Styled, div, img, point, px, rgb,
 };
@@ -55,7 +55,7 @@ impl SplashView {
                 this.clear_hovered_message_immediate(cx);
                 cx.stop_propagation();
             }))
-            .on_scroll_wheel(cx.listener(|this, _, _, cx| {
+            .on_scroll(cx.listener(|this, _, _, cx| {
                 this.clear_hovered_message_immediate(cx);
                 cx.stop_propagation();
             }))
@@ -117,9 +117,9 @@ impl SplashView {
 
 fn keycap(
     label: &str,
-    bg: gpui::Hsla,
-    border_color: gpui::Hsla,
-    shadow_color: gpui::Hsla,
+    bg: gpui_kit::Hsla,
+    border_color: gpui_kit::Hsla,
+    shadow_color: gpui_kit::Hsla,
 ) -> AnyElement {
     div()
         .min_w(px(38.))
@@ -130,6 +130,7 @@ fn keycap(
         .border_1()
         .border_color(border_color)
         .shadow(vec![BoxShadow {
+            inset: false,
             color: shadow_color,
             offset: point(px(0.), px(2.)),
             blur_radius: px(4.),

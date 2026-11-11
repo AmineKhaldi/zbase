@@ -9,8 +9,8 @@ use crate::{
         text_primary, text_secondary, tint,
     },
 };
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     AnyElement, Context, CursorStyle, Entity, FontWeight, InteractiveElement, IntoElement,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, div, px, rgb,
 };
@@ -132,7 +132,7 @@ pub(super) fn render_members_panel(
             crate::views::secondary_button("members-filter-clear", "Clear filter").on_click(
                 move |_, window, cx| {
                     input.update(cx, |input, cx| input.set_text("", cx));
-                    window.focus(&gpui::Focusable::focus_handle(&input, cx));
+                    window.focus(&gpui_kit::Focusable::focus_handle(&input, cx), cx);
                 },
             ),
         ))

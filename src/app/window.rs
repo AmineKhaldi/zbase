@@ -25,7 +25,7 @@ use crate::{
         sidebar_width_for_style,
     },
 };
-use gpui::{
+use gpui_kit::{
     App, AppContext, Bounds, Focusable, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
     WindowOptions, point, px, size,
 };
@@ -106,7 +106,7 @@ pub fn open_main_window(cx: &mut App) {
         ..Default::default()
     };
 
-    cx.open_window(options, |window, cx| {
+    gpui_kit::open_window(options, cx, |window, cx| {
         let models = if env_flag(ENV_BENCH_USE_DEMO) {
             #[cfg(any(test, feature = "demo-fixtures"))]
             {
@@ -217,7 +217,7 @@ pub fn open_main_window(cx: &mut App) {
             root.init(window, cx);
             root
         });
-        window.focus(&root.focus_handle(cx));
+        window.focus(&root.focus_handle(cx), cx);
         root
     })
     .expect("failed to open zbase window");

@@ -72,10 +72,12 @@ try {
     if ($Test) {
         # Test binaries load the FFmpeg DLLs from PATH.
         $env:PATH = "$(Join-Path $FfmpegDir 'bin');$env:PATH"
-        cargo test --locked --release --all-targets --features gpui/runtime_shaders
+        cargo test --locked --release --all-targets
         if ($LASTEXITCODE -ne 0) { throw 'cargo test failed' }
+        cargo test --locked --release --all-targets --features gpui-fast
+        if ($LASTEXITCODE -ne 0) { throw 'GPUI Fast tests failed' }
     }
-    cargo build --locked --release --features gpui/runtime_shaders
+    cargo build --locked --release
     $ErrorActionPreference = 'Stop'
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
     $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $repo 'target' }

@@ -24,8 +24,8 @@ use crate::{
         tooltip::{TextTooltip, shortcut_label},
     },
 };
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     Animation, AnimationExt, AnyElement, Context, CursorStyle, Entity, ExternalPaths, FontWeight,
     InteractiveElement, IntoElement, ListState, ParentElement, StatefulInteractiveElement, Styled,
     div, px, rgb,
@@ -144,14 +144,10 @@ impl ConversationView {
                     .flex()
                     .flex_col()
                     .overflow_hidden()
-                    .child(TimelineList.render(timeline, timeline_list_state, cx))
-                    .when(
-                        {
-                            let top = timeline_list_state.logical_scroll_top();
-                            top.item_ix > 0 || top.offset_in_item > px(0.)
-                        },
-                        |container| container.child(crate::views::scroll_edge_shadow()),
-                    )
+                    .child(TimelineList.render(timeline, timeline_list_state, reduced_motion, cx))
+                    .when(timeline.scrolled_from_top, |container| {
+                        container.child(crate::views::scroll_edge_shadow())
+                    })
                     .when(show_jump, |container| {
                         container.child(
                             div()

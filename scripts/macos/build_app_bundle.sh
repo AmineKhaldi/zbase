@@ -9,10 +9,10 @@ ICON_PATH="${ROOT_DIR}/assets/macos/AppIcon.icns"
 VERSION="$(awk -F'"' '/^version = / { print $2; exit }' "${ROOT_DIR}/Cargo.toml")"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 export MACOSX_DEPLOYMENT_TARGET=15.0
-BUILD_FEATURES=gpui/runtime_shaders
+BUILD_FEATURES="${ZBASE_BUILD_FEATURES:-}"
 if [[ "${ZBASE_OFFICIAL_RELEASE:-0}" == 1 ]]; then
   : "${SPARKLE_DIR:?Run scripts/macos/prepare_sparkle.sh first}" "${SPARKLE_PUBLIC_KEY:?}"
-  BUILD_FEATURES="$BUILD_FEATURES,macos-updater"
+  BUILD_FEATURES="${BUILD_FEATURES:+$BUILD_FEATURES,}macos-updater"
 fi
 TARGET_DIR="$(cargo metadata --format-version 1 --no-deps --manifest-path "${ROOT_DIR}/Cargo.toml" | plutil -extract target_directory raw -o - -)"
 

@@ -22,8 +22,8 @@ use crate::{
         warning,
     },
 };
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     AnyElement, Context, Entity, FontWeight, HighlightStyle, Hsla, ImageSource, InteractiveElement,
     IntoElement, ObjectFit, ParentElement, RenderImage, SharedString, StatefulInteractiveElement,
     Styled, StyledImage, StyledText, div, img, px, rgb,
@@ -247,7 +247,7 @@ impl SearchView {
             .when(!active, |chip| {
                 chip.hover(|style| style.bg(tint(text_primary(), 0.06)))
             })
-            .cursor(gpui::CursorStyle::PointingHand)
+            .cursor(gpui_kit::CursorStyle::PointingHand)
             .text_size(px(12.))
             .font_weight(FontWeight::MEDIUM)
             .text_color(rgb(foreground))
@@ -316,7 +316,7 @@ impl MessageHit<'_> {
 
     /// Header line and snippet; callers append extras below. `on_accent` is for
     /// the accent-filled selected row, where everything turns white.
-    pub(crate) fn column(&self, scale: MessageHitScale, on_accent: bool) -> gpui::Div {
+    pub(crate) fn column(&self, scale: MessageHitScale, on_accent: bool) -> gpui_kit::Div {
         let (primary, secondary): (Hsla, Hsla) = if on_accent {
             (
                 rgb(sidebar_selected_fg()).into(),
@@ -417,7 +417,7 @@ pub(crate) fn search_result_row(
         .when(!selected, |row| {
             row.hover(|style| style.bg(tint(text_primary(), 0.05)))
         })
-        .cursor(gpui::CursorStyle::PointingHand)
+        .cursor(gpui_kit::CursorStyle::PointingHand)
         .flex()
         .items_start()
         .gap(px(8.))
@@ -541,7 +541,7 @@ pub(crate) fn snippet_text(
             font_weight: Some(paint.weight),
             color: paint.color.map(|color| rgb(color).into()),
             background_color: paint.background.map(|color| rgb(color).into()),
-            underline: paint.underline.then(|| gpui::UnderlineStyle {
+            underline: paint.underline.then(|| gpui_kit::UnderlineStyle {
                 thickness: px(1.),
                 color: None,
                 wavy: false,
@@ -609,7 +609,7 @@ fn render_link_previews(
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_url_or_deep_link(&url, window, cx);
                     }))
-                    .cursor(gpui::CursorStyle::PointingHand)
+                    .cursor(gpui_kit::CursorStyle::PointingHand)
                     .rounded_md()
                     .overflow_hidden()
                     .w(px(media_width))
@@ -692,7 +692,7 @@ fn render_link_previews(
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_url_or_deep_link(&url, window, cx);
                 }))
-                .cursor(gpui::CursorStyle::PointingHand)
+                .cursor(gpui_kit::CursorStyle::PointingHand)
                 .rounded_md()
                 .border_1()
                 .border_color(rgb(border()))
@@ -778,7 +778,7 @@ mod tests {
         util::search_snippet::clean_search_snippet,
         views::{mention_you_soft, search_match_bg, with_theme},
     };
-    use gpui::FontWeight;
+    use gpui_kit::FontWeight;
 
     #[test]
     fn matches_get_the_fill_and_mentions_never_do() {

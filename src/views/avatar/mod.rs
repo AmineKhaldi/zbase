@@ -2,9 +2,9 @@ use crate::domain::presence::Availability;
 use crate::models::conversation_model::AvatarParticipant;
 use crate::views::scaled_image::{self, Fit};
 use crate::views::{accent, is_dark_theme, panel_surface};
-use gpui::InteractiveElement;
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::InteractiveElement;
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     AnyElement, FontWeight, Hsla, ImageSource, IntoElement, ObjectFit, ParentElement, Styled,
     StyledImage, div, img, px, rgb,
 };
@@ -272,13 +272,13 @@ impl Avatar {
     /// [`Self::with_presence`] with a hover tooltip naming the state ("Away"),
     /// so presence never depends on reading the dot alone.
     pub fn with_presence_tooltip(
-        id: impl Into<gpui::ElementId>,
+        id: impl Into<gpui_kit::ElementId>,
         avatar: AnyElement,
         size: f32,
         availability: Option<&Availability>,
         surface: Hsla,
     ) -> AnyElement {
-        use gpui::{InteractiveElement, StatefulInteractiveElement};
+        use gpui_kit::{InteractiveElement, StatefulInteractiveElement};
         let label = availability.and_then(presence_label);
         let avatar = Self::with_presence(avatar, size, availability, surface);
         match label {
@@ -361,7 +361,7 @@ impl Avatar {
             .bg(panel_surface())
             .child(
                 img(image_source)
-                    .id(gpui::SharedString::from(format!("avatar-image-{size}")))
+                    .id(gpui_kit::SharedString::from(format!("avatar-image-{size}")))
                     .w(px(size))
                     .h(px(size))
                     .rounded(px(square_radius(size)))
@@ -382,7 +382,7 @@ pub fn default_avatar_background(name: &str) -> u32 {
     }
 }
 
-/// Corner radius for avatars: 4px at sidebar size, 6px at header size.
+/// Anchor radius for avatars: 4px at sidebar size, 6px at header size.
 fn square_radius(size: f32) -> f32 {
     (size * 0.22).round().clamp(3., 12.)
 }

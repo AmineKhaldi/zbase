@@ -1,5 +1,5 @@
 use crate::models::settings_model::ThemeMode;
-use gpui::WindowAppearance;
+use gpui_kit::WindowAppearance;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ThemeVariant {

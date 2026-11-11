@@ -113,12 +113,14 @@ jobs:
       - name: Clippy
         id: clippy
         run: |
-          cargo clippy --locked --all-targets --features gpui/runtime_shaders,macos-updater --timings -- -D warnings
-          cargo clippy --locked --all-targets --all-features --features gpui/runtime_shaders --timings -- -D warnings
+          cargo clippy --locked --all-targets --features macos-updater --timings -- -D warnings
+          cargo clippy --locked --all-targets --all-features --timings -- -D warnings
       - name: Rust tests
         env:
           DYLD_FRAMEWORK_PATH: ${{ github.workspace }}/dist/sparkle
-        run: cargo test --locked --all-targets --features gpui/runtime_shaders,macos-updater --timings
+        run: |
+          cargo test --locked --all-targets --features macos-updater --timings
+          cargo test --locked --all-targets --all-features --timings
       - name: Packaging integration tests
         run: python3 -m unittest discover -s scripts/macos -p 'test_*.py' -v
       - name: Build and verify self-contained app

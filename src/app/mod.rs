@@ -10,5 +10,5 @@ pub mod platform;
 pub mod theme;
 pub mod window;
 
-mod key_bindings;
+pub(crate) mod key_bindings;
 pub mod shortcuts;

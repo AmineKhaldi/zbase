@@ -6,7 +6,7 @@ use crate::{
         warning_soft,
     },
 };
-use gpui::{
+use gpui_kit::{
     AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, div, px, rgb,
 };

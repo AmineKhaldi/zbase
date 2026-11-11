@@ -41,8 +41,8 @@ use crate::{
         warning, warning_soft,
     },
 };
-use gpui::prelude::FluentBuilder;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
     AnyElement, Bounds, Context, Entity, FontWeight, ImageSource, InteractiveElement, IntoElement,
     LayoutId, ListState, ObjectFit, ParentElement, Pixels, RenderImage, SharedString,
     StatefulInteractiveElement, Styled, StyledImage, Window, canvas, deferred, div, img, list, px,
@@ -53,12 +53,12 @@ use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 #[derive(Clone)]
 struct HoveredMessageBoundsReporter {
-    owner: gpui::WeakEntity<AppWindow>,
+    owner: gpui_kit::WeakEntity<AppWindow>,
     message_id: crate::domain::ids::MessageId,
     is_thread: bool,
 }
 
-impl gpui::IntoElement for HoveredMessageBoundsReporter {
+impl gpui_kit::IntoElement for HoveredMessageBoundsReporter {
     type Element = Self;
 
     fn into_element(self) -> Self::Element {
@@ -66,11 +66,11 @@ impl gpui::IntoElement for HoveredMessageBoundsReporter {
     }
 }
 
-impl gpui::Element for HoveredMessageBoundsReporter {
+impl gpui_kit::Element for HoveredMessageBoundsReporter {
     type RequestLayoutState = ();
     type PrepaintState = ();
 
-    fn id(&self) -> Option<gpui::ElementId> {
+    fn id(&self) -> Option<gpui_kit::ElementId> {
         None
     }
 
@@ -80,12 +80,12 @@ impl gpui::Element for HoveredMessageBoundsReporter {
 
     fn request_layout(
         &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _id: Option<&gpui_kit::GlobalElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
         window: &mut Window,
-        cx: &mut gpui::App,
+        cx: &mut gpui_kit::App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut style = gpui::Style::default();
+        let mut style = gpui_kit::Style::default();
         style.size.width = relative(1.).into();
         style.size.height = relative(1.).into();
         (window.request_layout(style, std::iter::empty(), cx), ())
@@ -93,15 +93,15 @@ impl gpui::Element for HoveredMessageBoundsReporter {
 
     fn prepaint(
         &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _id: Option<&gpui_kit::GlobalElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         window: &mut Window,
-        cx: &mut gpui::App,
+        cx: &mut gpui_kit::App,
     ) -> Self::PrepaintState {
         let viewport = window.viewport_size();
-        let viewport_size = gpui::size(f32::from(viewport.width), f32::from(viewport.height));
+        let viewport_size = gpui_kit::size(f32::from(viewport.width), f32::from(viewport.height));
         let owner = self.owner.clone();
         let message_id = self.message_id.clone();
         let is_thread = self.is_thread;
@@ -123,13 +123,13 @@ impl gpui::Element for HoveredMessageBoundsReporter {
 
     fn paint(
         &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _id: Option<&gpui_kit::GlobalElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
         _bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         _prepaint: &mut Self::PrepaintState,
         _window: &mut Window,
-        _cx: &mut gpui::App,
+        _cx: &mut gpui_kit::App,
     ) {
     }
 }
@@ -254,8 +254,9 @@ impl MessageRenderMemo {
 impl TimelineList {
     pub fn render(
         &self,
-        _timeline: &TimelineModel,
+        timeline: &TimelineModel,
         list_state: &ListState,
+        reduced_motion: bool,
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         div()
@@ -266,7 +267,6 @@ impl TimelineList {
             .flex_col()
             .gap_1()
             .overflow_hidden()
-            .on_scroll_wheel(cx.listener(AppWindow::timeline_scrolled))
             .child({
                 let owner = cx.weak_entity();
                 div()
@@ -289,14 +289,31 @@ impl TimelineList {
                         .inset_0(),
                     )
                     .child(
-                        list(
-                            list_state.clone(),
-                            cx.processor(|this, ix: usize, _window, cx| {
-                                this.render_timeline_row_virtualized(ix, cx)
-                            }),
+                        gpui_kit::base::ScrollBounce::new(
+                            gpui_kit::SharedString::from(format!(
+                                "timeline-bounce-{}",
+                                timeline.conversation_id.0
+                            )),
+                            list_state,
+                            list(
+                                list_state.clone(),
+                                cx.processor(|this, ix: usize, _window, cx| {
+                                    this.render_timeline_row_virtualized(ix, cx)
+                                }),
+                            )
+                            .h_full()
+                            .w_full(),
                         )
-                        .h_full()
-                        .w_full(),
+                        .enabled(
+                            gpui_kit::base::ScrollBounce::enabled_by_default() && !reduced_motion,
+                        )
+                        .on_scroll({
+                            let owner = cx.weak_entity();
+                            move |window, cx| {
+                                let _ =
+                                    owner.update(cx, |this, cx| this.timeline_scrolled(window, cx));
+                            }
+                        }),
                     )
             })
             .into_any_element()
@@ -461,7 +478,7 @@ impl TimelineList {
                                 )))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(rgb(accent()))
-                                .cursor(gpui::CursorStyle::PointingHand)
+                                .cursor(gpui_kit::CursorStyle::PointingHand)
                                 .flex()
                                 .items_center()
                                 .hover(|s| s.underline())
@@ -492,7 +509,7 @@ impl TimelineList {
                                 )))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(rgb(accent()))
-                                .cursor(gpui::CursorStyle::PointingHand)
+                                .cursor(gpui_kit::CursorStyle::PointingHand)
                                 .hover(|s| s.underline())
                                 .on_mouse_move(cx.listener(|this, _, _, cx| {
                                     this.clear_hovered_message_immediate(cx);
@@ -654,7 +671,7 @@ impl TimelineList {
                         }
                     }))
                     .on_mouse_move(hold_message_hover(&row.message.id, is_thread, cx))
-                    .cursor(gpui::CursorStyle::PointingHand)
+                    .cursor(gpui_kit::CursorStyle::PointingHand)
                     .text_sm()
                     // Bold, so each turn is anchored by its name rather than
                     // by whitespace alone.
@@ -750,8 +767,8 @@ impl TimelineList {
                 return None;
             }
             Some(HoverGeometry {
-                pointer: gpui::point(hover_anchor_x?, hover_anchor_y?),
-                container_origin: gpui::point(hover_window_left?, hover_window_top?),
+                pointer: gpui_kit::point(hover_anchor_x?, hover_anchor_y?),
+                container_origin: gpui_kit::point(hover_window_left?, hover_window_top?),
                 container_width: hover_window_width?,
                 viewport: timeline.hovered_message_viewport_size?,
             })
@@ -793,7 +810,7 @@ impl TimelineList {
                     row.message.id.0
                 )))
                 .on_mouse_move(
-                    cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                    cx.listener(move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
                         let cursor_x: f32 = event.position.x.into();
                         let cursor_y: f32 = event.position.y.into();
                         this.clear_reaction_hover_tooltip(cx);
@@ -808,8 +825,8 @@ impl TimelineList {
                     }),
                 )
                 .on_mouse_down(
-                    gpui::MouseButton::Right,
-                    cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    gpui_kit::MouseButton::Right,
+                    cx.listener(move |this, event: &gpui_kit::MouseDownEvent, _, cx| {
                         let cursor_x: f32 = event.position.x.into();
                         let cursor_y: f32 = event.position.y.into();
                         this.show_toolbar_immediately(
@@ -843,7 +860,7 @@ impl TimelineList {
                             "timeline-author-avatar-{}",
                             row.message.id.0
                         )))
-                        .cursor(gpui::CursorStyle::PointingHand)
+                        .cursor(gpui_kit::CursorStyle::PointingHand)
                         .on_mouse_move(hold_message_hover(&row.message.id, is_thread, cx))
                         .on_click(cx.listener({
                             let author_user_id = author_user_id.clone();
@@ -873,7 +890,7 @@ impl TimelineList {
                     row.message.id.0
                 )))
                 .on_mouse_move(
-                    cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                    cx.listener(move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
                         let cursor_x: f32 = event.position.x.into();
                         let cursor_y: f32 = event.position.y.into();
                         this.clear_reaction_hover_tooltip(cx);
@@ -888,8 +905,8 @@ impl TimelineList {
                     }),
                 )
                 .on_mouse_down(
-                    gpui::MouseButton::Right,
-                    cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    gpui_kit::MouseButton::Right,
+                    cx.listener(move |this, event: &gpui_kit::MouseDownEvent, _, cx| {
                         let cursor_x: f32 = event.position.x.into();
                         let cursor_y: f32 = event.position.y.into();
                         this.show_toolbar_immediately(
@@ -1177,9 +1194,9 @@ impl TimelineList {
                                                 let caption_text = lightbox_caption.clone();
                                                 let hover_message_id = message.id.clone();
                                                 thumb
-                                                    .cursor(gpui::CursorStyle::PointingHand)
+                                                    .cursor(gpui_kit::CursorStyle::PointingHand)
                                                     .on_mouse_move(cx.listener(
-                                                        move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                                                        move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
                                                             let cursor_x: f32 = event.position.x.into();
                                                             let cursor_y: f32 = event.position.y.into();
                                                             this.clear_reaction_hover_tooltip(cx);
@@ -1288,10 +1305,10 @@ impl TimelineList {
                                             .rounded_md()
                                             .overflow_hidden()
                                             .flex_shrink_0()
-                                            .cursor(gpui::CursorStyle::PointingHand)
+                                            .cursor(gpui_kit::CursorStyle::PointingHand)
                                             .on_mouse_move(cx.listener({
                                                 let hover_message_id = message.id.clone();
-                                                move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                                                move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
                                                     let cursor_x: f32 = event.position.x.into();
                                                     let cursor_y: f32 = event.position.y.into();
                                                     this.clear_reaction_hover_tooltip(cx);
@@ -1467,7 +1484,7 @@ impl TimelineList {
                                 .border_color(if mine {
                                     tint(accent(), 0.35)
                                 } else {
-                                    gpui::transparent_black()
+                                    gpui_kit::transparent_black()
                                 })
                                 .bg(if mine {
                                     tint(accent(), 0.14)
@@ -1498,11 +1515,11 @@ impl TimelineList {
                                 );
                             let chip_with_hover = div()
                                 .id(reaction_chip_id)
-                                .cursor(gpui::CursorStyle::PointingHand)
+                                .cursor(gpui_kit::CursorStyle::PointingHand)
                                 .on_mouse_move(cx.listener({
                                     let hover_text = hover_text.clone();
                                     let hovered_message_id = message.id.clone();
-                                    move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                                    move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
                                         let cursor_x: f32 = event.position.x.into();
                                         let cursor_y: f32 = event.position.y.into();
                                         this.hover_message_without_toolbar(
@@ -1562,7 +1579,7 @@ impl TimelineList {
                                     .rounded(px(6.))
                                     .bg(tint(text_primary(), 0.06))
                                     .hover(|tile| tile.bg(tint(text_primary(), 0.1)))
-                                    .cursor(gpui::CursorStyle::PointingHand)
+                                    .cursor(gpui_kit::CursorStyle::PointingHand)
                                     .flex()
                                     .items_center()
                                     .justify_center()
@@ -1603,7 +1620,7 @@ impl TimelineList {
                             .items_center()
                             .justify_center()
                             .hover(|s| s.bg(subtle_surface()))
-                            .cursor(gpui::CursorStyle::PointingHand)
+                            .cursor(gpui_kit::CursorStyle::PointingHand)
                             .text_sm()
                             .child(unicode.to_string())
                             .into_any_element()
@@ -1632,7 +1649,7 @@ impl TimelineList {
                                     .items_center()
                                     .justify_center()
                                     .hover(|s| s.bg(subtle_surface()))
-                                    .cursor(gpui::CursorStyle::PointingHand)
+                                    .cursor(gpui_kit::CursorStyle::PointingHand)
                                     .text_sm()
                                     .child(unicode.clone())
                                     .into_any_element(),
@@ -1657,7 +1674,7 @@ impl TimelineList {
                                     .items_center()
                                     .justify_center()
                                     .hover(|s| s.bg(subtle_surface()))
-                                    .cursor(gpui::CursorStyle::PointingHand)
+                                    .cursor(gpui_kit::CursorStyle::PointingHand)
                                     .child(img(SharedString::from(path)).w(px(18.)).h(px(18.)))
                                     .into_any_element(),
                             )
@@ -1780,7 +1797,7 @@ impl TimelineList {
                 if let Some(position) = placement {
                     let toolbar_wrapper = div().absolute().left(px(position.x)).top(px(position.y))
                         .block_mouse_except_scroll()
-                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| {
+                        .on_mouse_down(gpui_kit::MouseButton::Left, cx.listener(|this, _, _, cx| {
                             this.cancel_hover_clear(); cx.stop_propagation();
                         }))
                         .on_mouse_move(cx.listener(|this, _, _, cx| {
@@ -2044,7 +2061,7 @@ impl TimelineList {
                                     this.open_url_or_deep_link(&url, window, cx);
                                 }))
                                 .on_mouse_move(cx.listener(
-                                    move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                                    move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
                                         let cursor_x: f32 = event.position.x.into();
                                         let cursor_y: f32 = event.position.y.into();
                                         this.clear_reaction_hover_tooltip(cx);
@@ -2058,7 +2075,7 @@ impl TimelineList {
                                         cx.stop_propagation();
                                     },
                                 ))
-                                .cursor(gpui::CursorStyle::PointingHand)
+                                .cursor(gpui_kit::CursorStyle::PointingHand)
                                 .into_any_element();
                         }
 
@@ -2079,7 +2096,7 @@ impl TimelineList {
                                     this.open_url_or_deep_link(&url, window, cx);
                                 }))
                                 .on_mouse_move(cx.listener(
-                                    move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                                    move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
                                         let cursor_x: f32 = event.position.x.into();
                                         let cursor_y: f32 = event.position.y.into();
                                         this.clear_reaction_hover_tooltip(cx);
@@ -2093,7 +2110,7 @@ impl TimelineList {
                                         cx.stop_propagation();
                                     },
                                 ))
-                                .cursor(gpui::CursorStyle::PointingHand)
+                                .cursor(gpui_kit::CursorStyle::PointingHand)
                                 .rounded_md()
                                 .overflow_hidden()
                                 .w(px(media_width))
@@ -2194,7 +2211,7 @@ impl TimelineList {
                                 this.open_url_or_deep_link(&url, window, cx);
                             }))
                             .on_mouse_move(cx.listener(
-                                move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                                move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
                                     let cursor_x: f32 = event.position.x.into();
                                     let cursor_y: f32 = event.position.y.into();
                                     this.clear_reaction_hover_tooltip(cx);
@@ -2208,7 +2225,7 @@ impl TimelineList {
                                     cx.stop_propagation();
                                 },
                             ))
-                            .cursor(gpui::CursorStyle::PointingHand)
+                            .cursor(gpui_kit::CursorStyle::PointingHand)
                             .border_l_2()
                             .border_color(rgb(accent()))
                             .pl_2()
@@ -2294,7 +2311,7 @@ impl TimelineList {
         message_key: &str,
         label: &str,
         icon: AnyElement,
-        listener: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+        listener: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
     ) -> AnyElement {
         div()
             .id(SharedString::from(format!("{prefix}-{message_key}")))
@@ -3080,7 +3097,8 @@ impl TimelineList {
                     } else if code_highlight_cache.mark_inflight(key) {
                         let code = code.clone();
                         cx.spawn(
-                            move |this: gpui::WeakEntity<AppWindow>, cx: &mut gpui::AsyncApp| {
+                            move |this: gpui_kit::WeakEntity<AppWindow>,
+                                  cx: &mut gpui_kit::AsyncApp| {
                                 let mut async_app = cx.clone();
                                 let background = cx.background_executor().clone();
                                 async move {
@@ -3197,7 +3215,7 @@ impl TimelineList {
                             )))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(rgb(link()))
-                            .cursor(gpui::CursorStyle::PointingHand)
+                            .cursor(gpui_kit::CursorStyle::PointingHand)
                             .hover(|style| style.underline())
                             .tooltip(crate::views::tooltip::TextTooltip::single_line(
                                 "Send this message again".to_string(),
@@ -3217,7 +3235,7 @@ impl TimelineList {
                             )))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(rgb(text_secondary()))
-                            .cursor(gpui::CursorStyle::PointingHand)
+                            .cursor(gpui_kit::CursorStyle::PointingHand)
                             .hover(|style| style.underline().text_color(rgb(text_primary())))
                             .tooltip(crate::views::tooltip::TextTooltip::single_line(
                                 "Remove this unsent message".to_string(),
@@ -3615,9 +3633,9 @@ fn hold_message_hover(
     message_id: &crate::domain::ids::MessageId,
     is_thread: bool,
     cx: &mut Context<AppWindow>,
-) -> impl Fn(&gpui::MouseMoveEvent, &mut Window, &mut gpui::App) + 'static {
+) -> impl Fn(&gpui_kit::MouseMoveEvent, &mut Window, &mut gpui_kit::App) + 'static {
     let message_id = message_id.clone();
-    cx.listener(move |this, _: &gpui::MouseMoveEvent, _, cx| {
+    cx.listener(move |this, _: &gpui_kit::MouseMoveEvent, _, cx| {
         this.hover_message_without_toolbar(message_id.clone(), is_thread, cx);
         cx.stop_propagation();
     })
@@ -3628,8 +3646,8 @@ fn hold_message_hover(
 fn render_reply_quote(
     message_key: &str,
     context: Option<ReplyContext>,
-    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
-    on_mouse_move: impl Fn(&gpui::MouseMoveEvent, &mut Window, &mut gpui::App) + 'static,
+    on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static,
+    on_mouse_move: impl Fn(&gpui_kit::MouseMoveEvent, &mut Window, &mut gpui_kit::App) + 'static,
 ) -> AnyElement {
     let group = SharedString::from(format!("reply-quote-{message_key}"));
     div()
@@ -3644,7 +3662,7 @@ fn render_reply_quote(
         .border_l_2()
         .border_color(tint(text_secondary(), 0.55))
         .group_hover(group, |style| style.border_color(rgb(accent())))
-        .cursor(gpui::CursorStyle::PointingHand)
+        .cursor(gpui_kit::CursorStyle::PointingHand)
         .on_click(on_click)
         .on_mouse_move(on_mouse_move)
         .text_xs()
@@ -3675,7 +3693,7 @@ fn render_reply_quote(
         .into_any_element()
 }
 
-fn hairline(color: u32) -> gpui::Div {
+fn hairline(color: u32) -> gpui_kit::Div {
     div().flex_1().min_w(px(16.)).h(px(1.)).bg(rgb(color))
 }
 
@@ -3772,7 +3790,7 @@ fn thread_summary_row(
     reply_count: u32,
     summary: Option<&ThreadSummary>,
     clipped_parent_author: Option<&str>,
-) -> gpui::Stateful<gpui::Div> {
+) -> gpui_kit::Stateful<gpui_kit::Div> {
     let group = SharedString::from(format!("timeline-thread-summary-{message_id}"));
     let repliers = summary.map_or(&[][..], |summary| summary.repliers.as_slice());
     let last_reply = summary
@@ -3791,7 +3809,7 @@ fn thread_summary_row(
         .flex()
         .items_center()
         .gap(px(6.))
-        .cursor(gpui::CursorStyle::PointingHand)
+        .cursor(gpui_kit::CursorStyle::PointingHand)
         .hover(|style| style.bg(tint(text_primary(), 0.06)))
         .when(repliers.is_empty(), |row| row.child(thread_icon(link())))
         .when(!repliers.is_empty(), |row| {
@@ -3832,7 +3850,7 @@ fn thread_summary_row(
             div()
                 .flex_shrink_0()
                 .text_size(px(12.))
-                .text_color(gpui::transparent_black())
+                .text_color(gpui_kit::transparent_black())
                 .group_hover(group, |style| style.text_color(rgb(text_secondary())))
                 .child("View thread"),
         )

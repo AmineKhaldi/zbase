@@ -27,7 +27,10 @@ def main():
     parser.add_argument('--repeats', type=int, default=1)
     parser.add_argument('--scenarios', help='Optional comma-separated scenario filter')
     parser.add_argument('--offscreen', action='store_true', help='Force CPU scene/layout builds without GPU presentation')
+    parser.add_argument('--force-rebuild', action='store_true', help='With --offscreen, rebuild every view instead of allowing retained rendering')
     args = parser.parse_args()
+    if args.force_rebuild and not args.offscreen:
+        parser.error('--force-rebuild requires --offscreen')
     if args.suite != 'demo' and args.live_data is None:
         parser.error('Live runs require --live-data pointing to a disposable cache copy')
     if args.duration <= 0 or args.warmup < 0 or args.repeats <= 0:
@@ -67,6 +70,7 @@ def main():
                 'ZBASE_BENCH_LABEL': name, 'ZBASE_BENCH_SCENARIO': scenario,
                 'ZBASE_BENCH_OUTPUT': str(output / 'timings.csv'),
                 'ZBASE_BENCH_FORCE_DRAW': '1' if args.offscreen else '0',
+                'ZBASE_BENCH_FORCE_REBUILD': '1' if args.force_rebuild else '0',
                 'ZBASE_BENCH_READ_ONLY': '1', 'ZBASE_THREAD_OPEN_PROFILE': '1' if scenario == 'thread_open' else '0',
             })
             if demo:
@@ -101,7 +105,7 @@ def main():
             timing_rows = list(csv.DictReader((output / 'timings.csv').open())) if (output / 'timings.csv').exists() else []
             timing = next((row for row in reversed(timing_rows) if row['label'] == name), {})
             render_samples = int(timing.get('render_total_n', 0))
-            summary = {'label': name, 'demo': demo, 'offscreen': args.offscreen, 'messages_requested': count, 'exit_code': process.returncode,
+            summary = {'label': name, 'demo': demo, 'offscreen': args.offscreen, 'force_rebuild': args.force_rebuild, 'messages_requested': count, 'exit_code': process.returncode,
                        'timeout': timed_out, 'wall_seconds': round(time.monotonic() - started, 3),
                        'peak_rss_mib': round(max((sample['rss_mib'] for sample in samples), default=0), 1),
                        'mean_cpu_percent': round(sum(sample['cpu_percent'] for sample in steady) / max(1, len(steady)), 1),

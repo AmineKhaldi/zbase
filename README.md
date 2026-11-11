@@ -184,8 +184,23 @@ open dist/macos/zBase.app
 This creates a development app at `dist/macos/zBase.app` using your installed media libraries. For terminal-based development:
 
 ```sh
-cargo run --locked --release --features gpui/runtime_shaders
+cargo run --locked --release
 ```
+
+GPUI Kit is the application-facing UI dependency. The default build uses Kit's
+pinned upstream GPUI backend. Build the same UI with the optional GPUI Fast backend:
+
+```sh
+cargo run --locked --release --features gpui-fast
+# Include Fast when packaging a local macOS development app:
+ZBASE_BUILD_FEATURES=gpui-fast scripts/macos/build_app_bundle.sh release
+```
+
+Fast remains optional while its retained rendering is evaluated on zBase's actual
+workloads. Use release builds and the presented-window benchmark path for backend
+comparisons. `scripts/benchmark_ui.py --offscreen` draws without presentation while
+allowing reuse; add `--force-rebuild` only to measure full-rebuild costs. Neither
+mode measures physical trackpad feel or keyboard-to-display latency.
 
 To publish a release, run **Actions → Release** on `main` with the next version. It bumps the package version, pushes the tag, generates release notes, and builds and attaches both installers. Leave the version blank for a build-only test. For signing, configuration and retries, see [macOS releases](docs/macos-releases.md) and [Windows releases](docs/windows-releases.md).
 
@@ -193,10 +208,10 @@ To publish a release, run **Actions → Release** on `main` with the next versio
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --locked --all-targets --features gpui/runtime_shaders -- -D warnings
+cargo clippy --locked --all-targets -- -D warnings
 scripts/macos/prepare_sparkle.sh
-SPARKLE_DIR="$PWD/dist/sparkle" cargo clippy --locked --all-targets --all-features --features gpui/runtime_shaders -- -D warnings
-cargo test --locked --all-targets --features gpui/runtime_shaders
+SPARKLE_DIR="$PWD/dist/sparkle" cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets
 python3 -m unittest discover -s scripts -p 'test_*.py' -v
 python3 -m unittest discover -s scripts/macos -p test_bundle_dylibs.py -v
 ```
