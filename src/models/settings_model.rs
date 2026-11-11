@@ -43,6 +43,9 @@ pub struct SettingsModel {
     pub sidebar_modes: HashMap<String, SidebarMode>,
     pub sidebar_section_order: HashMap<String, Vec<String>>,
     pub sidebar_collapsed_sections: HashMap<String, HashSet<String>>,
+    /// The share of Grouped mode's list the conversations take, once dragged;
+    /// `None` sizes them automatically.
+    pub sidebar_conversations_share: Option<f32>,
     pub dismissed_pinned_items: HashMap<String, String>,
     pub quick_switcher_affinity: HashMap<String, (f32, i64)>,
     /// Notification choices for individual conversations, keyed by conversation id.
@@ -62,6 +65,7 @@ impl Default for SettingsModel {
             sidebar_modes: HashMap::new(),
             sidebar_section_order: HashMap::new(),
             sidebar_collapsed_sections: HashMap::new(),
+            sidebar_conversations_share: None,
             dismissed_pinned_items: HashMap::new(),
             quick_switcher_affinity: HashMap::new(),
             conversation_notifications: HashMap::new(),

@@ -85,7 +85,6 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             }
         }
         UiAction::Navigate(route) => {
-            track_unread_visit(state, &route);
             state.navigation.current_route = Some(route.clone());
             state.sidebar.highlighted_route = Some(route.clone());
 
@@ -126,7 +125,6 @@ fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
             ReducerOutput { effects }
         }
         UiAction::NavigateQuiet(route) => {
-            track_unread_visit(state, &route);
             state.navigation.current_route = Some(route.clone());
             state.sidebar.highlighted_route = Some(route.clone());
 
@@ -840,7 +838,6 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 &state.workspace.direct_messages,
                 &workspace_id,
                 &state.backend.user_profiles,
-                state.sidebar.retained_unread_conversation.as_ref(),
             );
 
             if initialize_selection
@@ -910,7 +907,6 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 &state.workspace.direct_messages,
                 &sidebar_workspace_id,
                 &state.backend.user_profiles,
-                state.sidebar.retained_unread_conversation.as_ref(),
             );
         }
         BackendEvent::WorkspaceConversationsExcluded {
@@ -927,7 +923,6 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 &state.workspace.direct_messages,
                 &workspace_id,
                 &state.backend.user_profiles,
-                state.sidebar.retained_unread_conversation.as_ref(),
             );
             if state
                 .timeline
@@ -1598,7 +1593,6 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 &state.workspace.direct_messages,
                 &workspace_id,
                 &state.backend.user_profiles,
-                state.sidebar.retained_unread_conversation.as_ref(),
             );
         }
         BackendEvent::ConversationUnreadChanged {
@@ -1642,7 +1636,6 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                     &state.workspace.direct_messages,
                     &workspace_id,
                     &state.backend.user_profiles,
-                    state.sidebar.retained_unread_conversation.as_ref(),
                 );
             }
         }
@@ -1738,7 +1731,6 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 &state.workspace.direct_messages,
                 &sidebar_workspace_id,
                 &state.backend.user_profiles,
-                state.sidebar.retained_unread_conversation.as_ref(),
             );
             let route = route_for_summary(&conversation, &workspace_id);
             state.navigation.current_route = Some(route.clone());
@@ -2919,27 +2911,7 @@ fn refresh_sidebar(state: &mut UiState) {
         &state.workspace.direct_messages,
         &workspace_id,
         &state.backend.user_profiles,
-        state.sidebar.retained_unread_conversation.as_ref(),
     );
-}
-
-fn track_unread_visit(state: &mut UiState, route: &Route) {
-    let target = conversation_id_from_route(route);
-    let retained = target.filter(|id| {
-        state.sidebar.retained_unread_conversation.as_ref() == Some(id)
-            || state
-                .workspace
-                .channels
-                .iter()
-                .chain(&state.workspace.direct_messages)
-                .any(|summary| {
-                    &summary.id == id && (summary.unread_count > 0 || summary.mention_count > 0)
-                })
-    });
-    if state.sidebar.retained_unread_conversation != retained {
-        state.sidebar.retained_unread_conversation = retained;
-        refresh_sidebar(state);
-    }
 }
 
 fn build_sidebar_sections(
@@ -2947,64 +2919,7 @@ fn build_sidebar_sections(
     direct_messages: &[ConversationSummary],
     workspace_id: &WorkspaceId,
     user_profiles: &HashMap<UserId, UserProfileState>,
-    retained_unread: Option<&ConversationId>,
 ) -> Vec<UiSidebarSectionState> {
-    let mut sections = Vec::new();
-    let mut unread_rows = Vec::new();
-
-    for summary in channels.iter().chain(direct_messages.iter()) {
-        if summary.muted {
-            continue;
-        }
-        let is_dm = matches!(
-            summary.kind,
-            ConversationKind::DirectMessage | ConversationKind::GroupDirectMessage
-        );
-        let include_in_unread = summary.unread_count > 0
-            || summary.mention_count > 0
-            || retained_unread == Some(&summary.id);
-        if !include_in_unread {
-            continue;
-        }
-        let label = if let Some(label) = summary.simple_team_label() {
-            label
-        } else if is_dm {
-            dm_display_label(&summary.title, user_profiles)
-        } else {
-            summary.title.clone()
-        };
-        unread_rows.push((
-            summary.last_activity_ms,
-            UiSidebarRowState {
-                label,
-                unread_count: summary.unread_count,
-                mention_count: summary.mention_count,
-                route: Some(route_for_summary(summary, workspace_id)),
-            },
-        ));
-    }
-    unread_rows.sort_by(|left, right| {
-        right.0.cmp(&left.0).then_with(|| {
-            left.1
-                .route
-                .as_ref()
-                .map(Route::label)
-                .cmp(&right.1.route.as_ref().map(Route::label))
-        })
-    });
-    let unread_rows = unread_rows
-        .into_iter()
-        .map(|(_, row)| row)
-        .collect::<Vec<_>>();
-    if !unread_rows.is_empty() {
-        sections.push(UiSidebarSectionState {
-            id: Some(SidebarSectionId::new("unread")),
-            title: "Unread".to_string(),
-            rows: unread_rows,
-            collapsed: false,
-        });
-    }
-
     let mut sorted_channels = channels.to_vec();
     sorted_channels.sort_by(|left, right| {
         left.title
@@ -3055,6 +2970,16 @@ fn build_sidebar_sections(
             route: Some(route_for_summary(summary, workspace_id)),
         })
         .collect::<Vec<_>>();
+    let mut sections = Vec::new();
+    if !conversation_rows.is_empty() {
+        sections.push(UiSidebarSectionState {
+            // Keep the section identity so existing saved order/collapse settings work.
+            id: Some(SidebarSectionId::new("dms")),
+            title: "Conversations".to_string(),
+            rows: conversation_rows,
+            collapsed: false,
+        });
+    }
 
     group_order.sort_by(|left, right| {
         left.1
@@ -3086,16 +3011,6 @@ fn build_sidebar_sections(
             title: "Channels".to_string(),
             rows: ungrouped_rows,
             collapsed: !has_unread,
-        });
-    }
-
-    if !conversation_rows.is_empty() {
-        sections.push(UiSidebarSectionState {
-            // Keep the section identity so existing saved order/collapse settings work.
-            id: Some(SidebarSectionId::new("dms")),
-            title: "Conversations".to_string(),
-            rows: conversation_rows,
-            collapsed: false,
         });
     }
 
@@ -3544,7 +3459,7 @@ mod tests {
             state.workspace.channels[0].unread_count > 0,
             "a message beyond the read position must remain unread"
         );
-        assert!(state.sidebar.sections.iter().any(|s| s.title == "Unread"));
+        assert!(sidebar_shows_unread(&state));
         // A subsequent older inbox page cannot conceal the newer unread message.
         reduce_backend_event(
             &mut state,
@@ -3629,7 +3544,7 @@ mod tests {
             },
         );
         assert_eq!(state.workspace.channels[0].unread_count, 2);
-        assert!(state.sidebar.sections.iter().any(|s| s.title == "Unread"));
+        assert!(sidebar_shows_unread(&state));
         // Older inbox metadata must not overwrite the badge snapshot.
         reduce_backend_event(
             &mut state,
@@ -3665,7 +3580,7 @@ mod tests {
             },
         );
         assert_eq!(state.workspace.channels[0].unread_count, 0);
-        assert!(!state.sidebar.sections.iter().any(|s| s.title == "Unread"));
+        assert!(!sidebar_shows_unread(&state));
         assert_eq!(state.timeline.unread_marker, Some(MessageId::new("43")));
     }
 
@@ -4217,6 +4132,15 @@ mod tests {
         assert_eq!(state.thread.replies.len(), 1);
     }
 
+    fn sidebar_shows_unread(state: &UiState) -> bool {
+        state
+            .sidebar
+            .sections
+            .iter()
+            .flat_map(|section| &section.rows)
+            .any(|row| row.unread_count > 0 || row.mention_count > 0)
+    }
+
     fn dm_summary(id: &str, title: &str) -> ConversationSummary {
         ConversationSummary {
             id: ConversationId::new(id),
@@ -4515,103 +4439,34 @@ mod tests {
     }
 
     #[test]
-    fn unread_team_rows_are_filtered_independently_of_the_full_team_and_expanded() {
+    fn conversations_lead_and_a_team_with_unread_opens_expanded() {
         use crate::domain::conversation::{ConversationGroup, ConversationTeamType};
-        let mut read = channel_summary("read", "read-channel");
-        read.group = Some(ConversationGroup {
-            id: "team".into(),
-            display_name: "Team".into(),
-            team_type: ConversationTeamType::Complex,
-        });
-        let mut unread = read.clone();
-        unread.id = ConversationId::new("unread");
-        unread.unread_count = 1;
-        let mut mention = read.clone();
-        mention.id = ConversationId::new("mention");
-        mention.mention_count = 1;
-        let mut muted = unread.clone();
-        muted.id = ConversationId::new("muted");
-        muted.muted = true;
-        let mut retained = read.clone();
-        retained.id = ConversationId::new("retained");
+        let team = |id: &str, name: &str| {
+            let mut summary = channel_summary(id, "general");
+            summary.group = Some(ConversationGroup {
+                id: name.into(),
+                display_name: name.into(),
+                team_type: ConversationTeamType::Complex,
+            });
+            summary
+        };
+        let quiet = team("quiet", "Quiet");
+        let mut busy = team("busy", "Busy");
+        busy.unread_count = 1;
         let sections = build_sidebar_sections(
-            &[read, unread, mention, muted, retained.clone()],
-            &[],
+            &[quiet, busy],
+            &[dm_summary("dm", "alice")],
             &WorkspaceId::new("ws"),
             &HashMap::new(),
-            Some(&retained.id),
         );
-        let unread = sections
+        let ids = sections
             .iter()
-            .find(|section| section.id.as_ref().unwrap().0 == "unread")
-            .unwrap();
-        assert!(!unread.collapsed);
-        let ids = unread
-            .rows
-            .iter()
-            .filter_map(|row| row.route.as_ref())
-            .map(|route| match route {
-                Route::Channel { channel_id, .. } => channel_id.0.as_str(),
-                _ => panic!("expected a channel"),
-            })
+            .map(|section| (section.id.as_ref().unwrap().0.as_str(), section.collapsed))
             .collect::<Vec<_>>();
-        assert_eq!(ids, ["mention", "retained", "unread"]);
         assert_eq!(
-            sections
-                .iter()
-                .find(|section| section.id.as_ref().unwrap().0 == "group_team")
-                .unwrap()
-                .rows
-                .len(),
-            5
+            ids,
+            [("dms", false), ("group_Busy", false), ("group_Quiet", true)]
         );
-    }
-
-    #[test]
-    fn active_unread_row_survives_read_acknowledgement_until_navigation_away() {
-        let mut state = UiState::default();
-        let workspace = WorkspaceId::new("ws");
-        state.workspace.active_workspace_id = Some(workspace.clone());
-        let mut unread = dm_summary("unread", "alice");
-        unread.unread_count = 2;
-        state.workspace.direct_messages = vec![unread, dm_summary("other", "bob")];
-        refresh_sidebar(&mut state);
-        let route = Route::DirectMessage {
-            workspace_id: workspace.clone(),
-            dm_id: DmId::new("unread"),
-        };
-        reduce_ui_action(&mut state, UiAction::Navigate(route.clone()));
-        reduce_backend_event(
-            &mut state,
-            BackendEvent::ConversationUnreadChanged {
-                conversation_id: ConversationId::new("unread"),
-                unread_count: 0,
-                mention_count: 0,
-                read_upto: None,
-            },
-        );
-        assert_eq!(state.workspace.direct_messages[0].unread_count, 0);
-        let row = &state
-            .sidebar
-            .sections
-            .iter()
-            .find(|s| s.title == "Unread")
-            .unwrap()
-            .rows[0];
-        assert_eq!(
-            row.unread_count, 0,
-            "retaining the row must not invent unread state"
-        );
-        reduce_ui_action(&mut state, UiAction::Navigate(route));
-        assert!(state.sidebar.sections.iter().any(|s| s.title == "Unread"));
-        reduce_ui_action(
-            &mut state,
-            UiAction::Navigate(Route::DirectMessage {
-                workspace_id: workspace,
-                dm_id: DmId::new("other"),
-            }),
-        );
-        assert!(state.sidebar.sections.iter().all(|s| s.title != "Unread"));
     }
 
     #[test]
@@ -5005,7 +4860,6 @@ mod tests {
             &[dm.clone()],
             &workspace_id,
             &HashMap::new(),
-            None,
         );
         let flat = sections
             .iter()
@@ -5023,10 +4877,6 @@ mod tests {
         );
         assert!(sections.iter().any(|s| s.title == "Engineering"));
         assert!(!sections.iter().any(|s| s.title == "Finance"));
-        assert_eq!(
-            sections.iter().find(|s| s.title == "Unread").unwrap().rows[0].label,
-            "Finance"
-        );
         let mut state = UiState::default();
         state.workspace.channels = vec![simple.clone(), complex];
         state.workspace.direct_messages = vec![dm];
@@ -5076,44 +4926,6 @@ mod tests {
                 .unwrap()
                 .team_type,
             ConversationTeamType::Complex
-        );
-    }
-
-    #[test]
-    fn unread_section_includes_channels_with_unread_messages() {
-        let workspace_id = WorkspaceId::new("ws");
-        let mut channel = channel_summary("kb_conv:general", "general");
-        channel.unread_count = 2;
-        channel.last_activity_ms = 2_000;
-
-        let mut dm = dm_summary("kb_conv:dm_alice", "alice");
-        dm.unread_count = 1;
-        dm.last_activity_ms = 1_000;
-
-        let sections =
-            build_sidebar_sections(&[channel], &[dm], &workspace_id, &HashMap::new(), None);
-        let unread = sections
-            .iter()
-            .find(|section| section.id.as_ref().is_some_and(|id| id.0 == "unread"))
-            .expect("unread section should exist");
-
-        assert!(
-            unread.rows.iter().any(|row| {
-                matches!(
-                    row.route,
-                    Some(Route::Channel { ref channel_id, .. }) if channel_id.0 == "kb_conv:general"
-                )
-            }),
-            "unread section should include channels with unread_count > 0"
-        );
-        assert!(
-            unread.rows.iter().any(|row| {
-                matches!(
-                    row.route,
-                    Some(Route::DirectMessage { ref dm_id, .. }) if dm_id.0 == "kb_conv:dm_alice"
-                )
-            }),
-            "unread section should keep unread direct messages"
         );
     }
 

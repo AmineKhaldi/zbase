@@ -67,7 +67,7 @@ use crate::{
         right_pane::{RightPaneHost, RightPaneResizeDrag},
         selectable_text::SelectableText,
         shell_border, shell_border_strong,
-        sidebar::{Sidebar, SidebarChrome, SidebarHost, SidebarMenu},
+        sidebar::{Sidebar, SidebarChrome, SidebarHandles, SidebarHost, SidebarMenu},
         subtle_surface, text_primary, text_secondary, tint, with_theme, with_window_active,
     },
 };
@@ -77,8 +77,8 @@ use gpui_kit::{
     CursorStyle, DispatchPhase, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
     ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement, PathPromptOptions, Render, RenderImage, ScrollEvent, ScrollHandle,
-    StatefulInteractiveElement, StyleRefinement, Styled, Subscription, UniformListScrollHandle,
-    WeakEntity, Window, canvas, div, px, rgb,
+    StatefulInteractiveElement, StyleRefinement, Styled, Subscription, WeakEntity, Window, canvas,
+    div, px, rgb,
 };
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -362,8 +362,7 @@ pub struct AppWindow {
     splash_shown_at: Instant,
     splash_boot_ready: bool,
     pending_file_upload_caption_focus: bool,
-    sidebar_scroll_handle: ScrollHandle,
-    sidebar_recent_scroll: UniformListScrollHandle,
+    sidebar_handles: SidebarHandles,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -434,8 +433,7 @@ struct CachedSidebarView {
     owner: WeakEntity<AppWindow>,
     state: SidebarViewState,
     hovered_row: Option<String>,
-    scroll_handle: ScrollHandle,
-    recent_scroll: UniformListScrollHandle,
+    handles: SidebarHandles,
     /// The pop-up menu showing, if any.
     menu: Option<SidebarMenu>,
     /// A press outside that just closed a menu; the same press must not
@@ -526,17 +524,12 @@ impl BenchScriptConfig {
 }
 
 impl CachedSidebarView {
-    fn new(
-        owner: WeakEntity<AppWindow>,
-        state: SidebarViewState,
-        recent_scroll: UniformListScrollHandle,
-    ) -> Self {
+    fn new(owner: WeakEntity<AppWindow>, state: SidebarViewState, handles: SidebarHandles) -> Self {
         Self {
             owner,
             state,
             hovered_row: None,
-            scroll_handle: ScrollHandle::new(),
-            recent_scroll,
+            handles,
             menu: None,
             menu_dismissed: None,
         }
@@ -578,8 +571,7 @@ impl Render for CachedSidebarView {
                     &self.state.conversation_avatars,
                     &self.state.current_route,
                     self.hovered_row.as_deref(),
-                    &self.scroll_handle,
-                    &self.recent_scroll,
+                    &self.handles,
                     chrome,
                     cx,
                 )
@@ -691,6 +683,15 @@ impl SidebarHost for CachedSidebarView {
         cx.defer(move |cx| {
             let _ = owner.update(cx, |app_window, cx| {
                 app_window.toggle_sidebar_section_click(section_id, cx);
+            });
+        });
+    }
+
+    fn sidebar_save_conversations_share(&mut self, share: Option<f32>, cx: &mut Context<Self>) {
+        let owner = self.owner.clone();
+        cx.defer(move |cx| {
+            let _ = owner.update(cx, |app_window, _| {
+                app_window.save_conversations_share(share);
             });
         });
     }
@@ -810,6 +811,10 @@ impl SidebarHost for AppWindow {
         self.reorder_sidebar_section(dragged_id, target_id, cx);
     }
 
+    fn sidebar_save_conversations_share(&mut self, share: Option<f32>, _: &mut Context<Self>) {
+        self.save_conversations_share(share);
+    }
+
     fn sidebar_navigate_to(&mut self, route: Route, window: &mut Window, cx: &mut Context<Self>) {
         self.navigate_to(route, window, cx);
     }
@@ -877,6 +882,7 @@ impl AppWindow {
         let (video_result_sender, video_result_receiver) = mpsc::channel();
         let (og_result_sender, og_result_receiver) = mpsc::channel();
         let (github_pr_result_sender, github_pr_result_receiver) = mpsc::channel();
+        let sidebar_handles = SidebarHandles::new(models.settings.sidebar_conversations_share);
 
         Self {
             update_ui: updates::UpdateUi::new(),
@@ -993,8 +999,7 @@ impl AppWindow {
             splash_shown_at: Instant::now(),
             splash_boot_ready: false,
             pending_file_upload_caption_focus: false,
-            sidebar_scroll_handle: ScrollHandle::new(),
-            sidebar_recent_scroll: UniformListScrollHandle::new(),
+            sidebar_handles,
         }
     }
 
@@ -2835,7 +2840,6 @@ impl AppWindow {
             route_for_conversation_id(&self.models.app.active_workspace_id, &conversation_id);
         self.models.navigate_to(route.clone());
         self.dispatch_ui_action(UiAction::Navigate(route.clone()));
-        self.models.expand_section_for_route(&route);
         self.reset_timeline_scroll_state();
         self.reset_thread_scroll_state();
         self.sync_inputs_from_models(cx);
@@ -3018,6 +3022,13 @@ impl AppWindow {
             }
             DemoScene::ChatGrouped | DemoScene::ChatPreviewsGrouped => {
                 self.set_sidebar_mode(crate::models::settings_model::SidebarMode::Grouped, cx);
+            }
+            DemoScene::ChatGroupedCollapsed => {
+                self.set_sidebar_mode(crate::models::settings_model::SidebarMode::Grouped, cx);
+                self.toggle_sidebar_section_click(
+                    SidebarSectionId::new(format!("group_{}", demo::DEMO_TEAM_ID)),
+                    cx,
+                );
             }
             DemoScene::ChatStates => {
                 let mut events = demo::demo_send_state_messages()
@@ -3259,11 +3270,7 @@ impl AppWindow {
         if self.sidebar_view.is_none() {
             let owner = cx.entity().downgrade();
             self.sidebar_view = Some(cx.new(|_| {
-                CachedSidebarView::new(
-                    owner,
-                    sidebar_state.clone(),
-                    self.sidebar_recent_scroll.clone(),
-                )
+                CachedSidebarView::new(owner, sidebar_state.clone(), self.sidebar_handles.clone())
             }));
         }
         if let Some(sidebar_view) = self.sidebar_view.as_ref() {
@@ -4029,9 +4036,6 @@ impl AppWindow {
         if sidebar_sections_changed || workspace_changed || previews_changed {
             self.models.apply_saved_sidebar_order();
         }
-        if route_changed {
-            self.models.expand_section_for_route(&next_route);
-        }
 
         self.models.restore_sidebar_mode();
         if sidebar_sections_changed
@@ -4049,7 +4053,7 @@ impl AppWindow {
         }
 
         if route_changed {
-            self.reveal_recent_sidebar_route(&next_route);
+            self.reveal_sidebar_route(&next_route);
         }
 
         let sidebar_avatar_sig = sidebar_avatar_inputs_signature(
@@ -4746,6 +4750,13 @@ impl AppWindow {
         );
     }
 
+    fn save_conversations_share(&mut self, share: Option<f32>) {
+        if self.models.settings.sidebar_conversations_share != share {
+            self.models.settings.sidebar_conversations_share = share;
+            self.persist_settings();
+        }
+    }
+
     fn persist_settings(&mut self) {
         let _ = SettingsStore::save_to_disk(&self.models.settings);
     }
@@ -5168,7 +5179,6 @@ impl AppWindow {
                 message_id: None,
             });
         }
-        self.models.expand_section_for_route(&route);
         self.reset_timeline_scroll_state();
         self.reset_thread_scroll_state();
         if matches!(route, Route::Channel { .. } | Route::DirectMessage { .. }) {
@@ -5359,7 +5369,6 @@ impl AppWindow {
         // LoadConversation spawns a background task that sends TimelineReplaced with recent
         // messages, which can race with JumpToMessage and override the scroll position.
         self.dispatch_ui_action(UiAction::NavigateQuiet(route.clone()));
-        self.models.expand_section_for_route(&route);
         self.models.timeline.pending_scroll_target = Some(message_id.clone());
         self.models.timeline.highlighted_message_id = Some(message_id.clone());
         self.jump_to_message_active = true;
@@ -5432,7 +5441,6 @@ impl AppWindow {
         if self.models.navigate_back() {
             let route = self.models.navigation.current.clone();
             self.dispatch_ui_action(UiAction::Navigate(route.clone()));
-            self.models.expand_section_for_route(&route);
             self.reset_timeline_scroll_state();
             self.reset_thread_scroll_state();
             if matches!(route, Route::Channel { .. } | Route::DirectMessage { .. }) {
@@ -5449,7 +5457,6 @@ impl AppWindow {
         if self.models.navigate_forward() {
             let route = self.models.navigation.current.clone();
             self.dispatch_ui_action(UiAction::Navigate(route.clone()));
-            self.models.expand_section_for_route(&route);
             self.reset_timeline_scroll_state();
             self.reset_thread_scroll_state();
             if matches!(route, Route::Channel { .. } | Route::DirectMessage { .. }) {
@@ -6738,16 +6745,31 @@ impl AppWindow {
         self.refresh(cx);
     }
 
-    fn reveal_recent_sidebar_route(&self, route: &Route) {
-        if self.models.sidebar.mode == SidebarMode::Recent
-            && let Some(index) = self
-                .models
-                .sidebar
-                .visible_recent_rows()
-                .position(|recent| &recent.row.route == route)
-        {
-            self.sidebar_recent_scroll
-                .scroll_to_item(index, gpui_kit::ScrollStrategy::Center);
+    fn reveal_sidebar_route(&self, route: &Route) {
+        use crate::models::sidebar_model::GroupedPosition;
+        let sidebar = &self.models.sidebar;
+        match sidebar.mode {
+            SidebarMode::Recent => {
+                if let Some(index) = sidebar
+                    .visible_recent_rows()
+                    .position(|recent| &recent.row.route == route)
+                {
+                    self.sidebar_handles
+                        .recent
+                        .scroll_to_item(index, gpui_kit::ScrollStrategy::Center);
+                }
+            }
+            SidebarMode::Grouped => {
+                match sidebar.grouped_position(route, &self.models.navigation.current) {
+                    Some(GroupedPosition::Conversations(index)) => {
+                        self.sidebar_handles.conversations.scroll_to_item(index);
+                    }
+                    Some(GroupedPosition::Teams(index)) => {
+                        self.sidebar_handles.teams.scroll_to_item(index);
+                    }
+                    None => {}
+                }
+            }
         }
     }
 
@@ -6759,14 +6781,14 @@ impl AppWindow {
         if self.models.set_sidebar_style(style) {
             self.sidebar_fit_pending = true;
             self.persist_settings();
-            self.reveal_recent_sidebar_route(&self.models.navigation.current);
+            self.reveal_sidebar_route(&self.models.navigation.current);
             self.refresh(cx);
         }
     }
 
     pub(crate) fn set_sidebar_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>) {
         self.models.set_sidebar_mode(mode);
-        self.reveal_recent_sidebar_route(&self.models.navigation.current);
+        self.reveal_sidebar_route(&self.models.navigation.current);
         self.persist_settings();
         self.refresh(cx);
     }
@@ -6783,7 +6805,7 @@ impl AppWindow {
             .sidebar
             .sections
             .iter()
-            .filter(|s| s.collapsed && s.id.0 != "unread")
+            .filter(|s| s.collapsed)
             .map(|s| s.id.0.clone())
             .collect();
         self.models
@@ -6807,7 +6829,6 @@ impl AppWindow {
             .sidebar
             .sections
             .iter()
-            .filter(|section| section.id.0 != "unread")
             .map(|s| s.id.0.clone())
             .collect();
         self.models
@@ -9469,11 +9490,14 @@ impl AppWindow {
     fn navigate_sidebar(&mut self, direction: isize, window: &mut Window, cx: &mut Context<Self>) {
         self.models.move_sidebar_highlight(direction);
         if let Some(route) = self.models.sidebar.highlighted_route.clone() {
-            self.reveal_recent_sidebar_route(&route);
+            // Reveal against the new current route: collapsed teams also list
+            // the open channel, so positions depend on which one is open.
             if route != self.models.navigation.current {
-                self.navigate_to(route, window, cx);
+                self.navigate_to(route.clone(), window, cx);
+                self.reveal_sidebar_route(&route);
                 return;
             }
+            self.reveal_sidebar_route(&route);
         }
         self.refresh(cx);
     }
@@ -9972,8 +9996,7 @@ impl Render for AppWindow {
                                     &self.sidebar_conversation_avatars,
                                     &self.models.navigation.current,
                                     None,
-                                    &self.sidebar_scroll_handle,
-                                    &self.sidebar_recent_scroll,
+                                    &self.sidebar_handles,
                                     SidebarChrome {
                                         update_available: self.update_ui.snapshot.has_reminder(),
                                         reduced_motion: self.models.settings.reduced_motion,

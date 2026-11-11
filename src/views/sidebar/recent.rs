@@ -1,6 +1,5 @@
 use super::{
-    CompactRow, ROW_AVATAR_SIZE_PX, RowActivity, RowColors, RowLook, RowSelection, Sidebar,
-    SidebarHost,
+    CompactRow, ROW_AVATAR_SIZE_PX, RowActivity, RowColors, RowLook, Sidebar, SidebarHost,
     preview_row::{PREVIEW_AVATAR_PX, PreviewRow, title_segments},
     team_asset,
 };
@@ -84,7 +83,8 @@ pub(super) fn render<H: SidebarHost>(
     })
     .track_scroll(scroll)
     .flex_1()
-    .min_h(px(0.));
+    .min_h(px(0.))
+    .pr(px(super::SCROLLBAR_GUTTER_PX));
     super::scroll_viewport("sidebar-recent-bounce", scroll, list, reduced_motion)
 }
 
@@ -113,15 +113,14 @@ fn render_row<H: SidebarHost>(
         live,
     } = state;
     let row = &recent.row;
-    // Recent lists every conversation once, so its row is always the selection.
-    let selection = RowSelection::of(row, current, true);
+    let selected = &row.route == current;
     let activity = RowActivity::of(row);
     let route_key = row.route.label();
     let row_id = format!("sidebar-recent-{route_key}");
     let is_hovered = hovered == Some(row_id.as_str()) || highlighted == Some(&row.route);
-    let colors = RowColors::new(selection.is_full(), is_hovered, &activity);
+    let colors = RowColors::new(selected, is_hovered, &activity);
     let team_label = recent.team_label(ambiguous).map(str::to_owned);
-    let emphasized = activity.is_unread() && !selection.is_full();
+    let emphasized = activity.is_unread() && !selected;
     match look {
         RowLook::Previews { compact_time } => {
             // A channel shows its team's logo; a simple team keeps its mark.
@@ -141,13 +140,13 @@ fn render_row<H: SidebarHost>(
                 title: title_segments(row.label.clone(), team_label, &colors, emphasized),
                 lead,
                 colors: &colors,
-                selected: selection.is_full(),
+                selected,
                 live: row.route.conversation_key().and_then(|key| live.get(key)),
                 compact_time,
             }
             .render(cx)
         }
-        RowLook::Compact => {
+        RowLook::Compact | RowLook::Channel => {
             let label = if recent.is_channel {
                 format!("#{}", row.label)
             } else {
@@ -169,7 +168,8 @@ fn render_row<H: SidebarHost>(
                 title: title_segments(label, team_label, &colors, emphasized),
                 leading,
                 colors: &colors,
-                selection,
+                selected,
+                height: look.row_px(),
             }
             .render(cx)
         }

@@ -97,7 +97,6 @@ pub struct UiSidebarSectionState {
 
 #[derive(Clone, Debug, Default)]
 pub struct UiSidebarState {
-    pub retained_unread_conversation: Option<ConversationId>,
     pub sections: Vec<UiSidebarSectionState>,
     pub filter: String,
     pub highlighted_route: Option<Route>,

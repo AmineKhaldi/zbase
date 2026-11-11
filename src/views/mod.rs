@@ -638,6 +638,10 @@ pub fn shell_border_strong() -> Hsla {
     }
 }
 
+pub fn sidebar_splitter_bg() -> u32 {
+    if is_dark_theme() { 0x181818 } else { 0xe9ecf0 }
+}
+
 /// The selected sidebar row: a card raised off the sidebar, white in light mode
 /// like the conversation beside it, one step lighter than the sidebar in dark.
 pub fn sidebar_card_bg() -> u32 {

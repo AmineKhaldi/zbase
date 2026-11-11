@@ -1061,7 +1061,6 @@ impl AppModels {
         }
         let section = self.sidebar.sections.remove(from);
         self.sidebar.sections.insert(to, section);
-        self.sidebar.order_unread_groups();
     }
 
     pub fn apply_saved_sidebar_order(&mut self) {
@@ -1080,30 +1079,19 @@ impl AppModels {
                 pos_a.cmp(&pos_b)
             });
         }
-        if let Some(unread_idx) = self
+        if let Some(index) = self
             .sidebar
             .sections
             .iter()
-            .position(|section| section.id.0 == "unread")
+            .position(|section| section.is_conversations())
         {
-            let unread = self.sidebar.sections.remove(unread_idx);
-            self.sidebar.sections.insert(0, unread);
+            let conversations = self.sidebar.sections.remove(index);
+            self.sidebar.sections.insert(0, conversations);
         }
         if let Some(collapsed_set) = self.settings.sidebar_collapsed_sections.get(account_key) {
             for section in &mut self.sidebar.sections {
-                if section.id.0 == "unread" {
-                    continue;
-                }
-                section.collapsed = collapsed_set.contains(&section.id.0);
-            }
-        }
-        self.sidebar.order_unread_groups();
-    }
-
-    pub fn expand_section_for_route(&mut self, route: &Route) {
-        for section in &mut self.sidebar.sections {
-            if section.rows.iter().any(|row| &row.route == route) {
-                section.collapsed = false;
+                section.collapsed =
+                    !section.is_conversations() && collapsed_set.contains(&section.id.0);
             }
         }
     }
@@ -2270,11 +2258,11 @@ impl AppModels {
                 .map(|recent| recent.row.route.clone())
                 .collect();
         }
+        let current = &self.navigation.current;
         self.sidebar
             .sections
             .iter()
-            .filter(|section| !section.collapsed)
-            .flat_map(|section| &section.rows)
+            .flat_map(|section| section.visible_rows(current))
             .filter(|row| {
                 filter.is_empty()
                     || row.full_label().to_lowercase().contains(&filter)

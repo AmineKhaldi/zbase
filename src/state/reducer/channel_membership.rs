@@ -47,9 +47,6 @@ pub(super) fn channel_left(
         .workspace
         .left_conversation_ids
         .insert(conversation_id.clone());
-    if state.sidebar.retained_unread_conversation.as_ref() == Some(&conversation_id) {
-        state.sidebar.retained_unread_conversation = None;
-    }
     merge_workspace_conversations(state, Vec::new(), Vec::new());
     refresh_sidebar(state);
     if state.timeline.conversation_id.as_ref() != Some(&conversation_id) {
@@ -179,11 +176,9 @@ mod tests {
         let id = summary.id.clone();
         state.workspace.channels.push(summary.clone());
         state.timeline.conversation_id = Some(id.clone());
-        state.sidebar.retained_unread_conversation = Some(id.clone());
         state.thread.open = true;
         channel_left(&mut state, WorkspaceId::new("ws"), id.clone());
         assert!(state.workspace.channels.is_empty());
-        assert!(state.sidebar.retained_unread_conversation.is_none());
         assert!(state.timeline.conversation_id.is_none());
         assert!(!state.thread.open);
         merge_workspace_conversations(&mut state, vec![summary.clone()], vec![]);
