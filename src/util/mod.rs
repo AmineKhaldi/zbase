@@ -8,4 +8,5 @@ pub mod fuzzy;
 pub mod interactive_qos;
 pub mod perf_harness;
 pub mod search_snippet;
+pub mod upload_staging;
 pub mod video_decoder;

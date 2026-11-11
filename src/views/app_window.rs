@@ -7216,6 +7216,7 @@ impl AppWindow {
         cx: &mut Context<Self>,
     ) {
         self.clear_hovered_message_immediate(cx);
+        let paths = crate::util::upload_staging::stage_for_upload(paths);
         if !self.models.open_file_upload_lightbox(paths, target) {
             return;
         }
