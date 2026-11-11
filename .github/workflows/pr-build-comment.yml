@@ -1,0 +1,32 @@
+name: PR build downloads
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
+concurrency:
+  group: pr-build-downloads-${{ github.event.workflow_run.head_repository.id }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # This job has comment permission: execute only trusted default-branch code.
+      # Never check out the PR head or download/execute its artifacts here.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Update executable download links
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/comment_pr_builds.py
