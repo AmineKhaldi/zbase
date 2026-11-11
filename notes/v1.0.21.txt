@@ -1,0 +1,9 @@
+## What's Changed
+* Fix unread dots returning after a channel is read by @cameroncooper in https://github.com/cameroncooper/zbase/pull/52
+* Adopt GPUI Kit with optional Fast backend and native scrolling by @cameroncooper in https://github.com/cameroncooper/zbase/pull/54
+* Add server-backed conversation notification settings by @hoffmang9 in https://github.com/cameroncooper/zbase/pull/55
+
+## New Contributors
+* @hoffmang9 made their first contribution in https://github.com/cameroncooper/zbase/pull/55
+
+**Full Changelog**: https://github.com/cameroncooper/zbase/compare/v1.0.20...v1.0.21
