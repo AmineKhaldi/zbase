@@ -14,6 +14,8 @@ pub enum NotificationLevel {
 }
 
 impl NotificationLevel {
+    pub const ALL: [Self; 3] = [Self::All, Self::MentionsOnly, Self::Nothing];
+
     pub fn label(self) -> &'static str {
         match self {
             Self::All => "On any activity",

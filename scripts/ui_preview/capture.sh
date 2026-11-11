@@ -20,7 +20,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ALL_SCENES=(files-media files-documents files-empty chat chat-grouped chat-previews chat-previews-grouped chat-grouped-collapsed chat-previews-live identity-menu
-  order-menu chat-states thread thread-empty profile preferences quick-switcher
+  order-menu chat-states details details-dropdown thread thread-empty profile preferences quick-switcher
   quick-switcher-search search search-empty dm members members-filter-empty new-chat offline
   inactive composer-format reaction-tooltip reaction-tooltip-long)
 THEMES=(light dark)

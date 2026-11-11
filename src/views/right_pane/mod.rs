@@ -106,6 +106,7 @@ impl RightPaneHost {
         profile_social_scroll: &ScrollHandle,
         unseen_reply_count: usize,
         capabilities: &BackendCapabilities,
+        notification_selects: &[Entity<crate::views::select::StyledSelect>; 2],
         cx: &mut Context<AppWindow>,
     ) -> AnyElement {
         let content = match navigation.right_pane {
@@ -123,9 +124,13 @@ impl RightPaneHost {
                 unseen_reply_count,
                 cx,
             ),
-            RightPaneMode::Details => {
-                render_details_panel(conversation, timeline, capabilities, cx)
-            }
+            RightPaneMode::Details => render_details_panel(
+                conversation,
+                timeline,
+                capabilities,
+                notification_selects,
+                cx,
+            ),
             RightPaneMode::Members => render_members_panel(
                 conversation,
                 members_filter_input,

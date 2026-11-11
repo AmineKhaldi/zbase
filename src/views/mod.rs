@@ -21,6 +21,7 @@ mod quick_react_placement;
 pub mod right_pane;
 pub mod scaled_image;
 pub mod search;
+pub mod select;
 pub mod selectable_text;
 pub mod settings_window;
 pub mod sidebar;

@@ -49,6 +49,8 @@ pub enum DemoScene {
     SearchEmpty,
     Dm,
     Members,
+    Details,
+    DetailsDropdown,
     FilesMedia,
     FilesDocuments,
     FilesEmpty,
@@ -66,7 +68,7 @@ pub enum DemoScene {
 }
 
 impl DemoScene {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 31] = [
         Self::Chat,
         Self::ChatGrouped,
         Self::ChatPreviews,
@@ -86,6 +88,8 @@ impl DemoScene {
         Self::SearchEmpty,
         Self::Dm,
         Self::Members,
+        Self::Details,
+        Self::DetailsDropdown,
         Self::FilesMedia,
         Self::FilesDocuments,
         Self::FilesEmpty,
@@ -119,6 +123,8 @@ impl DemoScene {
             Self::SearchEmpty => "search-empty",
             Self::Dm => "dm",
             Self::Members => "members",
+            Self::Details => "details",
+            Self::DetailsDropdown => "details-dropdown",
             Self::FilesMedia => "files-media",
             Self::FilesDocuments => "files-documents",
             Self::FilesEmpty => "files-empty",

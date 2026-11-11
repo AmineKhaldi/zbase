@@ -14,7 +14,10 @@ use crate::{
         affinity::Affinity,
         attachment::AttachmentSource,
         backend::{BackendCapabilities, ProviderMessageRef},
-        channel_details::{ChannelDetails, ChannelMemberPreview, ConversationNotificationSettings},
+        channel_details::{
+            ChannelDetails, ChannelMemberPreview, ConversationNotificationSettings,
+            NotificationLevel,
+        },
         conversation::{ConversationKind, ConversationSummary},
         github_pr::GithubPrRef,
         ids::{ConversationId, MessageId, SidebarSectionId, UserId, WorkspaceId},
@@ -66,6 +69,7 @@ use crate::{
         overlays::OverlayHost,
         panel_alt_bg, panel_bg, panel_surface,
         right_pane::{RightPaneHost, RightPaneResizeDrag},
+        select::{SelectChanged, StyledSelect},
         selectable_text::SelectableText,
         shell_border, shell_border_strong,
         sidebar::{Sidebar, SidebarChrome, SidebarHandles, SidebarHost, SidebarMenu},
@@ -279,6 +283,7 @@ pub struct AppWindow {
     thread_has_text: bool,
     sidebar_filter_input: Entity<TextField>,
     members_filter_input: Entity<TextField>,
+    notification_selects: [Entity<StyledSelect>; 2],
     selectable_texts: HashMap<String, Entity<SelectableText>>,
     subscriptions: Vec<Subscription>,
     thread_resize_drag: Option<ThreadResizeDrag>,
@@ -875,6 +880,7 @@ impl AppWindow {
         thread_input: Entity<TextField>,
         sidebar_filter_input: Entity<TextField>,
         members_filter_input: Entity<TextField>,
+        notification_selects: [Entity<StyledSelect>; 2],
     ) -> Self {
         let last_timeline_message_count = timeline_message_count(&models);
         let last_timeline_latest_message_id = latest_timeline_message_id(&models.timeline.rows);
@@ -929,6 +935,7 @@ impl AppWindow {
             thread_has_text: false,
             sidebar_filter_input,
             members_filter_input,
+            notification_selects,
             selectable_texts: HashMap::new(),
             subscriptions: Vec::new(),
             thread_resize_drag: None,
@@ -1045,6 +1052,12 @@ impl AppWindow {
             false
         });
         self.subscriptions = vec![
+            cx.subscribe(&self.notification_selects[0], |this, _, event: &SelectChanged, cx| {
+                this.notification_level_selected(false, event, cx);
+            }),
+            cx.subscribe(&self.notification_selects[1], |this, _, event: &SelectChanged, cx| {
+                this.notification_level_selected(true, event, cx);
+            }),
             cx.on_app_quit(|this, cx| { this.save_update_session_on_quit(cx); std::future::ready(()) }),
             cx.observe_window_bounds(window, |_, _, cx| cx.notify()),
             cx.on_app_quit(|this, _| {
@@ -3153,6 +3166,23 @@ impl AppWindow {
             }
             DemoScene::Profile => {
                 self.open_user_profile_panel(UserId::new(demo::DEMO_PROFILE_USER), window, cx);
+            }
+            DemoScene::Details | DemoScene::DetailsDropdown => {
+                self.toggle_simple_pane(RightPaneMode::Details, cx);
+                if scene == DemoScene::DetailsDropdown {
+                    let select = self.notification_selects[0].clone();
+                    select.update(cx, |select, cx| {
+                        select.set_value(
+                            &self.models.conversation.summary.id.0,
+                            0,
+                            self.resolved_theme,
+                            cx,
+                        )
+                    });
+                    window.defer(cx, move |window, cx| {
+                        select.update(cx, |select, cx| select.set_open(true, window, cx))
+                    });
+                }
             }
             DemoScene::Members => {
                 self.toggle_members_pane_action(&commands::ToggleMembersPane, window, cx);
@@ -6700,6 +6730,40 @@ impl AppWindow {
         }
     }
 
+    fn notification_level_selected(
+        &mut self,
+        mobile: bool,
+        event: &SelectChanged,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(level) = NotificationLevel::ALL.get(event.index).copied() else {
+            return;
+        };
+        let conversation_id = ConversationId::new(event.scope.clone());
+        if conversation_id != self.models.conversation.summary.id {
+            return;
+        }
+        let mut settings = self
+            .models
+            .conversation
+            .details
+            .as_ref()
+            .filter(|details| details.conversation_id == conversation_id)
+            .map(|details| details.notifications)
+            .unwrap_or_else(|| {
+                self.models.conversation_notification_settings(
+                    &conversation_id,
+                    self.models.conversation.summary.muted,
+                )
+            });
+        if mobile {
+            settings.mobile = level;
+        } else {
+            settings.desktop = level;
+        }
+        self.set_conversation_notification_settings(conversation_id, settings, cx);
+    }
+
     pub(crate) fn set_conversation_notification_settings(
         &mut self,
         conversation_id: ConversationId,
@@ -9825,6 +9889,11 @@ pub(super) fn window_exit_observer(
 impl Render for AppWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let render_t0 = Instant::now();
+        if self.models.navigation.right_pane != RightPaneMode::Details {
+            for select in &self.notification_selects {
+                select.update(cx, |select, cx| select.close(cx));
+            }
+        }
         window.set_rem_size(px(16. * self.models.settings.text_size.scale()));
         self.restore_update_session(window, cx);
         self.remember_update_focus(window, cx);
@@ -9943,6 +10012,7 @@ impl Render for AppWindow {
                         &self.profile_social_scroll,
                         self.thread_unseen_count,
                         &capabilities,
+                        &self.notification_selects,
                         cx,
                     );
                     div()
