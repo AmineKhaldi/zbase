@@ -86,6 +86,8 @@ pub enum GithubReviewState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GithubPrStatus {
     pub title: String,
+    /// Checks and reviews have arrived after the initial summary.
+    pub details_loaded: bool,
     pub state: GithubPrState,
     pub merged_by: Option<String>,
     pub additions: u32,

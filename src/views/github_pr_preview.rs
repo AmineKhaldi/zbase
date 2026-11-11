@@ -104,14 +104,14 @@ pub fn render_github_pr_preview(preview: &GithubPrPreview) -> Div {
         .gap_1p5()
         .mt_0p5()
         .map(|row| match status {
-            Some(status) => status_chips(row, status, preview.refreshing),
+            Some(status) if status.details_loaded => status_chips(row, status, preview.refreshing),
             None if preview.needs_auth => row.child(
                 div()
                     .text_xs()
                     .text_color(rgb(link()))
                     .child("Run `gh auth login` to see checks and reviews"),
             ),
-            None => row
+            _ => row
                 .child(skeleton(110., 20.))
                 .child(skeleton(80., 20.))
                 .child(skeleton(90., 20.)),

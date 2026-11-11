@@ -1945,18 +1945,50 @@ impl AppWindow {
         true
     }
 
-    /// PR links in the open conversation and thread, most recent first.
+    /// Fetch only on-screen timeline links and thread replies.
+    /// Offscreen history becomes eligible when the user scrolls to it.
     fn visible_github_pr_refs(&self) -> Vec<GithubPrRef> {
-        let timeline = self.models.timeline.rows.iter().rev().filter_map(|row| {
-            if let crate::models::timeline_model::TimelineRow::Message(message_row) = row {
-                Some(&message_row.message)
-            } else {
-                None
-            }
-        });
+        let viewport = self.timeline_list_state.viewport_bounds();
+        let visible = self
+            .models
+            .timeline
+            .rows
+            .iter()
+            .enumerate()
+            .rev()
+            .filter_map(|(index, row)| {
+                let bounds = self.timeline_list_state.bounds_for_item(index)?;
+                if bounds.bottom() <= viewport.top() || bounds.top() >= viewport.bottom() {
+                    return None;
+                }
+                match row {
+                    crate::models::timeline_model::TimelineRow::Message(row) => Some(&row.message),
+                    _ => None,
+                }
+            });
         let mut seen = HashSet::new();
         let mut refs = Vec::new();
-        for message in self.models.thread_pane.replies.iter().rev().chain(timeline) {
+        let thread_rows = if self.models.thread_pane.open {
+            crate::views::right_pane::build_thread_message_rows(
+                &self.models.thread_pane,
+                &self.models.timeline,
+            )
+        } else {
+            Vec::new()
+        };
+        let thread_viewport = self.thread_scroll.bounds();
+        let thread_offset = self.thread_scroll.offset().y;
+        let thread = thread_rows
+            .iter()
+            .enumerate()
+            .rev()
+            .filter_map(|(index, row)| {
+                let bounds = self.thread_scroll.bounds_for_item(index)?;
+                (bounds.bottom() + thread_offset > thread_viewport.top()
+                    && bounds.top() + thread_offset < thread_viewport.bottom())
+                .then_some(&row.message)
+            });
+        for message in visible.chain(thread) {
             for url in extract_link_urls_from_fragments(&message.fragments) {
                 if let Some(pr) = GithubPrRef::parse(&url)
                     && seen.insert(pr.clone())
@@ -1976,7 +2008,6 @@ impl AppWindow {
         {
             return false;
         }
-        self.github_pr_last_poll = Some(now);
         let attention_key = (
             self.models.timeline.conversation_id.clone(),
             self.window_is_focused,
@@ -1991,6 +2022,7 @@ impl AppWindow {
         if refs.is_empty() {
             return false;
         }
+        self.github_pr_last_poll = Some(now);
         let changed = self.github_pr_service.poll(
             &refs,
             self.window_is_focused,
@@ -2025,6 +2057,10 @@ impl AppWindow {
             for url in &urls {
                 self.og_service.schedule_fetch(url, &self.og_result_sender);
             }
+        }
+        if changed {
+            // Start the next queued batch on this tick rather than waiting a second.
+            self.github_pr_last_poll = None;
         }
         changed && self.refresh_github_pr_rows()
     }
@@ -4722,6 +4758,10 @@ impl AppWindow {
             self.jump_to_message_active = false;
         }
 
+        // Message loads and conversation switches should not wait for the periodic gate.
+        self.github_pr_last_poll = None;
+        self.poll_github_prs();
+
         let elapsed = t0.elapsed();
         self.perf_harness
             .record_duration(PerfTimer::SyncModelsFromStore, elapsed);
@@ -5814,6 +5854,7 @@ impl AppWindow {
             return;
         }
         // Kit owns scrolling. Observe actual movement for anchors, pagination and reads.
+        self.github_pr_last_poll = None;
         self.timeline_scroll_seq = self.timeline_scroll_seq.wrapping_add(1);
         self.sync_timeline_scroll_chrome();
         self.sync_timeline_view_markers();
@@ -5891,6 +5932,7 @@ impl AppWindow {
         if self.timeline_interactions_blocked_by_overlay() {
             return;
         }
+        self.github_pr_last_poll = None;
         if self.sync_scroll_indicators() {
             self.refresh(cx);
         }
