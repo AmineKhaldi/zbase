@@ -1578,6 +1578,7 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             mention_count,
             read_upto,
         } => {
+            remember_read_position(state, &conversation_id, read_upto.as_ref());
             let mut changed = false;
             for summary in state.workspace.channels.iter_mut() {
                 if summary.id == conversation_id {
@@ -1620,9 +1621,11 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             conversation_id,
             read_upto,
         } => {
+            remember_read_position(state, &conversation_id, read_upto.as_ref());
             if state.timeline.conversation_id.as_ref() == Some(&conversation_id) {
                 state.timeline.unread_marker = read_upto;
             }
+            refresh_sidebar(state);
         }
         BackendEvent::CallUpdated(_) => {}
         BackendEvent::SearchResults {
@@ -1741,6 +1744,22 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
     ReducerOutput::default()
 }
 
+fn remember_read_position(
+    state: &mut UiState,
+    conversation: &ConversationId,
+    read: Option<&MessageId>,
+) {
+    if let Some(read) = read.and_then(|id| id.0.parse::<u64>().ok()) {
+        // Another client can intentionally mark a conversation unread.
+        state
+            .backend
+            .confirmed_read_positions
+            .entry(conversation.clone())
+            .or_default()
+            .read = read;
+    }
+}
+
 fn apply_authoritative_badges(state: &mut UiState) {
     for summary in state
         .workspace
@@ -1748,10 +1767,27 @@ fn apply_authoritative_badges(state: &mut UiState) {
         .iter_mut()
         .chain(state.workspace.direct_messages.iter_mut())
     {
-        if let Some(binding) = state.backend.conversation_bindings.get(&summary.id)
-            && let Some(badges) = state.backend.conversation_badges.get(&binding.backend_id)
-        {
-            badges.apply(summary);
+        if let Some(binding) = state.backend.conversation_bindings.get(&summary.id) {
+            if let Some(badges) = state.backend.conversation_badges.get(&binding.backend_id) {
+                badges.apply(summary);
+            }
+            // Counts alone cannot make already-read visible content unread.
+            if binding.backend_id.0 == "keybase"
+                && let Some(position) = state.backend.confirmed_read_positions.get_mut(&summary.id)
+            {
+                if let Some(latest) = summary
+                    .last_message
+                    .as_ref()
+                    .and_then(|preview| preview.message_id.as_ref())
+                    .and_then(|id| id.0.parse::<u64>().ok())
+                {
+                    position.latest_visible = position.latest_visible.max(latest);
+                }
+                if position.latest_visible > 0 && position.read >= position.latest_visible {
+                    summary.unread_count = 0;
+                    summary.mention_count = 0;
+                }
+            }
         }
     }
 }
@@ -2175,6 +2211,15 @@ fn message_body_text_for_matching(msg: &MessageRecord) -> Option<String> {
 /// A message arrived in its conversation (live, sent or confirmed): it bumps the
 /// conversation's activity and becomes its preview when it is the newest.
 fn note_conversation_message(state: &mut UiState, message: &MessageRecord) {
+    if MessagePreview::from_message(message).is_some()
+        && let Some(latest) = message.id.0.parse::<u64>().ok()
+        && let Some(position) = state
+            .backend
+            .confirmed_read_positions
+            .get_mut(&message.conversation_id)
+    {
+        position.latest_visible = position.latest_visible.max(latest);
+    }
     let preview = MessagePreview::from_message(message);
     let mut activity_changed = false;
     for summary in conversation_summaries_mut(state, &message.conversation_id) {
@@ -2800,6 +2845,7 @@ fn merge_workspace_conversations(
 }
 
 fn refresh_sidebar(state: &mut UiState) {
+    apply_authoritative_badges(state);
     let workspace_id = state
         .workspace
         .active_workspace_id
@@ -3335,6 +3381,118 @@ mod tests {
             .fraction(),
             0.
         );
+    }
+
+    #[test]
+    fn confirmed_read_positions_prevent_old_badges_from_reviving_unread() {
+        use crate::domain::{
+            backend::{BackendId, ProviderConversationRef},
+            conversation::ConversationBadgeCounts,
+        };
+        use crate::state::bindings::ConversationBinding;
+        let mut state = UiState::default();
+        let id = ConversationId::new("kb_conv:abcd");
+        let mut summary = channel_summary(&id.0, "random");
+        summary.last_message = MessagePreview::from_message(&message(&id, "43", 100));
+        state.workspace.channels.push(summary.clone());
+        state.timeline.conversation_id = Some(id.clone());
+        state.backend.conversation_bindings.insert(
+            id.clone(),
+            ConversationBinding {
+                conversation_id: id.clone(),
+                backend_id: BackendId::new("keybase"),
+                account_id: AccountId::new("account"),
+                provider_conversation_ref: ProviderConversationRef::new(&id.0),
+            },
+        );
+        let badge = || BackendEvent::ConversationBadgesUpdated {
+            backend_id: BackendId::new("keybase"),
+            complete: true,
+            counts: HashMap::from([(
+                id.clone(),
+                ConversationBadgeCounts {
+                    unread_count: 12,
+                    badge_count: 0,
+                },
+            )]),
+        };
+        reduce_backend_event(&mut state, badge());
+        assert_eq!(state.workspace.channels[0].unread_count, 12);
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::ReadMarkerUpdated {
+                conversation_id: id.clone(),
+                read_upto: Some(MessageId::new("43")),
+            },
+        );
+        assert_eq!(
+            state.workspace.channels[0].unread_count, 0,
+            "confirmed read must clear the sidebar too"
+        );
+        let other = ConversationId::new("kb_conv:other");
+        reduce_ui_action(
+            &mut state,
+            UiAction::Navigate(Route::DirectMessage {
+                workspace_id: WorkspaceId::new("workspace"),
+                dm_id: crate::domain::ids::DmId::new(&other.0),
+            }),
+        );
+        assert_eq!(state.timeline.conversation_id.as_ref(), Some(&other));
+        // A background inbox refresh and badge snapshot can arrive much later,
+        // while this channel is no longer selected. Neither is a new message.
+        summary.unread_count = 12;
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::WorkspaceConversationsExtended {
+                workspace_id: WorkspaceId::new("workspace"),
+                channels: vec![summary.clone()],
+                direct_messages: vec![],
+                conversation_bindings: vec![],
+            },
+        );
+        assert_eq!(state.workspace.channels[0].unread_count, 0);
+        reduce_backend_event(&mut state, badge());
+        assert_eq!(
+            state.workspace.channels[0].unread_count, 0,
+            "a count cannot undo a confirmed read position"
+        );
+        // An intentional mark-unread from another client still takes effect.
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::ReadMarkerUpdated {
+                conversation_id: id.clone(),
+                read_upto: Some(MessageId::new("40")),
+            },
+        );
+        assert_eq!(state.workspace.channels[0].unread_count, 12);
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::ReadMarkerUpdated {
+                conversation_id: id.clone(),
+                read_upto: Some(MessageId::new("43")),
+            },
+        );
+        assert_eq!(state.workspace.channels[0].unread_count, 0);
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::MessageUpserted(message(&id, "44", 200)),
+        );
+        assert!(
+            state.workspace.channels[0].unread_count > 0,
+            "a message beyond the read position must remain unread"
+        );
+        assert!(state.sidebar.sections.iter().any(|s| s.title == "Unread"));
+        // A subsequent older inbox page cannot conceal the newer unread message.
+        reduce_backend_event(
+            &mut state,
+            BackendEvent::WorkspaceConversationsExtended {
+                workspace_id: WorkspaceId::new("workspace"),
+                channels: vec![summary],
+                direct_messages: vec![],
+                conversation_bindings: vec![],
+            },
+        );
+        assert!(state.workspace.channels[0].unread_count > 0);
     }
 
     #[test]
