@@ -613,8 +613,8 @@ fn build_text_runs_for_content(
         };
         let strikethrough = if run_strikethrough {
             Some(StrikethroughStyle {
+                thickness: px(1.),
                 color: Some(run_color),
-                ..Default::default()
             })
         } else {
             None
@@ -1719,6 +1719,35 @@ mod tests {
     }
 
     #[test]
+    fn single_tilde_markdown_produces_a_visible_strikethrough() {
+        use crate::views::inline_markdown::{InlineMarkdownConfig, apply_inline_markdown};
+
+        let parsed = apply_inline_markdown(
+            "before ~café~ after",
+            &[],
+            &[],
+            InlineMarkdownConfig::default(),
+        );
+        assert_eq!(parsed.text, "before café after");
+        let color = rgb(0x223344).into();
+        let runs = build_text_runs_for_content(
+            &parsed.text,
+            &parsed.link_ranges,
+            &parsed.styled_ranges,
+            color,
+            gpui_kit::font(".SystemUIFont"),
+            link(),
+        );
+        assert_eq!(runs.len(), 3);
+        assert_eq!(&parsed.text[runs[0].len..runs[0].len + runs[1].len], "café");
+        let strike = runs[1].strikethrough.expect("tilde span is struck through");
+        assert_eq!(strike.thickness, px(1.));
+        assert_eq!(strike.color, Some(color));
+        assert!(runs[0].strikethrough.is_none());
+        assert!(runs[2].strikethrough.is_none());
+    }
+
+    #[test]
     fn build_text_runs_merges_bold_italic_and_strike_styles() {
         let runs = build_text_runs_for_content(
             "abc",
@@ -1763,7 +1792,7 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].font.weight, FontWeight::BOLD);
         assert_eq!(runs[0].font.style, FontStyle::Italic);
-        assert!(runs[0].strikethrough.is_some());
+        assert_eq!(runs[0].strikethrough.unwrap().thickness, px(1.));
     }
 
     #[test]
