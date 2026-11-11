@@ -1,0 +1,12 @@
+## What's Changed
+* Speed up GitHub previews with visible-first summary loading by @cameroncooper in https://github.com/cameroncooper/zbase/pull/56
+* Keep pane expansions on screen by @hoffmang9 in https://github.com/cameroncooper/zbase/pull/57
+* Put conversations above teams in the grouped sidebar by @greimela in https://github.com/cameroncooper/zbase/pull/60
+* Fix uploads of screenshots dragged from the macOS thumbnail by @greimela in https://github.com/cameroncooper/zbase/pull/59
+* Focus emoji picker search on open and dismiss with Escape by @cameroncooper in https://github.com/cameroncooper/zbase/pull/61
+* Add a name style setting, redesign reaction tooltips, pin the message toolbar by @greimela in https://github.com/cameroncooper/zbase/pull/58
+* Fix invisible strikethrough in tilde-formatted chat text by @cameroncooper in https://github.com/cameroncooper/zbase/pull/63
+* Add global text size settings and scalable app typography by @cameroncooper in https://github.com/cameroncooper/zbase/pull/62
+
+
+**Full Changelog**: https://github.com/cameroncooper/zbase/compare/v1.0.21...v1.0.22
