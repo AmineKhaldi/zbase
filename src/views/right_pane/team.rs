@@ -1,10 +1,10 @@
 use super::{details::details_card, pane_header, pane_with_header};
 use crate::{
-    domain::{channel_details::TeamChannel, ids::ChannelId, route::Route},
+    domain::channel_details::TeamChannel,
     state::state::{TeamDetailsState, UiWorkspaceState},
     views::{
-        accent, app_window::AppWindow, avatar::Avatar, danger, subtle_surface, text_primary,
-        text_secondary,
+        accent, app_window::AppWindow, avatar::Avatar, danger, secondary_button, text_primary,
+        text_secondary, tint, typography,
     },
 };
 use gpui_kit::prelude::FluentBuilder;
@@ -30,7 +30,7 @@ pub(super) fn render_team_panel(
         .child(
             div()
                 .w_full()
-                .text_lg()
+                .text_size(typography::heading())
                 .text_center()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(text_primary()))
@@ -38,7 +38,7 @@ pub(super) fn render_team_panel(
         )
         .child(
             div()
-                .text_sm()
+                .text_size(typography::body())
                 .text_color(rgb(text_secondary()))
                 .child("Team"),
         );
@@ -46,26 +46,26 @@ pub(super) fn render_team_panel(
         .gap_3()
         .child(
             div()
-                .text_sm()
+                .text_size(typography::body())
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(rgb(text_secondary()))
                 .child("Channels"),
         )
         .child(
             div()
-                .text_sm()
+                .text_size(typography::body())
                 .text_color(rgb(text_secondary()))
                 .child("Everyone on this team can read its channels. Join a channel to add it to your sidebar."),
         )
         .when(state.loading, |card| {
-            card.child(div().text_sm().child("Loading channels…"))
+            card.child(div().text_size(typography::body()).child("Loading channels…"))
         })
         .when_some(state.error.as_ref(), |card, error| {
-            card.child(div().text_sm().text_color(rgb(danger())).child(error.clone()))
+            card.child(div().text_size(typography::body()).text_color(rgb(danger())).child(error.clone()))
                 .child(
                     div()
                         .id("team-channels-retry")
-                        .text_sm()
+                        .text_size(typography::body())
                         .text_color(rgb(accent()))
                         .cursor(CursorStyle::PointingHand)
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -75,7 +75,7 @@ pub(super) fn render_team_panel(
                 )
         })
         .when(!state.loading && state.error.is_none() && state.channels.is_empty(), |card| {
-            card.child(div().text_sm().child("No channels available."))
+            card.child(div().text_size(typography::body()).child("No channels available."))
         })
         .children(state.channels.iter().enumerate().map(|(index, channel)| {
             channel_row(index, channel, workspace, cx)
@@ -108,75 +108,58 @@ fn channel_row(
     let id = conversation.id.clone();
     let joining = workspace.joining_channels.contains_key(&id);
     let joined = channel.joined;
-    let workspace_id = workspace.active_workspace_id.clone();
-    let label = if joining {
-        "Joining…"
-    } else if joined {
-        "Open"
-    } else {
-        "Join"
-    };
+    let join_conversation = conversation.clone();
     div()
         .flex()
         .flex_col()
         .gap_1()
         .child(
             div()
+                .id(("team-channel-row", index))
+                .min_h(px(40.))
+                .px(px(8.))
+                .py(px(6.))
+                .rounded(px(6.))
                 .flex()
                 .items_center()
-                .gap_2()
+                .gap(px(10.))
                 .min_w(px(0.))
+                .cursor(CursorStyle::PointingHand)
+                .hover(|style| style.bg(tint(text_primary(), 0.05)))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_team_channel(conversation.clone(), joined, window, cx);
+                }))
                 .child(
                     div()
                         .flex_1()
                         .min_w(px(0.))
-                        .text_sm()
+                        .text_size(typography::label())
                         .text_color(rgb(text_primary()))
-                        .child(format!("#{}", conversation.title)),
+                        .child(format!("#{}", channel.conversation.title)),
                 )
-                .child(
-                    div()
-                        .id(("team-channel-action", index))
+                .when(!joined, |row| {
+                    row.child(
+                        secondary_button(
+                            ("team-channel-join", index),
+                            if joining { "Joining…" } else { "Join" },
+                        )
                         .flex_shrink_0()
-                        .px_2()
-                        .py_1()
-                        .rounded_md()
-                        .text_sm()
-                        .text_color(rgb(if joining { text_secondary() } else { accent() }))
-                        .cursor(if joining {
-                            CursorStyle::Arrow
-                        } else {
-                            CursorStyle::PointingHand
+                        .when(joining, |button| {
+                            button.cursor(CursorStyle::Arrow).opacity(0.6)
                         })
-                        .when(!joining, |button| {
-                            button
-                                .hover(|style| style.bg(subtle_surface()))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    if joined {
-                                        if let Some(workspace_id) = workspace_id.clone() {
-                                            this.navigate_to(
-                                                Route::Channel {
-                                                    workspace_id,
-                                                    channel_id: ChannelId::new(
-                                                        conversation.id.0.clone(),
-                                                    ),
-                                                },
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                    } else {
-                                        this.join_team_channel(conversation.clone(), cx);
-                                    }
-                                }))
-                        })
-                        .child(label),
-                ),
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            if !joining {
+                                this.join_team_channel(join_conversation.clone(), cx);
+                            }
+                        })),
+                    )
+                }),
         )
         .when_some(workspace.join_channel_errors.get(&id), |row, error| {
             row.child(
                 div()
-                    .text_sm()
+                    .text_size(typography::body())
                     .text_color(rgb(danger()))
                     .child(error.clone()),
             )

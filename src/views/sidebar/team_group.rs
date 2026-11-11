@@ -66,13 +66,20 @@ impl TeamHeader<'_> {
             }))
             .child(
                 div()
-                    .id(SharedString::from(format!("sidebar-team-details-{}-{}", self.section_id.0, self.team.id)))
+                    .id(SharedString::from(format!(
+                        "sidebar-team-details-{}-{}",
+                        self.section_id.0, self.team.id
+                    )))
                     .w(px(ROW_AVATAR_SIZE_PX))
                     .flex_shrink_0()
                     .flex()
                     .justify_center()
-                    .tooltip(crate::views::tooltip::TextTooltip::single_line("Team details".into()))
-                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .tooltip(crate::views::tooltip::TextTooltip::single_line(
+                        "Team details".into(),
+                    ))
+                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation()
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.sidebar_open_team_details(team.clone(), cx);

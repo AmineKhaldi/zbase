@@ -29,6 +29,28 @@ impl AppWindow {
         self.refresh(cx);
     }
 
+    pub(crate) fn open_team_channel(
+        &mut self,
+        conversation: ConversationSummary,
+        joined: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let channel_id = crate::domain::ids::ChannelId::new(conversation.id.0.clone());
+        if !joined {
+            self.preview_summaries
+                .insert(conversation.id.clone(), (conversation, false));
+        }
+        self.navigate_to(
+            Route::Channel {
+                workspace_id: self.models.app.active_workspace_id.clone(),
+                channel_id,
+            },
+            window,
+            cx,
+        );
+    }
+
     pub(crate) fn join_team_channel(
         &mut self,
         conversation: ConversationSummary,
