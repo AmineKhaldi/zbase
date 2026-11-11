@@ -668,6 +668,25 @@ impl BackendRouter {
                     workspace_id,
                 })
             }
+            BackendCommand::SetConversationNotificationSettings {
+                conversation_id,
+                settings,
+                ..
+            } => {
+                let binding = self
+                    .conversation_bindings
+                    .get(&conversation_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        BackendError::MissingConversationBinding(conversation_id.0.clone())
+                    })?;
+                let backend = self.backend_for_binding(&binding.backend_id)?;
+                backend.execute(RoutedBackendCommand::SetConversationNotificationSettings {
+                    account_id: binding.account_id,
+                    conversation: binding.provider_conversation_ref,
+                    settings,
+                })
+            }
         }
     }
 

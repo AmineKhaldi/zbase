@@ -1,4 +1,5 @@
 use crate::domain::{
+    channel_details::ConversationNotificationSettings,
     ids::{ConversationId, MessageId, UserId},
     profile::SocialGraphListType,
     route::Route,
@@ -19,6 +20,12 @@ pub enum UiAction {
     StartApp,
     LeaveChannel {
         conversation_id: ConversationId,
+    },
+    /// Saves a conversation's notification choices on the Keybase server.
+    SetConversationNotificationSettings {
+        conversation_id: ConversationId,
+        settings: ConversationNotificationSettings,
+        previous: ConversationNotificationSettings,
     },
     Navigate(Route),
     /// Like Navigate but without triggering LoadConversation.

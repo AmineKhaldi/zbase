@@ -1,4 +1,7 @@
-use crate::models::settings_model::{Density, SettingsModel, SidebarMode, SidebarStyle, ThemeMode};
+use crate::{
+    domain::channel_details::{ConversationNotificationSettings, NotificationLevel},
+    models::settings_model::{Density, SettingsModel, SidebarMode, SidebarStyle, ThemeMode},
+};
 use std::{
     fs,
     io::{self, ErrorKind},
@@ -122,6 +125,46 @@ fn parse_settings(raw: &str) -> SettingsModel {
             continue;
         }
 
+        if let Some(conversation_id) = key.strip_prefix("conversation_notifications.") {
+            if conversation_id.is_empty() {
+                continue;
+            }
+            let mut parts = value.split(',');
+            let Some(muted) = parts.next().map(str::trim).and_then(parse_bool) else {
+                continue;
+            };
+            let Some(ignore_mentions) = parts.next().map(str::trim).and_then(parse_bool) else {
+                continue;
+            };
+            let Some(desktop) = parts
+                .next()
+                .map(str::trim)
+                .and_then(NotificationLevel::from_str)
+            else {
+                continue;
+            };
+            let Some(mobile) = parts
+                .next()
+                .map(str::trim)
+                .and_then(NotificationLevel::from_str)
+            else {
+                continue;
+            };
+            if parts.next().is_some() {
+                continue;
+            }
+            settings.conversation_notifications.insert(
+                conversation_id.to_string(),
+                ConversationNotificationSettings {
+                    muted,
+                    ignore_mentions,
+                    desktop,
+                    mobile,
+                },
+            );
+            continue;
+        }
+
         match key {
             "theme" => {
                 settings.theme_mode = match value {
@@ -229,6 +272,25 @@ fn serialize_settings(settings: &SettingsModel) -> String {
         }
     }
 
+    let mut notification_entries = settings
+        .conversation_notifications
+        .iter()
+        .collect::<Vec<(&String, &ConversationNotificationSettings)>>();
+    notification_entries.sort_by(|left, right| left.0.cmp(right.0));
+    for (conversation_id, notification) in notification_entries {
+        if conversation_id.trim().is_empty() {
+            continue;
+        }
+        content.push_str(&format!(
+            "conversation_notifications.{}={},{},{},{}\n",
+            conversation_id,
+            notification.muted,
+            notification.ignore_mentions,
+            notification.desktop.as_str(),
+            notification.mobile.as_str(),
+        ));
+    }
+
     let mut affinity_entries = settings
         .quick_switcher_affinity
         .iter()
@@ -247,6 +309,14 @@ fn serialize_settings(settings: &SettingsModel) -> String {
     }
 
     content
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
 }
 
 fn theme_label(theme: &ThemeMode) -> &'static str {
@@ -301,6 +371,53 @@ mod tests {
         assert_eq!(
             parse_settings("theme=dark\n").sidebar_style,
             SidebarStyle::Compact
+        );
+    }
+
+    #[test]
+    fn conversation_notification_settings_round_trip_and_ignore_malformed_entries() {
+        let mut settings = SettingsModel::default();
+        settings.conversation_notifications.insert(
+            "kb_conv:aa".into(),
+            ConversationNotificationSettings {
+                muted: true,
+                ignore_mentions: true,
+                desktop: NotificationLevel::Nothing,
+                mobile: NotificationLevel::MentionsOnly,
+            },
+        );
+        settings.conversation_notifications.insert(
+            "kb_conv:bb".into(),
+            ConversationNotificationSettings::default(),
+        );
+
+        let serialized = serialize_settings(&settings);
+        assert!(
+            serialized
+                .contains("conversation_notifications.kb_conv:aa=true,true,nothing,mentions\n")
+        );
+        assert!(serialized.contains("conversation_notifications.kb_conv:bb=false,false,all,all\n"));
+        let parsed = parse_settings(&serialized);
+        assert_eq!(
+            parsed.conversation_notifications,
+            settings.conversation_notifications
+        );
+
+        let malformed = parse_settings(
+            "conversation_notifications.good=false,true,all,nothing\n\
+             conversation_notifications.missing=false,true,all\n\
+             conversation_notifications.bad=false,maybe,all,all\n\
+             conversation_notifications.extra=false,false,all,all,extra\n",
+        );
+        assert_eq!(malformed.conversation_notifications.len(), 1);
+        assert_eq!(
+            malformed.conversation_notifications["good"],
+            ConversationNotificationSettings {
+                muted: false,
+                ignore_mentions: true,
+                desktop: NotificationLevel::All,
+                mobile: NotificationLevel::Nothing,
+            }
         );
     }
 

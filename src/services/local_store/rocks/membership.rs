@@ -159,6 +159,7 @@ mod tests {
                 selected_messages: vec![message.clone()],
                 unread_marker: None,
                 account_display_name: None,
+                conversation_notifications: Vec::new(),
             };
             store.persist_bootstrap_payload(&payload).unwrap();
             store.set_conversation_left(&id, true).unwrap();

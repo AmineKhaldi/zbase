@@ -3177,6 +3177,7 @@ mod tests {
             selected_messages: vec![sample_structured_message(&conversation_id, 1)],
             unread_marker: None,
             account_display_name: Some("alice".to_string()),
+            conversation_notifications: Vec::new(),
         };
         store
             .persist_bootstrap_payload(&payload)

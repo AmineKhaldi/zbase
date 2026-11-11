@@ -4,6 +4,7 @@ use crate::domain::{
     affinity::Affinity,
     backend::{AccountId, BackendCapabilities, BackendId},
     call::CallStatus,
+    channel_details::ConversationNotificationSettings,
     conversation::{ConversationBadgeState, ConversationSummary},
     ids::{CallId, ConversationId, MessageId, SidebarSectionId, UserId, WorkspaceId},
     message::{EmojiSourceRef, MessageRecord},
@@ -217,6 +218,8 @@ pub struct BackendRuntimeState {
     pub emoji_sources: HashMap<String, EmojiRenderState>,
     pub message_reactions: HashMap<ConversationId, HashMap<MessageId, Vec<MessageReactionState>>>,
     pub conversation_pins: HashMap<ConversationId, PinnedState>,
+    /// Last notification choices loaded from (or sent to) Keybase, by conversation.
+    pub conversation_notifications: HashMap<ConversationId, ConversationNotificationSettings>,
     pub conversation_team_ids: HashMap<ConversationId, String>,
     pub team_roles: HashMap<String, HashMap<UserId, TeamRoleKind>>,
     /// Authoritative per-conversation member roster (backend-provided when supported).

@@ -29,6 +29,8 @@ pub enum Density {
 
 use std::collections::{HashMap, HashSet};
 
+use crate::domain::channel_details::ConversationNotificationSettings;
+
 #[derive(Clone, Debug)]
 pub struct SettingsModel {
     pub theme_mode: ThemeMode,
@@ -43,6 +45,8 @@ pub struct SettingsModel {
     pub sidebar_collapsed_sections: HashMap<String, HashSet<String>>,
     pub dismissed_pinned_items: HashMap<String, String>,
     pub quick_switcher_affinity: HashMap<String, (f32, i64)>,
+    /// Notification choices for individual conversations, keyed by conversation id.
+    pub conversation_notifications: HashMap<String, ConversationNotificationSettings>,
 }
 
 impl Default for SettingsModel {
@@ -60,6 +64,7 @@ impl Default for SettingsModel {
             sidebar_collapsed_sections: HashMap::new(),
             dismissed_pinned_items: HashMap::new(),
             quick_switcher_affinity: HashMap::new(),
+            conversation_notifications: HashMap::new(),
         }
     }
 }
