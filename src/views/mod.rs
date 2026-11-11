@@ -638,6 +638,10 @@ pub fn shell_border_strong() -> Hsla {
     }
 }
 
+pub fn sidebar_splitter_bg() -> u32 {
+    if is_dark_theme() { 0x181818 } else { 0xe9ecf0 }
+}
+
 /// The selected sidebar row: a card raised off the sidebar, white in light mode
 /// like the conversation beside it, one step lighter than the sidebar in dark.
 pub fn sidebar_card_bg() -> u32 {
@@ -1344,24 +1348,6 @@ pub fn scroll_edge_fade_bottom(surface: Hsla) -> AnyElement {
             0.,
             gpui_kit::linear_color_stop(surface, 0.),
             gpui_kit::linear_color_stop(gpui_kit::Hsla { a: 0., ..surface }, 1.),
-        ))
-        .into_any_element()
-}
-
-/// Thin shadow under a header while the content below it is scrolled, so the
-/// first visible row reads as passing under the header, not as loose furniture.
-pub fn scroll_edge_shadow() -> AnyElement {
-    let shade = tint(0x000000, if is_dark_theme() { 0.32 } else { 0.07 });
-    div()
-        .absolute()
-        .top_0()
-        .left_0()
-        .right_0()
-        .h(px(6.))
-        .bg(gpui_kit::linear_gradient(
-            180.,
-            gpui_kit::linear_color_stop(shade, 0.),
-            gpui_kit::linear_color_stop(gpui_kit::Hsla { a: 0., ..shade }, 1.),
         ))
         .into_any_element()
 }

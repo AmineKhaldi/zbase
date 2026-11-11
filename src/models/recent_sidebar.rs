@@ -82,7 +82,6 @@ pub fn build_recent_rows(
 ) -> Vec<RecentSidebarRow> {
     let labels = sections
         .iter()
-        .filter(|section| section.id.0 != "unread")
         .flat_map(|section| &section.rows)
         .map(|row| (row.route.label(), row.label.clone()))
         .collect::<HashMap<_, _>>();

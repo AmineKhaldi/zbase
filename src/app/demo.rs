@@ -29,6 +29,8 @@ pub enum DemoScene {
     ChatPreviews,
     /// Previews sidebar style in Grouped mode.
     ChatPreviewsGrouped,
+    /// Grouped mode with the team that holds the open channel collapsed.
+    ChatGroupedCollapsed,
     /// Previews with live preview lines: someone typing, a draft, a failed send.
     ChatPreviewsLive,
     /// The menu under your name in the sidebar footer.
@@ -64,11 +66,12 @@ pub enum DemoScene {
 }
 
 impl DemoScene {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::Chat,
         Self::ChatGrouped,
         Self::ChatPreviews,
         Self::ChatPreviewsGrouped,
+        Self::ChatGroupedCollapsed,
         Self::ChatPreviewsLive,
         Self::IdentityMenu,
         Self::OrderMenu,
@@ -101,6 +104,7 @@ impl DemoScene {
             Self::ChatGrouped => "chat-grouped",
             Self::ChatPreviews => "chat-previews",
             Self::ChatPreviewsGrouped => "chat-previews-grouped",
+            Self::ChatGroupedCollapsed => "chat-grouped-collapsed",
             Self::ChatPreviewsLive => "chat-previews-live",
             Self::IdentityMenu => "identity-menu",
             Self::OrderMenu => "order-menu",

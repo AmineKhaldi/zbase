@@ -7,7 +7,7 @@
 use super::*;
 use super::{
     notifications_model::{ActivityItem, ActivityKind},
-    sidebar_model::{SidebarRow, SidebarSection},
+    sidebar_model::{CONVERSATIONS_SECTION_ID, SidebarRow, SidebarSection},
     timeline_model::{DayDividers, MessageRow},
 };
 use crate::domain::{
@@ -309,6 +309,14 @@ fn lighthouse_group() -> ConversationGroup {
     }
 }
 
+fn northwind_group() -> ConversationGroup {
+    ConversationGroup {
+        id: "northwind".to_string(),
+        display_name: "northwind".to_string(),
+        team_type: ConversationTeamType::Complex,
+    }
+}
+
 fn channel(
     id: &str,
     title: &str,
@@ -392,6 +400,50 @@ fn demo_last_message(conversation_id: &str) -> Option<MessagePreview> {
             (2, 16, 45),
             text("Booked the big room for Friday's retro, bring your sticky notes"),
         ),
+        "northwind.general" => (
+            9007,
+            "priya",
+            (0, 9, 5),
+            text("Welcome to the Northwind pilot, everyone :wave:"),
+        ),
+        "northwind.oncall" => (
+            9104,
+            "devon",
+            (0, 9, 48),
+            text("Pager is quiet. Handing over to Sam at noon."),
+        ),
+        "northwind.deploys" => (9203, "samr", (1, 15, 20), text("Staging is on 2.4.0-rc1")),
+        "dm.priya" => (
+            9301,
+            "priya",
+            (0, 9, 12),
+            text("Can you review the onboarding copy before lunch?"),
+        ),
+        "dm.lena_f" => (
+            9402,
+            DEMO_ME,
+            (1, 17, 40),
+            text("Sending the icon exports tonight"),
+        ),
+        "dm.marco" => (
+            9503,
+            "marco",
+            (2, 11, 15),
+            text("Customer asked about dark mode again :sweat_smile:"),
+        ),
+        "dm.devon" => (
+            9604,
+            "devon",
+            (3, 14, 0),
+            text("Smoke test passed on the Intel box"),
+        ),
+        "gdm.alicej-priya" => (
+            9705,
+            "alicej",
+            (4, 10, 22),
+            text("Moving the design review to Thursday"),
+        ),
+        "gdm.marco-samr" => (9806, "samr", (6, 16, 5), text("Ticket closed, thanks both")),
         _ => return None,
     };
     Some(MessagePreview {
@@ -448,6 +500,33 @@ pub(crate) fn demo_channels() -> Vec<ConversationSummary> {
             demo_time(0, 8, 12),
         ),
         channel(
+            "northwind.general",
+            "general",
+            "Northwind pilot: everything else",
+            northwind_group(),
+            0,
+            0,
+            demo_time(0, 9, 5),
+        ),
+        channel(
+            "northwind.oncall",
+            "oncall",
+            "Pager handovers",
+            northwind_group(),
+            2,
+            0,
+            demo_time(0, 9, 48),
+        ),
+        channel(
+            "northwind.deploys",
+            "deploys",
+            "What runs where",
+            northwind_group(),
+            0,
+            0,
+            demo_time(1, 15, 20),
+        ),
+        channel(
             DEMO_BOOKCLUB_ID,
             "general",
             "Monthly book club",
@@ -498,6 +577,48 @@ pub(crate) fn demo_direct_messages() -> Vec<ConversationSummary> {
             0,
             demo_time(2, 16, 45),
         ),
+        dm(
+            "dm.priya",
+            "priya",
+            ConversationKind::DirectMessage,
+            0,
+            demo_time(0, 9, 12),
+        ),
+        dm(
+            "dm.lena_f",
+            "lena_f",
+            ConversationKind::DirectMessage,
+            0,
+            demo_time(1, 17, 40),
+        ),
+        dm(
+            "dm.marco",
+            "marco",
+            ConversationKind::DirectMessage,
+            0,
+            demo_time(2, 11, 15),
+        ),
+        dm(
+            "dm.devon",
+            "devon",
+            ConversationKind::DirectMessage,
+            2,
+            demo_time(3, 14, 0),
+        ),
+        dm(
+            "gdm.alicej-priya",
+            "alicej,priya",
+            ConversationKind::GroupDirectMessage,
+            0,
+            demo_time(4, 10, 22),
+        ),
+        dm(
+            "gdm.marco-samr",
+            "marco,samr",
+            ConversationKind::GroupDirectMessage,
+            0,
+            demo_time(6, 16, 5),
+        ),
     ])
 }
 
@@ -514,6 +635,12 @@ pub(crate) fn demo_conversation_members(conversation_id: &ConversationId) -> Vec
         DEMO_DM_SAM_ID => vec![DEMO_ME, "samr"],
         DEMO_GROUP_DM_ID => vec![DEMO_ME, "devon", "lena_f"],
         DEMO_BOOKCLUB_ID => vec![DEMO_ME, "lena_f", "marco"],
+        "dm.priya" => vec![DEMO_ME, "priya"],
+        "dm.lena_f" => vec![DEMO_ME, "lena_f"],
+        "dm.marco" => vec![DEMO_ME, "marco"],
+        "dm.devon" => vec![DEMO_ME, "devon"],
+        "gdm.alicej-priya" => vec![DEMO_ME, "alicej", "priya"],
+        "gdm.marco-samr" => vec![DEMO_ME, "marco", "samr"],
         DEMO_DESIGN_ID => vec![DEMO_ME, "alicej", "lena_f", "priya"],
         _ => demo_people().iter().map(|person| person.username).collect(),
     };
@@ -523,10 +650,10 @@ pub(crate) fn demo_conversation_members(conversation_id: &ConversationId) -> Vec
 pub(crate) fn demo_team_id_for_conversation(
     conversation_id: &ConversationId,
 ) -> Option<&'static str> {
-    conversation_id
-        .0
-        .starts_with("lighthouse.")
-        .then_some(DEMO_TEAM_ID)
+    let team = conversation_id.0.split_once('.')?.0;
+    ["lighthouse", "northwind"]
+        .into_iter()
+        .find(|known| *known == team)
 }
 
 pub(crate) fn demo_team_roles() -> Vec<(UserId, crate::state::event::TeamRoleKind)> {
@@ -1138,15 +1265,15 @@ impl AppModels {
                 recent_rows: Vec::new(),
                 sections: vec![
                     SidebarSection {
-                        id: SidebarSectionId::new(format!("group_{DEMO_TEAM_ID}")),
-                        title: DEMO_TEAM_ID.to_string(),
-                        rows: group_rows(DEMO_TEAM_ID),
+                        id: SidebarSectionId::new(CONVERSATIONS_SECTION_ID),
+                        title: "Conversations".to_string(),
+                        rows: conversation_rows,
                         collapsed: false,
                     },
                     SidebarSection {
-                        id: SidebarSectionId::new("conversations"),
-                        title: "Conversations".to_string(),
-                        rows: conversation_rows,
+                        id: SidebarSectionId::new(format!("group_{DEMO_TEAM_ID}")),
+                        title: DEMO_TEAM_ID.to_string(),
+                        rows: group_rows(DEMO_TEAM_ID),
                         collapsed: false,
                     },
                 ],

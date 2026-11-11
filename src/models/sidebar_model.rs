@@ -52,14 +52,35 @@ impl SidebarAvatar {
     }
 }
 
+pub const CONVERSATIONS_SECTION_ID: &str = "dms";
+
 impl SidebarSection {
-    /// Shortcuts to conversations with unread activity, listed above the full list.
-    pub fn is_unread(&self) -> bool {
-        self.id.0 == "unread"
+    pub fn is_team(&self) -> bool {
+        self.id.0.starts_with("group_")
+    }
+
+    pub fn is_conversations(&self) -> bool {
+        self.id.0 == CONVERSATIONS_SECTION_ID
+    }
+
+    /// The rows listed: all of them, or while collapsed only those unread and
+    /// the one open (`current`), so collapsing never hides news or the
+    /// selection.
+    pub fn visible_rows<'a>(&'a self, current: &'a Route) -> impl Iterator<Item = &'a SidebarRow> {
+        self.rows
+            .iter()
+            .filter(move |row| !self.collapsed || row.is_unread() || &row.route == current)
     }
 }
 
 impl SidebarRow {
+    /// Unread activity the row shows a badge or dot for: a mention, any
+    /// direct message, or other messages unless the conversation is muted.
+    pub fn is_unread(&self) -> bool {
+        let direct = matches!(self.route, Route::DirectMessage { .. });
+        self.mention_count > 0 || (self.unread_count > 0 && (direct || !self.muted))
+    }
+
     pub fn full_label(&self) -> String {
         self.team.as_ref().map_or_else(
             || self.label.clone(),
@@ -73,7 +94,56 @@ pub fn team_avatar_key(team_id: &str) -> String {
     format!("sidebar-team:{team_id}")
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupedPosition {
+    Conversations(usize),
+    /// The item at this index of [`SidebarModel::teams_items`].
+    Teams(usize),
+}
+
+/// One entry of Grouped mode's teams list.
+#[derive(Clone, Copy, Debug)]
+pub enum TeamsItem<'a> {
+    Header(&'a SidebarSection),
+    Row(&'a SidebarSection, &'a SidebarRow),
+}
+
 impl SidebarModel {
+    /// Grouped mode's teams list while `current` is open: every section but
+    /// Conversations, as its header followed by its visible rows.
+    pub fn teams_items<'a>(&'a self, current: &'a Route) -> impl Iterator<Item = TeamsItem<'a>> {
+        self.sections
+            .iter()
+            .filter(|section| !section.is_conversations())
+            .flat_map(move |section| {
+                std::iter::once(TeamsItem::Header(section)).chain(
+                    section
+                        .visible_rows(current)
+                        .map(move |row| TeamsItem::Row(section, row)),
+                )
+            })
+    }
+
+    /// Where `route` is listed in Grouped mode while `current` is open;
+    /// `None` when it is not listed.
+    pub fn grouped_position(&self, route: &Route, current: &Route) -> Option<GroupedPosition> {
+        let conversations = self
+            .sections
+            .iter()
+            .filter(|section| section.is_conversations())
+            .find_map(|section| {
+                section
+                    .visible_rows(current)
+                    .position(|row| &row.route == route)
+            });
+        if let Some(index) = conversations {
+            return Some(GroupedPosition::Conversations(index));
+        }
+        self.teams_items(current)
+            .position(|item| matches!(item, TeamsItem::Row(_, row) if &row.route == route))
+            .map(GroupedPosition::Teams)
+    }
+
     pub fn visible_recent_rows(
         &self,
     ) -> impl Iterator<Item = &super::recent_sidebar::RecentSidebarRow> {
@@ -84,57 +154,6 @@ impl SidebarModel {
                 || recent.secondary.to_lowercase().contains(&filter)
                 || recent.row.route.label().to_lowercase().contains(&filter)
         })
-    }
-
-    /// The section whose row for `route` carries the full selection. A
-    /// conversation can be listed twice in Grouped mode: in Unread and in its
-    /// team or Conversations. The canonical (non-Unread) row is the one selected,
-    /// as long as its section is expanded; the Unread copy is selected only when
-    /// it is the sole visible row. `None` when `route` isn't listed.
-    pub fn selection_section(&self, route: &Route) -> Option<&SidebarSectionId> {
-        let listed = |section: &&SidebarSection| section.rows.iter().any(|row| &row.route == route);
-        self.sections
-            .iter()
-            .filter(|section| !section.is_unread() && !section.collapsed)
-            .find(listed)
-            .or_else(|| {
-                self.sections
-                    .iter()
-                    .filter(|section| section.is_unread())
-                    .find(listed)
-            })
-            .map(|section| &section.id)
-    }
-
-    /// Keep the flat navigation order identical to the grouped visual order. Stable
-    /// sorting preserves the reducer's recency order within each team and for DMs.
-    pub fn order_unread_groups(&mut self) {
-        let team_order = self
-            .sections
-            .iter()
-            .enumerate()
-            .filter_map(|(index, section)| {
-                section
-                    .id
-                    .0
-                    .strip_prefix("group_")
-                    .map(|id| (id.to_string(), index))
-            })
-            .collect::<HashMap<_, _>>();
-        let Some(unread) = self
-            .sections
-            .iter_mut()
-            .find(|section| section.id.0 == "unread")
-        else {
-            return;
-        };
-        unread.rows.sort_by_key(|row| match &row.team {
-            Some(team) => (
-                team_order.get(&team.id).copied().unwrap_or(usize::MAX - 1),
-                team.id.clone(),
-            ),
-            None => (usize::MAX, String::new()),
-        });
     }
 }
 
@@ -165,83 +184,124 @@ mod tests {
         }
     }
 
-    fn team_section(id: &str) -> SidebarSection {
-        SidebarSection {
-            id: SidebarSectionId::new(format!("group_{id}")),
-            title: id.into(),
-            rows: vec![],
-            collapsed: true,
-        }
+    #[test]
+    fn collapsed_sections_keep_unread_rows_and_the_open_one() {
+        let mut read = row("read", Some("alpha"));
+        read.unread_count = 0;
+        let mut muted = row("muted", Some("alpha"));
+        muted.muted = true;
+        let mut mentioned = row("mentioned", Some("alpha"));
+        mentioned.muted = true;
+        mentioned.mention_count = 1;
+        let mut open = row("open", Some("alpha"));
+        open.unread_count = 0;
+        let mut section = SidebarSection {
+            id: SidebarSectionId::new("group_alpha"),
+            title: "alpha".into(),
+            rows: vec![
+                read,
+                row("unread", Some("alpha")),
+                muted,
+                mentioned,
+                open.clone(),
+            ],
+            collapsed: false,
+        };
+        let labels = |section: &SidebarSection| {
+            section
+                .visible_rows(&open.route)
+                .map(|row| row.label.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(labels(&section).len(), 5);
+        section.collapsed = true;
+        assert_eq!(labels(&section), ["unread", "mentioned", "open"]);
     }
 
-    #[test]
-    fn unread_groups_follow_saved_team_order_and_preserve_recency_within_groups() {
-        let mut retained = row("alpha-retained", Some("alpha"));
-        retained.unread_count = 0;
-        let mut sidebar = SidebarModel {
+    /// Conversations (alice), then alpha collapsed with a1 read and a2
+    /// unread, then beta expanded with b1 and b2.
+    fn grouped_sidebar() -> SidebarModel {
+        let section = |id: &str, rows: Vec<SidebarRow>, collapsed: bool| SidebarSection {
+            id: SidebarSectionId::new(id),
+            title: id.into(),
+            rows,
+            collapsed,
+        };
+        let mut quiet = row("a1", Some("alpha"));
+        quiet.unread_count = 0;
+        SidebarModel {
             mode: Default::default(),
             style: Default::default(),
             recent_rows: Vec::new(),
             sections: vec![
-                SidebarSection {
-                    id: SidebarSectionId::new("unread"),
-                    title: "Unread".into(),
-                    rows: vec![
-                        row("dm-new", None),
-                        row("alpha-new", Some("alpha")),
-                        row("beta", Some("beta")),
-                        retained,
-                        row("simple-team", None),
-                    ],
-                    collapsed: false,
-                },
-                team_section("beta"),
-                team_section("alpha"),
+                section(CONVERSATIONS_SECTION_ID, vec![row("alice", None)], false),
+                section("group_alpha", vec![quiet, row("a2", Some("alpha"))], true),
+                section(
+                    "group_beta",
+                    vec![row("b1", Some("beta")), row("b2", Some("beta"))],
+                    false,
+                ),
             ],
             filter: String::new(),
             highlighted_route: None,
-            width_px: 200.,
+            width_px: 236.,
             live_previews: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn grouped_positions_count_headers_and_the_rows_shown() {
+        let mut sidebar = grouped_sidebar();
+        let elsewhere = Route::Preferences;
+        let position = |sidebar: &SidebarModel, id: &str, current: &Route| {
+            sidebar.grouped_position(&row(id, None).route, current)
         };
-        sidebar.order_unread_groups();
         assert_eq!(
-            sidebar.sections[0]
-                .rows
-                .iter()
-                .map(|row| row.label.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "beta",
-                "alpha-new",
-                "alpha-retained",
-                "dm-new",
-                "simple-team"
-            ]
+            position(&sidebar, "alice", &elsewhere),
+            Some(GroupedPosition::Conversations(0))
+        );
+        assert_eq!(position(&sidebar, "a1", &elsewhere), None);
+        assert_eq!(
+            position(&sidebar, "a2", &elsewhere),
+            Some(GroupedPosition::Teams(1))
         );
         assert_eq!(
-            sidebar.sections[0].rows[2].unread_count, 0,
-            "retaining a row must not restore its unread badge"
+            position(&sidebar, "b2", &elsewhere),
+            Some(GroupedPosition::Teams(4))
         );
-        sidebar.sections.swap(1, 2);
-        sidebar.order_unread_groups();
+        let a1 = row("a1", None).route;
         assert_eq!(
-            sidebar.sections[0]
-                .rows
-                .iter()
-                .map(|row| row.label.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "alpha-new",
-                "alpha-retained",
-                "beta",
-                "dm-new",
-                "simple-team"
-            ]
+            position(&sidebar, "a1", &a1),
+            Some(GroupedPosition::Teams(1))
         );
-        assert!(
-            sidebar.sections[1].collapsed,
-            "Unread must not depend on normal team expansion"
+        sidebar.sections[1].collapsed = false;
+        assert_eq!(
+            position(&sidebar, "b2", &elsewhere),
+            Some(GroupedPosition::Teams(5))
         );
+    }
+
+    #[test]
+    fn grouped_positions_index_the_teams_list_as_listed() {
+        let mut sidebar = grouped_sidebar();
+        let routes = ["a1", "a2", "b1"].map(|id| row(id, None).route);
+        for collapsed in [true, false] {
+            sidebar.sections[1].collapsed = collapsed;
+            for current in routes.iter().chain([&Route::Preferences]) {
+                let items = sidebar.teams_items(current).collect::<Vec<_>>();
+                assert!(matches!(items[0], TeamsItem::Header(_)));
+                for (index, item) in items.iter().enumerate() {
+                    if let TeamsItem::Row(_, row) = item {
+                        assert_eq!(
+                            sidebar.grouped_position(&row.route, current),
+                            Some(GroupedPosition::Teams(index)),
+                            "{} with {current:?} open",
+                            row.label
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -253,49 +313,5 @@ mod tests {
             "chia_network.ent_wallet #alerts-prod-mainnet"
         );
         assert_eq!(row("alice", None).full_label(), "alice");
-    }
-
-    #[test]
-    fn grouped_mode_selects_one_row_preferring_the_canonical_section() {
-        let section = |id: &str, rows: Vec<SidebarRow>, collapsed: bool| SidebarSection {
-            id: SidebarSectionId::new(id),
-            title: id.into(),
-            rows,
-            collapsed,
-        };
-        let general = row("general", Some("lighthouse"));
-        let mut sidebar = SidebarModel {
-            mode: Default::default(),
-            style: Default::default(),
-            recent_rows: Vec::new(),
-            sections: vec![
-                section("unread", vec![general.clone()], false),
-                section(
-                    "group_lighthouse",
-                    vec![general.clone(), row("random", Some("lighthouse"))],
-                    false,
-                ),
-            ],
-            filter: String::new(),
-            highlighted_route: None,
-            width_px: 236.,
-            live_previews: HashMap::new(),
-        };
-        let selected = |sidebar: &SidebarModel| {
-            sidebar
-                .selection_section(&general.route)
-                .map(|id| id.0.clone())
-        };
-        // Listed twice: the team's row is the selection, the Unread copy is not.
-        assert_eq!(selected(&sidebar).as_deref(), Some("group_lighthouse"));
-        // With the team collapsed, the Unread copy is the only visible row.
-        sidebar.sections[1].collapsed = true;
-        assert_eq!(selected(&sidebar).as_deref(), Some("unread"));
-        // Once read and left, it leaves Unread; nothing visible lists it.
-        sidebar.sections[0].rows.clear();
-        assert_eq!(selected(&sidebar), None);
-        sidebar.sections[1].collapsed = false;
-        assert_eq!(selected(&sidebar).as_deref(), Some("group_lighthouse"));
-        assert_eq!(sidebar.selection_section(&row("other", None).route), None);
     }
 }

@@ -191,6 +191,12 @@ fn parse_settings(raw: &str) -> SettingsModel {
                     _ => SidebarStyle::Compact,
                 };
             }
+            "sidebar_conversations_share" => {
+                settings.sidebar_conversations_share = value
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|share| (0.0..=1.0).contains(share));
+            }
             "emoji_skin_tone" => {
                 settings.emoji_skin_tone = (!value.is_empty()).then(|| value.to_string());
             }
@@ -220,6 +226,9 @@ fn serialize_settings(settings: &SettingsModel) -> String {
             SidebarStyle::Previews => "previews",
         }
     );
+    if let Some(share) = settings.sidebar_conversations_share {
+        content.push_str(&format!("sidebar_conversations_share={share:.4}\n"));
+    }
     if let Some(skin_tone) = settings
         .emoji_skin_tone
         .as_ref()
@@ -353,6 +362,19 @@ mod tests {
         assert_eq!(
             parse_settings("sidebar_mode.workspace:alice=unknown").sidebar_modes["workspace:alice"],
             SidebarMode::Grouped
+        );
+    }
+
+    #[test]
+    fn conversations_share_round_trips_and_ignores_nonsense() {
+        let mut settings = SettingsModel::default();
+        assert_eq!(settings.sidebar_conversations_share, None);
+        settings.sidebar_conversations_share = Some(0.42);
+        let parsed = parse_settings(&serialize_settings(&settings));
+        assert_eq!(parsed.sidebar_conversations_share, Some(0.42));
+        assert_eq!(
+            parse_settings("sidebar_conversations_share=7\n").sidebar_conversations_share,
+            None
         );
     }
 

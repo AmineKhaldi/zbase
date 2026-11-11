@@ -1,60 +1,29 @@
-//! A team's header and its channels in the grouped list.
 use super::{
-    DragPreview, DraggedSection, RowContext, RowLook, Sidebar, SidebarHost, disclosure, team_asset,
+    DragPreview, DraggedSection, LEAD_GAP_PX, ROW_AVATAR_SIZE_PX, ROW_INSET_PX, RowContext,
+    SidebarHost, disclosure, team_asset,
 };
 use crate::{
     domain::{conversation::ConversationGroup, ids::SidebarSectionId},
-    models::sidebar_model::SidebarRow,
-    views::{accent, avatar::Avatar, shell_border_strong, subtle_surface, text_secondary},
+    views::{accent, avatar::Avatar, sidebar_hover_bg, text_primary},
 };
-use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, AppContext, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, div, px, rgb,
 };
 
-pub(super) struct TeamGroup<'a> {
+const TEAM_TEXT_PX: f32 = 14.;
+pub(super) const TEAM_HEADER_PX: f32 = 28.;
+
+pub(super) struct TeamHeader<'a> {
     pub team: &'a ConversationGroup,
     pub section_id: &'a SidebarSectionId,
-    pub rows: &'a [SidebarRow],
     pub collapsed: bool,
     pub context: &'a RowContext<'a>,
 }
 
-impl TeamGroup<'_> {
+impl TeamHeader<'_> {
     pub fn render<H: SidebarHost>(&self, cx: &mut Context<H>) -> AnyElement {
         let collapsed = self.collapsed;
-        let rows = self
-            .rows
-            .iter()
-            .map(|row| Sidebar::render_row(self.section_id, row, self.context, cx))
-            .collect::<Vec<_>>();
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .child(self.header(collapsed, cx))
-            .when(!collapsed, |group| {
-                group.child(match self.context.look {
-                    // Compact rows nest under a guide, like a Finder outline.
-                    RowLook::Compact => div()
-                        .ml(px(16.))
-                        .pl(px(4.))
-                        .border_l_1()
-                        .border_color(shell_border_strong())
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .children(rows),
-                    // Previews already carry a channel tile; the header groups them,
-                    // so they keep the list's single inset and rhythm.
-                    RowLook::Previews { .. } => div().flex().flex_col().gap(px(2.)).children(rows),
-                })
-            })
-            .into_any_element()
-    }
-
-    fn header<H: SidebarHost>(&self, collapsed: bool, cx: &mut Context<H>) -> AnyElement {
         let group = SharedString::from(format!(
             "sidebar-team-header-{}-{}",
             self.section_id.0, self.team.id
@@ -66,16 +35,17 @@ impl TeamGroup<'_> {
         div()
             .id(group.clone())
             .group(group.clone())
-            .h(px(24.))
+            .h(px(TEAM_HEADER_PX))
+            .flex_shrink_0()
             .flex()
             .items_center()
-            .gap(px(6.))
-            .px_2()
-            .rounded_md()
-            .text_xs()
-            .text_color(rgb(text_secondary()))
+            .gap(px(LEAD_GAP_PX))
+            .px(px(ROW_INSET_PX))
+            .rounded(px(6.))
+            .text_size(px(TEAM_TEXT_PX))
+            .text_color(rgb(text_primary()))
             .cursor_pointer()
-            .hover(|style| style.bg(subtle_surface()))
+            .hover(|style| style.bg(rgb(sidebar_hover_bg())))
             .on_click(
                 cx.listener(move |this, _, _, cx| {
                     this.sidebar_toggle_section(toggle_id.clone(), cx)
@@ -92,11 +62,18 @@ impl TeamGroup<'_> {
             .on_drop(cx.listener(move |this, dragged: &DraggedSection, _, cx| {
                 this.sidebar_reorder_section(dragged.0.clone(), drop_id.clone(), cx)
             }))
-            .child(Avatar::render_team(
-                &self.team.display_name,
-                team_asset(self.context.avatars, &self.team.id),
-                16.,
-            ))
+            .child(
+                div()
+                    .w(px(ROW_AVATAR_SIZE_PX))
+                    .flex_shrink_0()
+                    .flex()
+                    .justify_center()
+                    .child(Avatar::render_team(
+                        &self.team.display_name,
+                        team_asset(self.context.avatars, &self.team.id),
+                        ROW_AVATAR_SIZE_PX,
+                    )),
+            )
             .child(
                 div()
                     .flex_1()

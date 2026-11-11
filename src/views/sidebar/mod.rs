@@ -1,21 +1,21 @@
+mod grouped;
 mod preview_row;
 mod recent;
 mod team_group;
 
-use preview_row::{PREVIEW_AVATAR_PX, PreviewRow, title_segments};
-use team_group::TeamGroup;
+use preview_row::{PREVIEW_AVATAR_PX, PREVIEW_ROW_HEIGHT_PX, PreviewRow, title_segments};
 
 use crate::{
     domain::{ids::SidebarSectionId, route::Route},
     models::{
         app_model::Connectivity,
         settings_model::{SidebarMode, SidebarStyle},
-        sidebar_model::{SidebarAvatar, SidebarModel, SidebarRow, SidebarSection, team_avatar_key},
+        sidebar_model::{SidebarAvatar, SidebarModel, SidebarRow, team_avatar_key},
     },
     views::{
-        PREVIEWS_SIDEBAR_WIDTH_PX, accent, accent_strong,
+        PREVIEWS_SIDEBAR_WIDTH_PX, accent_strong,
         avatar::Avatar,
-        chevron_down_icon, chevron_right_icon, hash_icon, icon_asset, is_dark_theme,
+        chevron_right_icon, icon_asset, is_dark_theme,
         popup_menu::{PopupMenuEntry, popup_menu},
         sidebar_bg, sidebar_card_bg, sidebar_card_shadow, sidebar_hover_bg, subtle_surface,
         success_soft, text_primary, text_secondary, tint,
@@ -26,12 +26,11 @@ use crate::{
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    Anchor, AnyElement, AppContext, ClickEvent, Context, DragMoveEvent, FontWeight, Hsla,
-    InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, anchored, deferred, div,
-    point, px, rgb, svg,
+    Anchor, AnyElement, ClickEvent, Context, DragMoveEvent, FontWeight, Hsla, InteractiveElement,
+    IntoElement, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
+    Styled, UniformListScrollHandle, Window, anchored, deferred, div, point, px, rgb, svg,
 };
-use std::collections::{HashMap, HashSet};
+use std::{cell::Cell, collections::HashMap, rc::Rc};
 
 #[derive(Clone)]
 struct DraggedSection(SidebarSectionId);
@@ -58,46 +57,30 @@ use crate::views::tooltip::TextTooltip as SidebarTooltip;
 
 pub(super) const ROW_AVATAR_SIZE_PX: f32 = 20.;
 pub(super) const ROW_TEXT_SIZE_PX: f32 = 13.;
+pub(super) const ROW_INSET_PX: f32 = 8.;
+pub(super) const ROW_GAP_PX: f32 = 2.;
 const COMPACT_ROW_HEIGHT_PX: f32 = 30.;
+const CHANNEL_ROW_HEIGHT_PX: f32 = 26.;
+const LEAD_GAP_PX: f32 = 8.;
+pub(super) const SIDEBAR_PADDING_PX: f32 = 8.;
+/// The narrowest sidebars whose toolbar fits full-size buttons beside the
+/// window controls, without and with the update button.
+const ROOMY_TOOLBAR_PX: f32 = 260.;
+const ROOMY_TOOLBAR_WITH_UPDATE_PX: f32 = 288.;
 const TOOLBAR_BUTTON_PX: f32 = 28.;
 const TOOLBAR_ICON_PX: f32 = 16.;
-/// Space above a section header, and above the first one in the list.
-const SECTION_GAP_PX: f32 = 16.;
 const FIRST_SECTION_GAP_PX: f32 = 8.;
 const SECTION_HEADER_PX: f32 = 24.;
+const HEADER_ICON_PX: f32 = 12.;
+const VIEW_OPTIONS_MIN_WIDTH_PX: f32 = 200.;
+const SCROLLBAR_GUTTER_PX: f32 = 8.;
 
 /// A menu that pops up from the sidebar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SidebarMenu {
-    /// Recent order or grouped by team, from the list's label.
     Order,
     /// Your profile and Settings, from your name in the footer.
     Identity,
-}
-
-/// How a row shows that it is the open conversation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum RowSelection {
-    None,
-    /// The one selected row: a raised card.
-    Full,
-    /// Another listing of the open conversation (its Unread shortcut): a thin
-    /// accent bar only, so the sidebar never shows two selections.
-    Marker,
-}
-
-impl RowSelection {
-    pub fn of(row: &SidebarRow, current: &Route, owns_selection: bool) -> Self {
-        match (&row.route == current, owns_selection) {
-            (false, _) => Self::None,
-            (true, true) => Self::Full,
-            (true, false) => Self::Marker,
-        }
-    }
-
-    pub fn is_full(self) -> bool {
-        self == Self::Full
-    }
 }
 
 /// Row style, with what the Previews style needs to know about its width.
@@ -109,6 +92,8 @@ pub(super) enum RowLook {
     Previews {
         compact_time: bool,
     },
+    /// A team's channel in Grouped mode: a compact row, set closer.
+    Channel,
 }
 
 impl RowLook {
@@ -118,6 +103,14 @@ impl RowLook {
             SidebarStyle::Previews => Self::Previews {
                 compact_time: width_px < PREVIEWS_SIDEBAR_WIDTH_PX - 8.,
             },
+        }
+    }
+
+    pub fn row_px(self) -> f32 {
+        match self {
+            Self::Compact => COMPACT_ROW_HEIGHT_PX,
+            Self::Previews { .. } => PREVIEW_ROW_HEIGHT_PX,
+            Self::Channel => CHANNEL_ROW_HEIGHT_PX,
         }
     }
 }
@@ -176,6 +169,7 @@ pub(super) struct RowActivity {
     badge: u32,
     mention: bool,
     muted: bool,
+    is_unread: bool,
 }
 
 impl RowActivity {
@@ -190,11 +184,12 @@ impl RowActivity {
             },
             mention: !direct,
             muted: row.muted,
+            is_unread: row.is_unread(),
         }
     }
 
     pub fn is_unread(&self) -> bool {
-        self.badge > 0 || (self.unread > 0 && !self.muted)
+        self.is_unread
     }
 
     /// Trailing badge or dot. The selected row shows neither: it is being read.
@@ -250,14 +245,15 @@ fn badge_label(count: u32, mention: bool) -> String {
 }
 
 /// One line in the Compact style: a 20px mark, the name, and its badge.
-/// Shared by Recent, Unread shortcuts and grouped rows.
+/// Shared by Recent and grouped rows.
 pub(super) struct CompactRow<'a> {
     pub id: String,
     pub row: &'a SidebarRow,
     pub title: Vec<Segment>,
     pub leading: AnyElement,
     pub colors: &'a RowColors,
-    pub selection: RowSelection,
+    pub selected: bool,
+    pub height: f32,
 }
 
 impl CompactRow<'_> {
@@ -268,7 +264,8 @@ impl CompactRow<'_> {
             title,
             leading,
             colors,
-            selection,
+            selected,
+            height,
         } = self;
         let activity = RowActivity::of(row);
         let hover_id = id.clone();
@@ -276,34 +273,17 @@ impl CompactRow<'_> {
         div()
             .id(SharedString::from(id))
             .relative()
-            .h(px(COMPACT_ROW_HEIGHT_PX))
+            .h(px(height))
             .w_full()
             .flex_shrink_0()
-            .px_2()
+            .px(px(ROW_INSET_PX))
             .flex()
             .items_center()
-            .gap_2()
+            .gap(px(LEAD_GAP_PX))
             .rounded(px(6.))
             .cursor_pointer()
             .when_some(colors.background, |row, background| row.bg(background))
             .when(colors.raised, |row| row.shadow(sidebar_card_shadow()))
-            .when(selection == RowSelection::Marker, |row| {
-                row.child(
-                    div()
-                        .absolute()
-                        .left(px(0.))
-                        .top(px((COMPACT_ROW_HEIGHT_PX - 16.) / 2.))
-                        .w(px(2.))
-                        .h(px(16.))
-                        .rounded_full()
-                        // Neutral behind other windows, like the selection fill.
-                        .bg(rgb(if crate::views::window_is_active() {
-                            accent()
-                        } else {
-                            text_secondary()
-                        })),
-                )
-            })
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 this.sidebar_set_row_hovered(hover_id.clone(), *hovered, cx);
             }))
@@ -326,11 +306,9 @@ impl CompactRow<'_> {
                     .text_size(px(ROW_TEXT_SIZE_PX))
                     .child(TruncatedLine::new(title)),
             )
-            // The open conversation is being read, wherever it is listed.
-            .when_some(
-                activity.indicator(selection != RowSelection::None),
-                |row, indicator| row.child(indicator),
-            )
+            .when_some(activity.indicator(selected), |row, indicator| {
+                row.child(indicator)
+            })
             .into_any_element()
     }
 }
@@ -339,6 +317,7 @@ impl CompactRow<'_> {
 enum ToolbarAction {
     Back,
     Forward,
+    Order,
     Search,
     NewChat,
     Updates,
@@ -419,6 +398,9 @@ impl ToolbarButton {
                     match action {
                         ToolbarAction::Back => this.sidebar_navigate_history(false, window, cx),
                         ToolbarAction::Forward => this.sidebar_navigate_history(true, window, cx),
+                        ToolbarAction::Order => {
+                            this.sidebar_toggle_menu(SidebarMenu::Order, window, cx)
+                        }
                         ToolbarAction::Search => this.sidebar_toggle_quick_switcher(cx),
                         ToolbarAction::NewChat => this.sidebar_open_new_chat(window, cx),
                         ToolbarAction::Updates => this.sidebar_show_updates(window, cx),
@@ -465,6 +447,9 @@ pub trait SidebarHost: Sized + 'static {
     );
     fn sidebar_hide_hover_tooltip(&mut self, cx: &mut Context<Self>);
     fn sidebar_toggle_section(&mut self, section_id: SidebarSectionId, cx: &mut Context<Self>);
+    /// Persists the share of Grouped mode's list the conversations take;
+    /// `None` sizes them automatically. Does nothing when it is unchanged.
+    fn sidebar_save_conversations_share(&mut self, share: Option<f32>, cx: &mut Context<Self>);
     fn sidebar_reorder_section(
         &mut self,
         dragged_id: SidebarSectionId,
@@ -485,19 +470,53 @@ pub trait SidebarHost: Sized + 'static {
 }
 
 /// What every grouped row needs besides the row itself.
+#[derive(Clone, Copy)]
 pub(super) struct RowContext<'a> {
     pub avatars: &'a HashMap<String, SidebarAvatar>,
     pub current_route: &'a Route,
     pub hovered_row: Option<&'a str>,
     pub look: RowLook,
-    /// The section whose listing of the open conversation is selected.
-    pub selected_section: Option<&'a SidebarSectionId>,
     pub live: &'a HashMap<String, crate::models::sidebar_preview::PreviewLive>,
+}
+
+/// The sidebar's scroll positions and Grouped split. Clones share them, so
+/// every view that renders the sidebar keeps the same ones.
+#[derive(Clone)]
+pub struct SidebarHandles {
+    pub conversations: ScrollHandle,
+    pub teams: ScrollHandle,
+    pub recent: UniformListScrollHandle,
+    split: Rc<GroupedSplit>,
+}
+
+impl SidebarHandles {
+    /// `share`: the saved splitter position; `None` sizes the conversations
+    /// automatically.
+    pub fn new(share: Option<f32>) -> Self {
+        Self {
+            conversations: ScrollHandle::new(),
+            teams: ScrollHandle::new(),
+            recent: UniformListScrollHandle::new(),
+            split: Rc::new(GroupedSplit {
+                height: Cell::new(None),
+                share: Cell::new(share),
+            }),
+        }
+    }
+}
+
+/// How Grouped mode's list divides between Conversations and teams.
+struct GroupedSplit {
+    /// The list's height at its last layout.
+    height: Cell<Option<f32>>,
+    /// Where the splitter sits, as a share of the list; live while it is
+    /// dragged. `None` sizes the conversations automatically.
+    share: Cell<Option<f32>>,
 }
 
 /// Keep toolbar/footer chrome outside the elastic viewport in both sidebar modes.
 pub(super) fn scroll_viewport<H: gpui_kit::base::ScrollbarHandle + Clone>(
-    id: &'static str,
+    id: impl Into<gpui_kit::ElementId>,
     handle: &H,
     content: impl IntoElement,
     reduced_motion: bool,
@@ -529,104 +548,60 @@ impl Sidebar {
         conversation_avatars: &HashMap<String, SidebarAvatar>,
         current_route: &Route,
         hovered_row: Option<&str>,
-        scroll_handle: &ScrollHandle,
-        recent_scroll: &UniformListScrollHandle,
+        handles: &SidebarHandles,
         chrome: SidebarChrome,
         cx: &mut Context<H>,
     ) -> AnyElement {
-        let drag_scroll_handle = scroll_handle.clone();
         let look = RowLook::new(sidebar.style, sidebar.width_px);
-        let selected_section = sidebar.selection_section(current_route);
         let context = RowContext {
             avatars: conversation_avatars,
             current_route,
             hovered_row,
             look,
-            selected_section,
             live: &sidebar.live_previews,
         };
-        let order_menu_open = chrome.menu == Some(SidebarMenu::Order);
-
         div()
             .w(px(sidebar.width_px))
             .flex_shrink_0()
             .h_full()
             .flex()
             .flex_col()
-            .px_2()
+            .px(px(SIDEBAR_PADDING_PX))
             .bg(crate::views::sidebar_surface())
             .overflow_hidden()
             .text_color(rgb(text_primary()))
-            .child(Self::render_title_bar_row(sidebar.width_px, chrome, cx))
+            .child(Self::render_title_bar_row(
+                sidebar.width_px,
+                sidebar.mode,
+                chrome,
+                cx,
+            ))
             .when(sidebar.mode == SidebarMode::Recent, |root| {
-                root.child(div().pt(px(FIRST_SECTION_GAP_PX)).child(Self::order_header(
-                    "Recent",
-                    sidebar.mode,
-                    order_menu_open,
-                    cx,
-                )))
+                root.child(
+                    div()
+                        .pt(px(FIRST_SECTION_GAP_PX))
+                        .h(px(FIRST_SECTION_GAP_PX + SECTION_HEADER_PX))
+                        .flex()
+                        .items_center()
+                        .child(section_label("Recent")),
+                )
                 .child(recent::render(
                     sidebar,
                     conversation_avatars,
                     current_route,
                     hovered_row,
-                    recent_scroll,
+                    &handles.recent,
                     chrome.reduced_motion,
                     cx,
                 ))
             })
             .when(sidebar.mode == SidebarMode::Grouped, |root| {
-                let mut previous_section_is_team = false;
-                let mut first = true;
-                let mut elements = Vec::new();
-                for section in &sidebar.sections {
-                    let is_team = section.id.0.starts_with("group_");
-                    let gap = if first {
-                        FIRST_SECTION_GAP_PX
-                    } else {
-                        SECTION_GAP_PX
-                    };
-                    if is_team && !previous_section_is_team {
-                        // The team list's label carries the order menu.
-                        elements.push(
-                            div()
-                                .pt(px(gap))
-                                .child(Self::order_header(
-                                    "Teams",
-                                    sidebar.mode,
-                                    order_menu_open,
-                                    cx,
-                                ))
-                                .into_any_element(),
-                        );
-                    }
-                    let top = if is_team {
-                        if previous_section_is_team { 4. } else { 0. }
-                    } else {
-                        gap
-                    };
-                    previous_section_is_team = is_team;
-                    first = false;
-                    elements.push(Self::render_section(section, &context, top, cx));
-                }
-                root.child(scroll_viewport(
-                    "sidebar-grouped-bounce",
-                    scroll_handle,
-                    div()
-                        .flex_1()
-                        .min_h(px(0.))
-                        .id("sidebar-sections-scroll")
-                        .overflow_y_scroll()
-                        .scrollbar_width(px(8.))
-                        .track_scroll(scroll_handle)
-                        .on_drag_move::<DraggedSection>(move |event, _, _| {
-                            Self::auto_scroll_during_drag(event, &drag_scroll_handle);
-                        })
-                        .pb_2()
-                        .flex()
-                        .flex_col()
-                        .children(elements),
+                root.child(grouped::render(
+                    sidebar,
+                    &context,
+                    handles,
                     chrome.reduced_motion,
+                    cx,
                 ))
             })
             .child(Self::render_profile_footer(
@@ -641,10 +616,18 @@ impl Sidebar {
 
     fn render_title_bar_row<H: SidebarHost>(
         width_px: f32,
+        mode: SidebarMode,
         chrome: SidebarChrome,
         cx: &mut Context<H>,
     ) -> AnyElement {
-        let compact = width_px < if chrome.update_available { 260. } else { 208. };
+        let view_options = width_px >= VIEW_OPTIONS_MIN_WIDTH_PX;
+        let roomy_px = if chrome.update_available {
+            ROOMY_TOOLBAR_WITH_UPDATE_PX
+        } else {
+            ROOMY_TOOLBAR_PX
+        };
+        let compact = width_px < roomy_px;
+        let order_open = chrome.menu == Some(SidebarMenu::Order);
         let button_size = if compact { 24. } else { TOOLBAR_BUTTON_PX };
         let history = [
             ToolbarButton {
@@ -666,7 +649,28 @@ impl Sidebar {
                 enabled: chrome.can_go_forward,
             },
         ];
-        let tools = [
+        let order = view_options.then(|| {
+            let button = ToolbarButton {
+                id: "sidebar-view-options",
+                tooltip: "Sort by Recent or Group by Team".to_string(),
+                shortcut: None,
+                icon: "assets/icons/arrow-down-up.svg",
+                action: ToolbarAction::Order,
+                on: order_open,
+                enabled: true,
+            }
+            .render(button_size, button_size, cx);
+            if order_open {
+                div()
+                    .relative()
+                    .child(button)
+                    .child(Self::order_menu(mode, cx))
+                    .into_any_element()
+            } else {
+                button
+            }
+        });
+        let mut tools = vec![
             ToolbarButton {
                 id: "sidebar-search-trigger",
                 tooltip: "Jump to conversation".to_string(),
@@ -686,7 +690,6 @@ impl Sidebar {
                 enabled: true,
             },
         ];
-        let mut tools = tools.into_iter().collect::<Vec<_>>();
         if chrome.update_available {
             tools.push(ToolbarButton {
                 id: "sidebar-update",
@@ -722,23 +725,19 @@ impl Sidebar {
                     .collect(),
             ))
             .child(group(
-                tools
+                order
                     .into_iter()
-                    .map(|button| button.render(button_size, button_size, cx))
+                    .chain(
+                        tools
+                            .into_iter()
+                            .map(|button| button.render(button_size, button_size, cx)),
+                    )
                     .collect(),
             ))
             .into_any_element()
     }
 
-    /// The list's label ("Recent", "Teams") as a pop-up button that chooses the
-    /// sidebar order, like a Finder pop-up: label, up-down chevrons, and the menu
-    /// below it while open.
-    fn order_header<H: SidebarHost>(
-        title: &'static str,
-        mode: SidebarMode,
-        open: bool,
-        cx: &mut Context<H>,
-    ) -> AnyElement {
+    fn order_menu<H: SidebarHost>(mode: SidebarMode, cx: &mut Context<H>) -> AnyElement {
         let entries = [
             (SidebarMode::Recent, "Sort by Recent", "⌥⌘1"),
             (SidebarMode::Grouped, "Group by Team", "⌥⌘2"),
@@ -756,66 +755,18 @@ impl Sidebar {
             .shortcut(shortcut_label(keys))
         })
         .collect();
-        let label_color = if open {
-            text_primary()
-        } else {
-            text_secondary()
-        };
-        div()
-            .h(px(SECTION_HEADER_PX))
-            .px_1()
-            .flex()
-            .items_center()
-            .child(
-                div()
-                    .relative()
-                    .child(
-                        div()
-                            .id("sidebar-order-trigger")
-                            .h(px(20.))
-                            .px_1()
-                            .flex()
-                            .items_center()
-                            .gap(px(3.))
-                            .rounded(px(4.))
-                            .cursor_pointer()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(label_color))
-                            .when(open, |trigger| trigger.bg(tint(text_primary(), 0.08)))
-                            .hover(|style| {
-                                style
-                                    .bg(tint(text_primary(), 0.06))
-                                    .text_color(rgb(text_primary()))
-                            })
-                            .tooltip(SidebarTooltip::single_line("Sidebar order".to_string()))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.sidebar_hide_hover_tooltip(cx);
-                                this.sidebar_toggle_menu(SidebarMenu::Order, window, cx);
-                            }))
-                            .child(title)
-                            .child(
-                                svg()
-                                    .path("assets/icons/chevrons-up-down.svg")
-                                    .size(px(10.))
-                                    .text_color(rgb(label_color)),
-                            ),
-                    )
-                    .when(open, |trigger| {
-                        trigger.child(deferred(
-                            anchored()
-                                .anchor(Anchor::TopLeft)
-                                .offset(point(px(0.), px(4.)))
-                                .child(popup_menu(
-                                    "sidebar-order-menu",
-                                    200.,
-                                    entries,
-                                    cx.listener(|this, _, _, cx| this.sidebar_close_menu(true, cx)),
-                                )),
-                        ))
-                    }),
-            )
-            .into_any_element()
+        deferred(
+            anchored()
+                .anchor(Anchor::TopRight)
+                .offset(point(px(0.), px(4.)))
+                .child(popup_menu(
+                    "sidebar-order-menu",
+                    200.,
+                    entries,
+                    cx.listener(|this, _, _, cx| this.sidebar_close_menu(true, cx)),
+                )),
+        )
+        .into_any_element()
     }
 
     fn render_profile_footer<H: SidebarHost>(
@@ -860,7 +811,7 @@ impl Sidebar {
         div()
             .flex_shrink_0()
             // Out to the sidebar's edges, so the divider spans its full width.
-            .mx(px(-8.))
+            .mx(px(-SIDEBAR_PADDING_PX))
             .px_2()
             .py(px(6.))
             .border_t_1()
@@ -982,176 +933,6 @@ impl Sidebar {
         scroll_handle.set_offset(offset);
     }
 
-    /// A section of the grouped list, `top` px below what precedes it.
-    fn render_section<H: SidebarHost>(
-        section: &SidebarSection,
-        context: &RowContext<'_>,
-        top: f32,
-        cx: &mut Context<H>,
-    ) -> AnyElement {
-        if section.id.0.starts_with("group_")
-            && let Some(team) = section.rows.iter().find_map(|row| row.team.as_ref())
-        {
-            return div()
-                .pt(px(top))
-                .child(
-                    TeamGroup {
-                        team,
-                        section_id: &section.id,
-                        rows: &section.rows,
-                        collapsed: section.collapsed,
-                        context,
-                    }
-                    .render(cx),
-                )
-                .into_any_element();
-        }
-        let is_unread_section = section.is_unread();
-        let rows: Vec<AnyElement> = if is_unread_section {
-            Self::render_unread_rows(section, context, cx)
-        } else if section.collapsed {
-            Vec::new()
-        } else {
-            section
-                .rows
-                .iter()
-                .map(|row| Self::render_row(&section.id, row, context, cx))
-                .collect()
-        };
-        div()
-            .pt(px(top))
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .child(Self::section_header(section, cx))
-            .children(rows)
-            .into_any_element()
-    }
-
-    /// A section's label row. Collapsible sections put their disclosure
-    /// chevron at the right edge, like Finder: always shown while collapsed,
-    /// revealed on hover while expanded.
-    fn section_header<H: SidebarHost>(section: &SidebarSection, cx: &mut Context<H>) -> AnyElement {
-        let collapsible = !section.is_unread();
-        let group = SharedString::from(format!("sidebar-section-{}", section.id.0));
-        let section_id = section.id.clone();
-        let section_id_for_drop = section.id.clone();
-        let drag_title = section.title.clone();
-        div()
-            .id(group.clone())
-            .group(group.clone())
-            .h(px(SECTION_HEADER_PX))
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_1()
-            .text_xs()
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(rgb(text_secondary()))
-            .px_2()
-            .rounded_md()
-            .when(collapsible, |header| {
-                header
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.sidebar_toggle_section(section_id.clone(), cx);
-                    }))
-                    .on_drag(DraggedSection(section.id.clone()), {
-                        let title = drag_title.clone();
-                        move |_, _, _, cx| {
-                            cx.new(|_| DragPreview {
-                                title: title.clone(),
-                            })
-                        }
-                    })
-                    .drag_over::<DraggedSection>(|style, _, _, _| {
-                        style.border_t_2().border_color(rgb(accent()))
-                    })
-                    .on_drop(cx.listener(move |this, dragged: &DraggedSection, _, cx| {
-                        this.sidebar_reorder_section(
-                            dragged.0.clone(),
-                            section_id_for_drop.clone(),
-                            cx,
-                        );
-                    }))
-            })
-            .child(section.title.clone())
-            .when(collapsible, |header| {
-                header.child(disclosure(section.collapsed, group))
-            })
-            .into_any_element()
-    }
-
-    /// Unread shortcuts: one compact line each, whatever the row style, with the
-    /// same mark and inset as Recent. The full previews stay in the sections below.
-    fn render_unread_rows<H: SidebarHost>(
-        section: &SidebarSection,
-        context: &RowContext<'_>,
-        cx: &mut Context<H>,
-    ) -> Vec<AnyElement> {
-        let mut seen = HashSet::new();
-        let ambiguous = section
-            .rows
-            .iter()
-            .filter(|row| row.team.is_some())
-            .filter(|row| !seen.insert(row.label.to_lowercase()))
-            .map(|row| row.label.to_lowercase())
-            .collect::<HashSet<_>>();
-        section
-            .rows
-            .iter()
-            .map(|row| {
-                let selection = RowSelection::of(
-                    row,
-                    context.current_route,
-                    context.selected_section == Some(&section.id),
-                );
-                let route_label = row.route.label();
-                let id = format!("sidebar-{}-{route_label}", section.id.0);
-                let activity = RowActivity::of(row);
-                let colors = RowColors::new(
-                    selection.is_full(),
-                    context.hovered_row == Some(id.as_str()),
-                    &activity,
-                );
-                let emphasized = !selection.is_full() && activity.is_unread();
-                let (label, suffix, leading) = match &row.team {
-                    Some(team) => (
-                        format!("#{}", row.label),
-                        ambiguous
-                            .contains(&row.label.to_lowercase())
-                            .then(|| team.display_name.clone()),
-                        Avatar::render_team(
-                            &team.display_name,
-                            team_asset(context.avatars, &team.id),
-                            ROW_AVATAR_SIZE_PX,
-                        ),
-                    ),
-                    None => (
-                        row.label.clone(),
-                        None,
-                        Self::leading_element(
-                            row,
-                            &route_label,
-                            context.avatars,
-                            &colors,
-                            ROW_AVATAR_SIZE_PX,
-                        ),
-                    ),
-                };
-                CompactRow {
-                    id,
-                    row,
-                    title: title_segments(label, suffix, &colors, emphasized),
-                    leading,
-                    colors: &colors,
-                    selection,
-                }
-                .render(cx)
-            })
-            .collect()
-    }
-
     /// A row in a team or the Conversations section, in the chosen style.
     fn render_row<H: SidebarHost>(
         section_id: &SidebarSectionId,
@@ -1159,47 +940,32 @@ impl Sidebar {
         context: &RowContext<'_>,
         cx: &mut Context<H>,
     ) -> AnyElement {
-        let selection = RowSelection::of(
-            row,
-            context.current_route,
-            context.selected_section == Some(section_id),
-        );
+        let selected = &row.route == context.current_route;
         let activity = RowActivity::of(row);
         let route_label = row.route.label();
-        // Rows can appear in several sections (Unread and their own); keep ids unique.
         let row_id = format!("sidebar-{}-{route_label}", section_id.0);
         let colors = RowColors::new(
-            selection.is_full(),
+            selected,
             context.hovered_row == Some(row_id.as_str()),
             &activity,
         );
-        let emphasized = !selection.is_full() && activity.is_unread();
-        let channel_under_team = row.team.is_some() && matches!(row.route, Route::Channel { .. });
+        let emphasized = !selected && activity.is_unread();
         match context.look {
             RowLook::Previews { compact_time } => {
-                // A channel shows its team's logo rather than a `#`.
-                let lead = if let Some(team) = row.team.as_ref().filter(|_| channel_under_team) {
-                    Avatar::render_team(
-                        &team.display_name,
-                        team_asset(context.avatars, &team.id),
-                        PREVIEW_AVATAR_PX,
-                    )
-                } else {
-                    Self::leading_element(
-                        row,
-                        &route_label,
-                        context.avatars,
-                        &colors,
-                        PREVIEW_AVATAR_PX,
-                    )
-                };
+                let lead = Self::leading_element(
+                    row,
+                    &route_label,
+                    context.avatars,
+                    &colors,
+                    PREVIEW_AVATAR_PX,
+                );
                 PreviewRow {
                     row,
                     id: row_id,
                     title: title_segments(row.label.clone(), None, &colors, emphasized),
                     lead,
                     colors: &colors,
-                    selected: selection.is_full(),
+                    selected,
                     live: row
                         .route
                         .conversation_key()
@@ -1208,7 +974,8 @@ impl Sidebar {
                 }
                 .render(cx)
             }
-            RowLook::Compact => CompactRow {
+            RowLook::Compact | RowLook::Channel => CompactRow {
+                height: context.look.row_px(),
                 title: title_segments(row.label.clone(), None, &colors, emphasized),
                 leading: Self::leading_element(
                     row,
@@ -1220,7 +987,7 @@ impl Sidebar {
                 id: row_id,
                 row,
                 colors: &colors,
-                selection,
+                selected,
             }
             .render(cx),
         }
@@ -1244,12 +1011,16 @@ impl Sidebar {
                 Avatar::render_team(&row.label, asset, size)
             }
             Route::Channel { .. } => div()
-                .w(px(size))
+                .size(px(size))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(hash_icon(hsla_to_rgb(colors.secondary)))
+                .child(icon_asset(
+                    "assets/icons/hash.svg",
+                    if size >= PREVIEW_AVATAR_PX { 18. } else { 16. },
+                    hsla_to_rgb(colors.secondary),
+                ))
                 .into_any_element(),
             Route::DirectMessage { .. } => Avatar::render_sidebar_participants_on(
                 conversation_avatars
@@ -1271,21 +1042,30 @@ impl Sidebar {
     }
 }
 
-/// A header's disclosure chevron, at its right edge. Shown while collapsed;
-/// revealed by hovering `group` while expanded.
 pub(super) fn disclosure(collapsed: bool, group: SharedString) -> AnyElement {
-    div()
-        .flex_shrink_0()
-        .when(!collapsed, |chevron| {
-            chevron
-                .opacity(0.)
-                .group_hover(group, |style| style.opacity(1.))
-        })
-        .child(if collapsed {
-            chevron_right_icon(text_secondary())
+    svg()
+        .path(if collapsed {
+            "assets/icons/chevron-right.svg"
         } else {
-            chevron_down_icon(text_secondary())
+            "assets/icons/chevron-down.svg"
         })
+        .size(px(HEADER_ICON_PX))
+        .flex_shrink_0()
+        .text_color(rgb(text_secondary()))
+        .when(!collapsed, |chevron| chevron.opacity(0.6))
+        .group_hover(group, |style| {
+            style.opacity(1.).text_color(rgb(text_primary()))
+        })
+        .into_any_element()
+}
+
+fn section_label(title: &'static str) -> AnyElement {
+    div()
+        .pl(px(ROW_INSET_PX))
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(rgb(text_secondary()))
+        .child(title)
         .into_any_element()
 }
 
@@ -1318,27 +1098,6 @@ mod tests {
         assert_eq!(badge_label(3, false), "3");
         assert_eq!(badge_label(120, false), "99+");
         assert_eq!(badge_label(120, true), "@99+");
-    }
-
-    #[test]
-    fn only_the_owning_section_draws_the_full_selection() {
-        let route = Route::Preferences;
-        let row = SidebarRow {
-            label: "general".into(),
-            team: None,
-            unread_count: 0,
-            mention_count: 0,
-            route: route.clone(),
-            preview: None,
-            muted: false,
-        };
-        assert_eq!(RowSelection::of(&row, &route, true), RowSelection::Full);
-        assert_eq!(RowSelection::of(&row, &route, false), RowSelection::Marker);
-        let other = Route::Search {
-            workspace_id: crate::domain::ids::WorkspaceId::new("ws"),
-            query: String::new(),
-        };
-        assert_eq!(RowSelection::of(&row, &other, true), RowSelection::None);
     }
 
     #[test]
