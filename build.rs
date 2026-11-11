@@ -2,12 +2,15 @@ use std::{env, path::PathBuf, process::Command};
 
 fn main() {
     println!("cargo:rerun-if-changed=native/updater.m");
+    println!("cargo:rerun-if-changed=native/notifications.m");
     println!("cargo:rerun-if-env-changed=SPARKLE_DIR");
     #[cfg(windows)]
     windows_resources();
-    if env::var_os("CARGO_FEATURE_MACOS_UPDATER").is_none()
-        || env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
-    {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
+    build_notifications();
+    if env::var_os("CARGO_FEATURE_MACOS_UPDATER").is_none() {
         return;
     }
     let framework = PathBuf::from(
@@ -69,4 +72,40 @@ fn windows_resources() {
     embed_resource::compile_for("assets/windows/zbase.rc", ["zbase"], embed_resource::NONE)
         .manifest_required()
         .unwrap();
+}
+
+fn build_notifications() {
+    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    let object = out.join("notifications.o");
+    let status = Command::new("clang")
+        .args([
+            "-fobjc-arc",
+            "-fblocks",
+            "-Wall",
+            "-Wextra",
+            "-Werror=return-type",
+            "-Werror=protocol",
+            "-mmacosx-version-min=15.0",
+            "-c",
+            "native/notifications.m",
+            "-o",
+        ])
+        .arg(&object)
+        .status()
+        .expect("clang");
+    assert!(status.success(), "Notification bridge failed to compile");
+    assert!(
+        Command::new("ar")
+            .arg("crs")
+            .arg(out.join("libzbase_notifications.a"))
+            .arg(object)
+            .status()
+            .unwrap()
+            .success()
+    );
+    println!("cargo:rustc-link-search=native={}", out.display());
+    println!("cargo:rustc-link-lib=static=zbase_notifications");
+    println!("cargo:rustc-link-lib=framework=UserNotifications");
+    println!("cargo:rustc-link-lib=framework=CoreGraphics");
+    println!("cargo:rustc-link-lib=framework=AppKit");
 }

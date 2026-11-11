@@ -14,8 +14,7 @@ pub mod window_preferences;
 pub mod window_preferences_writer;
 
 use self::{
-    draft_store::DraftStore, media_service::MediaService,
-    notifications_service::NotificationsService, search_service::SearchService,
+    draft_store::DraftStore, media_service::MediaService, search_service::SearchService,
     settings_store::SettingsStore, sync_service::SyncService, uploads_service::UploadsService,
 };
 
@@ -25,7 +24,6 @@ pub struct AppServices {
     pub media: MediaService,
     pub search: SearchService,
     pub uploads: UploadsService,
-    pub notifications: NotificationsService,
     pub draft_store: DraftStore,
     pub settings_store: SettingsStore,
 }

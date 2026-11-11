@@ -156,6 +156,8 @@ pub enum BackendEvent {
         newer_cursor: Option<String>,
     },
     MessageUpserted(MessageRecord),
+    /// Keybase asked for a desktop banner for this message.
+    DesktopNotification(crate::domain::desktop_notification::DesktopNotification),
     MessageAttachmentsUpdated {
         conversation_id: ConversationId,
         message_id: MessageId,

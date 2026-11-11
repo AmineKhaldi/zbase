@@ -4,8 +4,10 @@ mod files;
 mod update_notes;
 mod updates;
 use super::pane_window::{PaneWindowSizing, left_shift_for_width};
+use crate::domain::desktop_notification::{Attention, DesktopNotification};
 use crate::models::conversation_model::AvatarParticipant;
 use crate::services::github_pr_service::{GithubPrFetchResult, GithubPrService};
+use crate::services::notifications_service::{self, ClickedNotification};
 use crate::services::og_service::{OgFetchResult, OgService};
 use crate::state::state::{BootPhase, TimelineKey};
 use crate::{
@@ -240,6 +242,8 @@ struct ClosingPane {
 
 pub struct AppWindow {
     update_ui: updates::UpdateUi,
+    /// Whether macOS shows zBase's banners, for Settings.
+    notification_permission: notifications_service::NotificationPermission,
     models: AppModels,
     pane_window_sizing: PaneWindowSizing,
     /// How far left the window was moved to fit an expanded pane on screen.
@@ -901,6 +905,7 @@ impl AppWindow {
 
         Self {
             update_ui: updates::UpdateUi::new(),
+            notification_permission: Default::default(),
             models,
             pane_window_sizing: PaneWindowSizing::default(),
             pane_window_shift: 0.,
@@ -1055,6 +1060,8 @@ impl AppWindow {
                 this.window_is_focused = window.is_window_active();
                 if this.window_is_focused {
                     this.request_mark_conversation_read_if_needed();
+                    // The user may be back from System Settings.
+                    notifications_service::refresh_permission();
                 }
                 // Selection and focus rings change with key status.
                 this.refresh(cx);
@@ -1465,6 +1472,7 @@ impl AppWindow {
         let drain_t0 = Instant::now();
         self.sync_drafts_from_inputs(cx);
         self.poll_updates(cx);
+        self.poll_notification_permission(cx);
         let polled_events = self.backend_router.poll_backends();
         self.perf_harness.record_backend_poll(polled_events.len());
         if !polled_events.is_empty() {
@@ -1510,6 +1518,10 @@ impl AppWindow {
             if let BackendEvent::BenchmarkPulse(sent_at) = &event {
                 self.perf_harness
                     .record_duration(PerfTimer::BackendDeliveryDelay, sent_at.elapsed());
+                continue;
+            }
+            if let BackendEvent::DesktopNotification(notification) = &event {
+                self.show_desktop_notification(notification);
                 continue;
             }
             if defer_model_sync {
@@ -5414,6 +5426,80 @@ impl AppWindow {
         }
     }
 
+    /// Picks up a changed macOS answer so Settings redraws.
+    fn poll_notification_permission(&mut self, cx: &mut Context<Self>) {
+        let permission = notifications_service::permission();
+        if permission != self.notification_permission {
+            self.notification_permission = permission;
+            cx.notify();
+        }
+    }
+
+    /// Posts Keybase's banner unless the conversation is muted or the user is
+    /// reading it right now.
+    fn show_desktop_notification(&self, notification: &DesktopNotification) {
+        let state = self.app_store.snapshot();
+        let known = state
+            .workspace
+            .channels
+            .iter()
+            .chain(&state.workspace.direct_messages)
+            .find(|summary| summary.id == notification.conversation_id);
+        let attention = Attention {
+            window_focused: self.window_is_focused,
+            seconds_since_input: notifications_service::seconds_since_user_input(),
+            open_conversation: self.models.navigation.current.conversation_key(),
+        };
+        let Some(banner) = notification.banner(known, &attention) else {
+            return;
+        };
+        // Only an avatar already downloaded to the cache; URLs are skipped.
+        let avatar = state
+            .backend
+            .user_profiles
+            .get(&UserId::new(notification.author.to_ascii_lowercase()))
+            .and_then(|profile| profile.avatar_asset.as_deref())
+            .map(std::path::Path::new)
+            .filter(|path| path.is_file());
+        notifications_service::post(
+            &banner.title,
+            &banner.body,
+            avatar,
+            &ClickedNotification {
+                conversation_id: notification.conversation_id.clone(),
+                message_id: notification.message_id.clone(),
+            },
+            notification.sound,
+        );
+    }
+
+    /// Opens a conversation scrolled to one of its messages.
+    pub(crate) fn open_message(
+        &mut self,
+        conversation_id: &ConversationId,
+        message_id: MessageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let workspace_id = self.models.app.active_workspace_id.clone();
+        let is_dm = self
+            .app_store
+            .snapshot()
+            .workspace
+            .direct_messages
+            .iter()
+            .any(|summary| summary.id == *conversation_id);
+        let route = if is_dm {
+            Route::DirectMessage {
+                workspace_id,
+                dm_id: crate::domain::ids::DmId::new(conversation_id.0.clone()),
+            }
+        } else {
+            route_for_conversation_id(&workspace_id, conversation_id)
+        };
+        self.navigate_to_message(route, message_id, window, cx);
+    }
+
     pub(crate) fn navigate_to_message(
         &mut self,
         route: Route,
@@ -9299,6 +9385,7 @@ impl AppWindow {
         crate::views::preferences::PreferencesContext {
             sidebar_mode: self.models.sidebar.mode,
             updates: self.update_ui.snapshot.clone(),
+            notification_permission: self.notification_permission,
             account: app.current_user_id.as_ref().map(|user_id| {
                 crate::views::preferences::AccountSummary {
                     display_name: if app.current_user_display_name.trim().is_empty() {

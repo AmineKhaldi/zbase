@@ -19,6 +19,7 @@ use crate::{
             ConversationBadgeCounts, ConversationGroup, ConversationKind, ConversationSummary,
             ConversationTeamType,
         },
+        desktop_notification::DesktopNotification,
         ids::{ChannelId, ConversationId, DmId, MessageId, UserId, WorkspaceId},
         message::{
             BroadcastKind, ChatEvent, EditMeta, EmojiSourceRef, LinkPreview, MessageFragment,
@@ -2088,26 +2089,29 @@ async fn run_listener_session(
     account_id: &AccountId,
     shutdown: &AtomicBool,
 ) -> io::Result<()> {
-    let (client, badges, callbacks) = tokio::time::timeout(Duration::from_secs(15), async {
-        let transport = FramedMsgpackTransport::connect(path).await?;
-        let mut client = KeybaseRpcClient::new(transport);
-        client
-            .set_notifications(NotificationChannels::all_enabled())
-            .await?;
-        // Request a full snapshot on every subscription, including reconnects.
-        // getBadgeState includes the daemon's locally applied read state.
-        let (badges, callbacks) = client
-            .call_collecting_callbacks_until_response("keybase.1.badger.getBadgeState", vec![])
-            .await?;
-        Ok::<_, io::Error>((client, badges, callbacks))
-    })
-    .await
-    .map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::TimedOut,
-            "Keybase notification subscription timed out",
-        )
-    })??;
+    let (client, badges, callbacks, notify_sound) =
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let transport = FramedMsgpackTransport::connect(path).await?;
+            let mut client = KeybaseRpcClient::new(transport);
+            // Before subscribing: a plain call would drop interleaved notifications.
+            let notify_sound = fetch_notify_sound(&mut client).await;
+            client
+                .set_notifications(NotificationChannels::all_enabled())
+                .await?;
+            // Request a full snapshot on every subscription, including reconnects.
+            // getBadgeState includes the daemon's locally applied read state.
+            let (badges, callbacks) = client
+                .call_collecting_callbacks_until_response("keybase.1.badger.getBadgeState", vec![])
+                .await?;
+            Ok::<_, io::Error>((client, badges, callbacks, notify_sound))
+        })
+        .await
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Keybase notification subscription timed out",
+            )
+        })??;
     let counts = parse_badge_state(&badges)
         .ok_or_else(|| io::Error::other("invalid Keybase badge snapshot"))?;
     emit_badge_state(sender, local_store, counts, true)?;
@@ -2337,6 +2341,13 @@ async fn run_listener_session(
                     break;
                 }
             }
+        }
+        if let Some(notification) = parse_desktop_notification_from_notify(&event, notify_sound)
+            && sender
+                .send(BackendEvent::DesktopNotification(notification))
+                .is_err()
+        {
+            break;
         }
         if let Some(stub_event) = KeybaseBackend::map_notify_event(event)
             && sender.send(stub_event).is_err()
@@ -10157,6 +10168,67 @@ fn extract_live_message_id_from_valid_message(value: &Value) -> Option<MessageId
         })
 }
 
+/// The banner Keybase wants for an incoming message. The service has already
+/// applied the conversation's notification settings and set
+/// `displayDesktopNotification`; reactions open the message reacted to.
+fn parse_desktop_notification_from_notify(
+    event: &KeybaseNotifyEvent,
+    sound: bool,
+) -> Option<DesktopNotification> {
+    if event.method_name() != "chat.1.NotifyChat.NewChatActivity" {
+        return None;
+    }
+    let raw_params = match event {
+        KeybaseNotifyEvent::Known { raw_params, .. }
+        | KeybaseNotifyEvent::Unknown { raw_params, .. } => raw_params,
+    };
+    let incoming = extract_notify_incoming_message_root(raw_params)?;
+    if map_get(incoming, "displayDesktopNotification").and_then(as_bool) != Some(true) {
+        return None;
+    }
+    let snippet = map_get(incoming, "desktopNotificationSnippet")
+        .and_then(as_str)
+        .map(str::trim)
+        .filter(|snippet| !snippet.is_empty())?;
+    let valid = extract_notify_incoming_valid_message(raw_params)?;
+    let conversation_bytes =
+        find_conversation_id_bytes_for_keys(incoming, &["convID", "convId"], 0)?;
+    let message_id = parse_live_reaction_delta_from_notify(event)
+        .map(|reaction| reaction.target_message_id)
+        .or_else(|| extract_live_message_id_from_valid_message(valid))?;
+    let author = map_get_any(valid, &["senderUsername", "su"])
+        .and_then(as_str)
+        .unwrap_or_default()
+        .to_string();
+    Some(DesktopNotification {
+        conversation_id: ConversationId::new(format!(
+            "kb_conv:{}",
+            hex_encode(&conversation_bytes)
+        )),
+        message_id,
+        author,
+        snippet: snippet.to_string(),
+        conversation: extract_conv_from_notify(event)
+            .and_then(|conv| parse_inbox_ui_item(conv, None))
+            .map(|conversation| conversation.summary),
+        sound,
+    })
+}
+
+/// Keybase's "Play a sound for new messages" setting, off unless set.
+async fn fetch_notify_sound(client: &mut KeybaseRpcClient) -> bool {
+    let args = vec![Value::Map(vec![(
+        Value::from("path"),
+        Value::from("notifySound"),
+    )])];
+    client
+        .call("keybase.1.config.guiGetValue", args)
+        .await
+        .ok()
+        .and_then(|value| map_get(&value, "b").and_then(as_bool))
+        .unwrap_or(false)
+}
+
 fn parse_live_reaction_map_deltas_from_notify(
     event: &KeybaseNotifyEvent,
     conversation_id: &ConversationId,
@@ -16552,6 +16624,18 @@ mod tests {
                     let mut transport = FramedMsgpackTransport::from_stream(stream);
                     let request = transport.read_value().await.unwrap();
                     let parts = as_array(&request).unwrap();
+                    assert_eq!(as_str(&parts[2]), Some("keybase.1.config.guiGetValue"));
+                    transport
+                        .write_value(&Value::Array(vec![
+                            Value::from(1),
+                            parts[1].clone(),
+                            Value::Nil,
+                            Value::Map(vec![(Value::from("b"), Value::from(true))]),
+                        ]))
+                        .await
+                        .unwrap();
+                    let request = transport.read_value().await.unwrap();
+                    let parts = as_array(&request).unwrap();
                     assert_eq!(
                         as_str(&parts[2]),
                         Some("keybase.1.notifyCtl.setNotifications")
@@ -18213,6 +18297,89 @@ mod tests {
             parse_live_message_from_notify(&event).is_none(),
             "payloads without incomingMessage.valid should not synthesize timeline rows"
         );
+    }
+
+    fn incoming_notification_event(display: bool, message_body: Value) -> KeybaseNotifyEvent {
+        KeybaseNotifyEvent::Unknown {
+            method: "chat.1.NotifyChat.NewChatActivity".to_string(),
+            raw_params: Value::Map(vec![(
+                Value::from("activity"),
+                Value::Map(vec![(
+                    Value::from("incomingMessage"),
+                    Value::Map(vec![
+                        (Value::from("convID"), Value::Binary(vec![0xAA, 0xBB])),
+                        (
+                            Value::from("displayDesktopNotification"),
+                            Value::from(display),
+                        ),
+                        (
+                            Value::from("desktopNotificationSnippet"),
+                            Value::from(" alice: hi "),
+                        ),
+                        (
+                            Value::from("message"),
+                            Value::Map(vec![
+                                (Value::from("state"), Value::from(0)),
+                                (
+                                    Value::from("valid"),
+                                    Value::Map(vec![
+                                        (Value::from("messageID"), Value::from(44)),
+                                        (Value::from("senderUsername"), Value::from("alice")),
+                                        (Value::from("messageBody"), message_body),
+                                    ]),
+                                ),
+                            ]),
+                        ),
+                    ]),
+                )]),
+            )]),
+        }
+    }
+
+    fn notification_text_body(text: &str) -> Value {
+        Value::Map(vec![
+            (Value::from("messageType"), Value::from(1)),
+            (
+                Value::from("text"),
+                Value::Map(vec![(Value::from("body"), Value::from(text))]),
+            ),
+        ])
+    }
+
+    #[test]
+    fn desktop_notification_follows_keybase_flag_and_snippet() {
+        let event = incoming_notification_event(true, notification_text_body("hi"));
+        let notification =
+            parse_desktop_notification_from_notify(&event, true).expect("notification");
+        assert_eq!(notification.conversation_id.0, "kb_conv:aabb");
+        assert_eq!(notification.message_id.0, "44");
+        assert_eq!(notification.author, "alice");
+        assert_eq!(notification.snippet, "alice: hi");
+        assert!(notification.sound);
+
+        let quiet = incoming_notification_event(false, notification_text_body("hi"));
+        assert_eq!(parse_desktop_notification_from_notify(&quiet, true), None);
+    }
+
+    #[test]
+    fn desktop_notification_for_reaction_opens_the_reacted_message() {
+        let reaction = Value::Map(vec![
+            (
+                Value::from("messageType"),
+                Value::from(MESSAGE_TYPE_REACTION),
+            ),
+            (
+                Value::from("reaction"),
+                Value::Map(vec![
+                    (Value::from("m"), Value::from(40)),
+                    (Value::from("b"), Value::from(":+1:")),
+                ]),
+            ),
+        ]);
+        let event = incoming_notification_event(true, reaction);
+        let notification =
+            parse_desktop_notification_from_notify(&event, false).expect("notification");
+        assert_eq!(notification.message_id.0, "40");
     }
 
     #[test]

@@ -63,6 +63,12 @@ impl SettingsWindow {
                     subscriptions.push(cx.observe(&app, |_, _, cx| cx.notify()));
                 }
                 subscriptions.push(cx.observe_window_appearance(window, |_, _, cx| cx.notify()));
+                // Coming back from System Settings may have changed the answer.
+                subscriptions.push(cx.observe_window_activation(window, |_, window, _| {
+                    if window.is_window_active() {
+                        crate::services::notifications_service::refresh_permission();
+                    }
+                }));
                 Self {
                     app,
                     main_window,
