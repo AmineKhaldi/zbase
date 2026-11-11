@@ -1,3 +1,4 @@
+use crate::views::typography;
 use crate::{
     domain::user::UserSummary,
     models::new_chat_model::{NewChatModel, start_chat_label},
@@ -38,7 +39,7 @@ pub fn render_new_chat_modal(
                 let user_id = user.id.clone();
                 let name = display_name(user);
                 div()
-                    .h(px(26.))
+                    .min_h(typography::font_px(26.))
                     .pl(px(3.))
                     .pr(px(1.))
                     .flex()
@@ -55,7 +56,7 @@ pub fn render_new_chat_modal(
                     ))
                     .child(
                         div()
-                            .text_size(px(13.))
+                            .text_size(typography::label())
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(rgb(text_primary()))
                             .child(name.clone()),
@@ -168,7 +169,7 @@ pub fn render_new_chat_modal(
                 .items_center()
                 .border_b_1()
                 .border_color(shell_border())
-                .text_size(px(15.))
+                .text_size(typography::font_px(15.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(text_primary()))
                 .child("New conversation"),
@@ -191,10 +192,10 @@ pub fn render_new_chat_modal(
                             .child(
                                 div()
                                     .flex_shrink_0()
-                                    .h(px(26.))
+                                    .min_h(typography::font_px(26.))
                                     .flex()
                                     .items_center()
-                                    .text_size(px(13.))
+                                    .text_size(typography::label())
                                     .text_color(rgb(text_secondary()))
                                     .child("To"),
                             )
@@ -216,7 +217,7 @@ pub fn render_new_chat_modal(
                             .flex()
                             .items_center()
                             .gap(px(6.))
-                            .text_size(px(12.))
+                            .text_size(typography::font_px(12.))
                             .text_color(rgb(affinity_broken()))
                             .child(icon_asset(
                                 "assets/icons/alert-triangle.svg",
@@ -253,7 +254,7 @@ pub fn render_new_chat_modal(
                         .flex_1()
                         .min_w(px(0.))
                         .truncate()
-                        .text_size(px(12.))
+                        .text_size(typography::font_px(12.))
                         .text_color(rgb(text_secondary()))
                         .when_some(keyboard_hint, |hint, text| {
                             hint.child(text.replace("⌘↵", &shortcut_label("⌘↵")))
@@ -374,11 +375,14 @@ fn person_row(
                         .flex()
                         .items_center()
                         .gap(px(4.))
-                        .child(div().text_size(px(13.)).text_color(primary).child(
-                            StyledText::new(name.clone()).with_highlights(
-                                name_matches.into_iter().map(|range| (range, bold)),
-                            ),
-                        ))
+                        .child(
+                            div()
+                                .text_size(typography::label())
+                                .text_color(primary)
+                                .child(StyledText::new(name.clone()).with_highlights(
+                                    name_matches.into_iter().map(|range| (range, bold)),
+                                )),
+                        )
                         .children(crate::views::identity_marker_tinted(
                             gpui_kit::SharedString::from(format!("new-chat-identity-{username}")),
                             user.affinity,
@@ -390,7 +394,7 @@ fn person_row(
                 .child(
                     div()
                         .truncate()
-                        .text_size(px(12.))
+                        .text_size(typography::font_px(12.))
                         .text_color(secondary)
                         .child(StyledText::new(detail.clone()).with_highlights(
                             detail_matches.into_iter().map(|range| (range, bold)),

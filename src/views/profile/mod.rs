@@ -1,5 +1,6 @@
 use crate::domain::profile::SocialListLoadState;
 use crate::views::right_pane::{pane_header, pane_with_header};
+use crate::views::typography;
 use crate::{
     domain::{
         affinity::Affinity,
@@ -128,8 +129,8 @@ pub fn render_profile_panel(
                         .gap_1()
                         .child(
                             div()
-                                .text_size(px(17.))
-                                .line_height(px(22.))
+                                .text_size(typography::font_px(17.))
+                                .line_height(typography::font_px(22.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(rgb(text_primary()))
                                 .child(shown_name.clone()),
@@ -144,7 +145,7 @@ pub fn render_profile_panel(
                 .when_some(other_name, |container, other_name| {
                     container.child(
                         div()
-                            .text_size(px(13.))
+                            .text_size(typography::label())
                             .text_color(rgb(text_secondary()))
                             .child(other_name),
                     )
@@ -152,7 +153,7 @@ pub fn render_profile_panel(
                 .when_some(title, |container, title| {
                     container.child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(typography::font_px(12.))
                             .text_color(rgb(text_secondary()))
                             .child(title.to_string()),
                     )
@@ -160,7 +161,7 @@ pub fn render_profile_panel(
                 .when(!presence_text.is_empty(), |container| {
                     container.child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(typography::font_px(12.))
                             .text_color(rgb(text_secondary()))
                             .child(presence_text),
                     )
@@ -200,8 +201,8 @@ pub fn render_profile_panel(
             .when_some(bio, |about, bio| {
                 about.child(
                     div()
-                        .text_size(px(13.))
-                        .line_height(px(19.))
+                        .text_size(typography::label())
+                        .line_height(typography::font_px(19.))
                         .text_color(rgb(text_primary()))
                         .child(bio.to_string()),
                 )
@@ -209,7 +210,7 @@ pub fn render_profile_panel(
             .when_some(location, |about, location| {
                 about.child(
                     div()
-                        .text_size(px(12.))
+                        .text_size(typography::font_px(12.))
                         .text_color(rgb(text_secondary()))
                         .child(location.to_string()),
                 )
@@ -251,7 +252,7 @@ pub fn render_profile_panel(
                     div()
                         .min_w(px(0.))
                         .truncate()
-                        .text_size(px(13.))
+                        .text_size(typography::label())
                         .text_color(rgb(text_primary()))
                         .child(entry_name.clone()),
                 )
@@ -355,7 +356,7 @@ pub fn render_profile_panel(
                             div()
                                 .id("profile-social-retry")
                                 .cursor_pointer()
-                                .text_size(px(12.))
+                                .text_size(typography::font_px(12.))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(rgb(link()))
                                 .child("Retry")
@@ -462,7 +463,7 @@ fn profile_section(title: Option<&'static str>, content: AnyElement) -> AnyEleme
 fn quiet_note(text: &'static str) -> AnyElement {
     div()
         .py(px(4.))
-        .text_size(px(13.))
+        .text_size(typography::label())
         .text_color(rgb(text_secondary()))
         .child(text)
         .into_any_element()
@@ -558,7 +559,7 @@ pub fn render_profile_card(
                         .when_some(other_name, |container, other_name| {
                             container.child(
                                 div()
-                                    .text_xs()
+                                    .text_size(typography::caption())
                                     .text_color(rgb(text_secondary()))
                                     .child(other_name),
                             )
@@ -573,7 +574,7 @@ pub fn render_profile_card(
             |container, bio| {
                 container.child(
                     div()
-                        .text_sm()
+                        .text_size(typography::body())
                         .text_color(rgb(text_secondary()))
                         .child(bio.to_string()),
                 )
@@ -582,7 +583,7 @@ pub fn render_profile_card(
         .when_some(social_graph, |container, graph| {
             container.child(
                 div()
-                    .text_xs()
+                    .text_size(typography::caption())
                     .text_color(rgb(text_secondary()))
                     .child(format!(
                         "{} followers \u{00B7} {} following",
@@ -681,7 +682,7 @@ fn social_tab(
     div()
         .id(id)
         .pb(px(8.))
-        .text_size(px(13.))
+        .text_size(typography::label())
         .font_weight(FontWeight::MEDIUM)
         .cursor(CursorStyle::PointingHand)
         .text_color(rgb(if selected {
@@ -724,7 +725,7 @@ fn render_proofs_section(
                 )),
                 ProofState::Pending => Some(
                     div()
-                        .text_size(px(12.))
+                        .text_size(typography::font_px(12.))
                         .text_color(rgb(text_secondary()))
                         .child("Pending")
                         .into_any_element(),
@@ -772,14 +773,14 @@ fn render_proofs_section(
                             div()
                                 .min_w(px(0.))
                                 .truncate()
-                                .text_size(px(13.))
+                                .text_size(typography::label())
                                 .text_color(rgb(text_primary()))
                                 .child(proof.service_username.clone()),
                         )
                         .child(
                             div()
                                 .flex_shrink_0()
-                                .text_size(px(12.))
+                                .text_size(typography::font_px(12.))
                                 .text_color(rgb(text_secondary()))
                                 .child(service.label),
                         ),
@@ -862,7 +863,7 @@ fn render_teams_section(teams: &[crate::domain::profile::TeamShowcaseEntry]) -> 
                                     div()
                                         .min_w(px(0.))
                                         .truncate()
-                                        .text_size(px(13.))
+                                        .text_size(typography::label())
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(rgb(text_primary()))
                                         .child(team.name.clone()),
@@ -870,7 +871,7 @@ fn render_teams_section(teams: &[crate::domain::profile::TeamShowcaseEntry]) -> 
                                 .child(
                                     div()
                                         .flex_shrink_0()
-                                        .text_size(px(12.))
+                                        .text_size(typography::font_px(12.))
                                         .text_color(rgb(text_secondary()))
                                         .child(format!(
                                             "{} {}",
@@ -886,8 +887,8 @@ fn render_teams_section(teams: &[crate::domain::profile::TeamShowcaseEntry]) -> 
                         .when(!team.description.trim().is_empty(), |card| {
                             card.child(
                                 div()
-                                    .text_size(px(12.))
-                                    .line_height(px(16.))
+                                    .text_size(typography::font_px(12.))
+                                    .line_height(typography::font_px(16.))
                                     .text_color(rgb(text_secondary()))
                                     .child(team.description.clone()),
                             )
@@ -912,7 +913,7 @@ fn render_custom_fields_section(fields: &[crate::domain::profile::CustomField]) 
                     div()
                         .w(px(96.))
                         .flex_shrink_0()
-                        .text_size(px(12.))
+                        .text_size(typography::font_px(12.))
                         .text_color(rgb(text_secondary()))
                         .child(field.label.clone()),
                 )
@@ -920,7 +921,7 @@ fn render_custom_fields_section(fields: &[crate::domain::profile::CustomField]) 
                     div()
                         .flex_1()
                         .min_w(px(0.))
-                        .text_size(px(13.))
+                        .text_size(typography::label())
                         .text_color(rgb(text_primary()))
                         .child(field.value.clone()),
                 )

@@ -1,4 +1,5 @@
 use super::{member_avatar, member_markers, pane_header, pane_with_header, truncate_with_ellipsis};
+use crate::views::typography;
 use crate::{
     domain::{
         backend::BackendCapabilities,
@@ -38,7 +39,7 @@ fn details_card() -> Div {
 
 fn section_heading(title: &str) -> AnyElement {
     div()
-        .text_sm()
+        .text_size(typography::body())
         .font_weight(FontWeight::MEDIUM)
         .text_color(rgb(text_secondary()))
         .child(title.to_owned())
@@ -162,7 +163,12 @@ fn notification_check_row(
         .hover(|style| style.bg(subtle_surface()))
         .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
         .child(notification_check_mark(checked))
-        .child(div().text_sm().text_color(rgb(text_primary())).child(label))
+        .child(
+            div()
+                .text_size(typography::body())
+                .text_color(rgb(text_primary()))
+                .child(label),
+        )
         .into_any_element()
 }
 
@@ -185,7 +191,12 @@ fn notification_radio_row(
         .hover(|style| style.bg(subtle_surface()))
         .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
         .child(notification_radio_mark(selected))
-        .child(div().text_sm().text_color(rgb(text_primary())).child(label))
+        .child(
+            div()
+                .text_size(typography::body())
+                .text_color(rgb(text_primary()))
+                .child(label),
+        )
         .into_any_element()
 }
 
@@ -194,7 +205,7 @@ fn notification_group_heading(label: &'static str) -> AnyElement {
         .px_2()
         .pt_2()
         .pb_1()
-        .text_xs()
+        .text_size(typography::caption())
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(rgb(text_secondary()))
         .child(label)
@@ -271,7 +282,7 @@ fn member_section(
                         .flex_1()
                         .min_w(px(0.))
                         .whitespace_nowrap()
-                        .text_sm()
+                        .text_size(typography::body())
                         .text_ellipsis()
                         .text_color(rgb(text_primary()))
                         .child(member.shown_name().to_string()),
@@ -376,7 +387,7 @@ pub(super) fn render_details_panel(
                     })
                     .child(
                         div()
-                            .text_lg()
+                            .text_size(typography::heading())
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(rgb(text_primary()))
                             .text_center()
@@ -385,7 +396,7 @@ pub(super) fn render_details_panel(
                     .when_some(group_name, |card, group| {
                         card.child(
                             div()
-                                .text_sm()
+                                .text_size(typography::body())
                                 .text_center()
                                 .text_color(rgb(text_secondary()))
                                 .child(group),
@@ -417,7 +428,7 @@ pub(super) fn render_details_panel(
                         .child(section_heading("About"))
                         .child(
                             div()
-                                .text_sm()
+                                .text_size(typography::body())
                                 .text_color(rgb(text_primary()))
                                 .child(topic.to_owned()),
                         ),
@@ -451,7 +462,7 @@ pub(super) fn render_details_panel(
                         .child(section_heading("Members"))
                         .child(
                             div()
-                                .text_sm()
+                                .text_size(typography::body())
                                 .text_color(rgb(text_secondary()))
                                 .child("Member list is not available yet."),
                         ),
@@ -468,7 +479,7 @@ pub(super) fn render_details_panel(
                                 .bg(rgb(panel_alt_bg()))
                                 .px_2()
                                 .py_1p5()
-                                .text_xs()
+                                .text_size(typography::caption())
                                 .text_color(rgb(text_secondary()))
                                 .child("No files in the loaded messages."),
                         )
@@ -506,7 +517,7 @@ pub(super) fn render_details_panel(
                                         .flex_1()
                                         .min_w(px(0.))
                                         .overflow_hidden()
-                                        .text_xs()
+                                        .text_size(typography::caption())
                                         .text_color(rgb(accent()))
                                         .child(truncated_name),
                                 )
@@ -517,7 +528,14 @@ pub(super) fn render_details_panel(
             )
             .when_some(
                 details.and_then(|details| details.leave_error.clone()),
-                |panel, error| panel.child(div().text_sm().text_color(rgb(danger())).child(error)),
+                |panel, error| {
+                    panel.child(
+                        div()
+                            .text_size(typography::body())
+                            .text_color(rgb(danger()))
+                            .child(error),
+                    )
+                },
             )
             .when(details.is_some_and(|details| details.can_leave), |panel| {
                 let leaving = details.is_some_and(|details| details.is_leaving);
@@ -530,7 +548,7 @@ pub(super) fn render_details_panel(
                         .border_color(rgb(border()))
                         .bg(panel_alt_surface())
                         .p_3()
-                        .text_sm()
+                        .text_size(typography::body())
                         .text_center()
                         .text_color(rgb(danger()))
                         .cursor(if leaving {

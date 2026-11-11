@@ -1,3 +1,4 @@
+use crate::views::typography;
 mod details;
 pub(crate) mod files;
 mod members;
@@ -320,7 +321,7 @@ impl ThreadPane {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .text_xs()
+                            .text_size(typography::caption())
                             .text_color(rgb(0xffffff))
                             .child(chevron_down_icon(0xffffff))
                             .child(format!(
@@ -438,7 +439,7 @@ fn render_parent_message(
                         )
                         .child(
                             div()
-                                .text_xs()
+                                .text_size(typography::caption())
                                 .text_color(rgb(text_secondary()))
                                 .child(message_timestamp_label(message.timestamp_ms)),
                         ),
@@ -583,7 +584,7 @@ fn render_parent_message(
                                                         let label = attachment_label.clone();
                                                         move || {
                                                             div()
-                                                                .text_xs()
+                                                                .text_size(typography::caption())
                                                                 .text_color(rgb(text_secondary()))
                                                                 .child(label.clone())
                                                                 .into_any_element()
@@ -594,7 +595,7 @@ fn render_parent_message(
                                         if let Some(ref caption) = caption_text {
                                             card = card.child(
                                                 div()
-                                                    .text_xs()
+                                                    .text_size(typography::caption())
                                                     .text_color(rgb(text_secondary()))
                                                     .child(caption.clone()),
                                             );
@@ -687,7 +688,7 @@ fn render_parent_message(
                                                             .py_0p5()
                                                             .rounded_sm()
                                                             .bg(tint(0x000000, 0.6))
-                                                            .text_xs()
+                                                            .text_size(typography::caption())
                                                             .text_color(rgb(0xFFFFFF))
                                                             .child(label),
                                                     )
@@ -937,7 +938,7 @@ fn render_link_previews(
                                         preview.site.clone().unwrap_or_else(|| "media".to_string());
                                     move || {
                                         div()
-                                            .text_xs()
+                                            .text_size(typography::caption())
                                             .text_color(rgb(text_secondary()))
                                             .child(site.clone())
                                             .into_any_element()
@@ -963,7 +964,7 @@ fn render_link_previews(
                                     .bg(panel_alt_surface())
                                     .border_1()
                                     .border_color(rgb(border()))
-                                    .text_xs()
+                                    .text_size(typography::caption())
                                     .text_color(rgb(text_primary()))
                                     .child("video"),
                             )
@@ -1003,15 +1004,20 @@ fn render_link_previews(
                 .gap_0p5()
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(typography::caption())
                         .text_color(rgb(text_secondary()))
                         .child(site),
                 )
-                .child(div().text_sm().text_color(rgb(text_primary())).child(title))
+                .child(
+                    div()
+                        .text_size(typography::body())
+                        .text_color(rgb(text_primary()))
+                        .child(title),
+                )
                 .when(has_title && !is_giphy, |container| {
                     container.child(
                         div()
-                            .text_xs()
+                            .text_size(typography::caption())
                             .text_color(rgb(crate::views::link()))
                             .child(preview.url.clone()),
                     )
@@ -1045,7 +1051,7 @@ fn render_link_previews(
         .when(hidden > 0, |container| {
             container.child(
                 div()
-                    .text_xs()
+                    .text_size(typography::caption())
                     .text_color(rgb(text_secondary()))
                     .child(format!("+{} more links", hidden)),
             )
@@ -1088,7 +1094,7 @@ fn thread_no_replies_note() -> AnyElement {
                 .child(
                     div()
                         .flex_shrink_0()
-                        .text_xs()
+                        .text_size(typography::caption())
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(rgb(text_secondary()))
                         .child("No replies yet"),
@@ -1097,7 +1103,7 @@ fn thread_no_replies_note() -> AnyElement {
         )
         .child(
             div()
-                .text_size(px(13.))
+                .text_size(typography::label())
                 .text_color(rgb(text_secondary()))
                 .child(
                     "Reply below. Replies also appear in the conversation, quoting this message.",
@@ -1127,7 +1133,7 @@ pub(crate) fn pane_header(
     cx: &mut Context<AppWindow>,
 ) -> AnyElement {
     div()
-        .h(px(56.))
+        .min_h(typography::font_px(56.))
         .flex_shrink_0()
         .px_4()
         .flex()
@@ -1144,7 +1150,7 @@ pub(crate) fn pane_header(
                 .flex_col()
                 .child(
                     div()
-                        .text_size(px(15.))
+                        .text_size(typography::font_px(15.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(rgb(text_primary()))
                         .child(title.to_string()),
@@ -1152,7 +1158,7 @@ pub(crate) fn pane_header(
                 .when_some(subtitle, |block, subtitle| {
                     block.child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(typography::font_px(12.))
                             .text_color(rgb(text_secondary()))
                             .whitespace_normal()
                             .line_clamp(1)
@@ -1500,7 +1506,9 @@ fn render_inline_fragments(
             container.text_size(px(48.)).line_height(px(52.))
         })
         .when(!emoji_only, |container| {
-            container.text_sm().line_height(px(22.))
+            container
+                .text_size(typography::body())
+                .line_height(typography::font_px(22.))
         })
         .child(resolve_selectable_text_with_attachments(
             selectable_texts,
@@ -1561,8 +1569,8 @@ fn render_inline_fragments_with_asset_emojis(
                                 let alias = alias.clone();
                                 move || {
                                     div()
-                                        .text_sm()
-                                        .line_height(px(22.))
+                                        .text_size(typography::body())
+                                        .line_height(typography::font_px(22.))
                                         .child(format!(":{alias}:"))
                                         .into_any_element()
                                 }
@@ -1684,7 +1692,9 @@ fn render_inline_fragments_with_asset_emojis(
                 container.text_size(px(48.)).line_height(px(52.))
             })
             .when(!emoji_only, |container| {
-                container.text_sm().line_height(px(22.))
+                container
+                    .text_size(typography::body())
+                    .line_height(typography::font_px(22.))
             })
             .child(resolve_selectable_text(
                 selectable_texts,
@@ -1711,7 +1721,9 @@ fn render_inline_fragments_with_asset_emojis(
                 container.text_size(px(48.)).line_height(px(52.))
             })
             .when(!emoji_only, |container| {
-                container.text_sm().line_height(px(22.))
+                container
+                    .text_size(typography::body())
+                    .line_height(typography::font_px(22.))
             })
             .child(resolve_selectable_text(
                 selectable_texts,
@@ -1802,8 +1814,8 @@ fn render_fragment(
             };
             div()
                 .when(compact_inline, |container| container.flex_1().min_w(px(0.)))
-                .text_sm()
-                .line_height(px(22.))
+                .text_size(typography::body())
+                .line_height(typography::font_px(22.))
                 .text_color(rgb(text_primary()))
                 .child(selectable)
                 .into_any_element()
@@ -1829,10 +1841,10 @@ fn render_fragment(
                 )
             };
             div()
-                .text_sm()
+                .text_size(typography::body())
                 .font_family(mono_font_family())
                 .text_size(mono_font_size())
-                .line_height(px(22.))
+                .line_height(typography::font_px(22.))
                 .text_color(rgb(text_primary()))
                 .child(selectable)
                 .into_any_element()
@@ -1858,8 +1870,8 @@ fn render_fragment(
                 )
             };
             div()
-                .text_sm()
-                .line_height(px(22.))
+                .text_size(typography::body())
+                .line_height(typography::font_px(22.))
                 .text_color(rgb(text_primary()))
                 .child(selectable)
                 .into_any_element()
@@ -1889,10 +1901,10 @@ fn render_fragment(
                 .py_0p5()
                 .rounded_sm()
                 .bg(rgb(crate::views::inline_code_background()))
-                .text_sm()
+                .text_size(typography::body())
                 .font_family(mono_font_family())
                 .text_size(crate::views::inline_code_font_size())
-                .line_height(px(22.))
+                .line_height(typography::font_px(22.))
                 .text_color(rgb(crate::views::inline_code_foreground()))
                 .child(selectable)
                 .into_any_element()
@@ -1908,7 +1920,9 @@ fn render_fragment(
                             container.text_size(px(48.)).line_height(px(52.))
                         })
                         .when(!emoji_only, |container| {
-                            container.text_sm().line_height(px(22.))
+                            container
+                                .text_size(typography::body())
+                                .line_height(typography::font_px(22.))
                         })
                         .child(unicode.clone())
                         .into_any_element();
@@ -1936,7 +1950,9 @@ fn render_fragment(
                                             container.text_size(px(48.)).line_height(px(52.))
                                         })
                                         .when(!emoji_only, |container| {
-                                            container.text_sm().line_height(px(22.))
+                                            container
+                                                .text_size(typography::body())
+                                                .line_height(typography::font_px(22.))
                                         })
                                         .child(format!(":{alias}:"))
                                         .into_any_element()
@@ -1953,7 +1969,9 @@ fn render_fragment(
                         container.text_size(px(48.)).line_height(px(52.))
                     })
                     .when(!emoji_only, |container| {
-                        container.text_sm().line_height(px(22.))
+                        container
+                            .text_size(typography::body())
+                            .line_height(typography::font_px(22.))
                     })
                     .child(unicode.to_string())
                     .into_any_element();
@@ -1964,7 +1982,9 @@ fn render_fragment(
                     container.text_size(px(48.)).line_height(px(52.))
                 })
                 .when(!emoji_only, |container| {
-                    container.text_sm().line_height(px(22.))
+                    container
+                        .text_size(typography::body())
+                        .line_height(typography::font_px(22.))
                 })
                 .child(format!(":{alias}:"))
                 .into_any_element()
@@ -2047,8 +2067,8 @@ fn render_fragment(
             };
             div()
                 .when(compact_inline, |container| container.flex_1().min_w(px(0.)))
-                .text_sm()
-                .line_height(px(22.))
+                .text_size(typography::body())
+                .line_height(typography::font_px(22.))
                 .text_color(rgb(text_primary()))
                 .child(selectable)
                 .into_any_element()
@@ -2112,8 +2132,8 @@ fn render_styled_fragment_text(
     };
     div()
         .when(compact_inline, |container| container.flex_1().min_w(px(0.)))
-        .text_sm()
-        .line_height(px(22.))
+        .text_size(typography::body())
+        .line_height(typography::font_px(22.))
         .text_color(rgb(text_primary()))
         .child(selectable)
         .into_any_element()
@@ -2176,8 +2196,8 @@ fn render_linked_styled_fragment_text(
     };
     div()
         .when(compact_inline, |container| container.flex_1().min_w(px(0.)))
-        .text_sm()
-        .line_height(px(22.))
+        .text_size(typography::body())
+        .line_height(typography::font_px(22.))
         .text_color(rgb(text_primary()))
         .child(selectable)
         .into_any_element()

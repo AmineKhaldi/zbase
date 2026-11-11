@@ -1,3 +1,4 @@
+use crate::views::typography;
 use crate::{
     domain::{
         message::LinkPreview,
@@ -112,7 +113,7 @@ impl SearchView {
                             div()
                                 .min_w(px(0.))
                                 .truncate()
-                                .text_size(px(12.))
+                                .text_size(typography::font_px(12.))
                                 .text_color(rgb(text_secondary()))
                                 .child(status),
                         )
@@ -203,7 +204,7 @@ impl SearchView {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .text_size(px(13.))
+                    .text_size(typography::label())
                     .text_color(rgb(text_secondary()))
                     .child("Press")
                     .child(keycap("↵"))
@@ -231,7 +232,7 @@ impl SearchView {
         let foreground = if active { 0xffffff } else { text_primary() };
         div()
             .id(SharedString::from(format!("search-filter-{label}")))
-            .h(px(26.))
+            .min_h(typography::font_px(26.))
             .px(px(10.))
             .flex()
             .items_center()
@@ -248,7 +249,7 @@ impl SearchView {
                 chip.hover(|style| style.bg(tint(text_primary(), 0.06)))
             })
             .cursor(gpui_kit::CursorStyle::PointingHand)
-            .text_size(px(12.))
+            .text_size(typography::font_px(12.))
             .font_weight(FontWeight::MEDIUM)
             .text_color(rgb(foreground))
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -328,8 +329,8 @@ impl MessageHit<'_> {
         let time = div()
             .id(SharedString::from(format!("{}-time", self.id)))
             .flex_shrink_0()
-            .text_size(px(12.))
-            .line_height(px(18.))
+            .text_size(typography::font_px(12.))
+            .line_height(typography::font_px(18.))
             .text_color(secondary)
             .child(compact_date_label(self.timestamp_ms))
             .when_some(
@@ -351,8 +352,8 @@ impl MessageHit<'_> {
                     .child(
                         div()
                             .flex_shrink_0()
-                            .text_size(px(13.))
-                            .line_height(px(18.))
+                            .text_size(typography::label())
+                            .line_height(typography::font_px(18.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(primary)
                             .child(self.author.to_string()),
@@ -362,8 +363,8 @@ impl MessageHit<'_> {
                             .flex_1()
                             .min_w(px(0.))
                             .truncate()
-                            .text_size(px(12.))
-                            .line_height(px(18.))
+                            .text_size(typography::font_px(12.))
+                            .line_height(typography::font_px(18.))
                             .text_color(secondary)
                             .when_some(self.location, |label, location| {
                                 label.child(location.to_string())
@@ -436,7 +437,7 @@ pub(crate) fn search_result_row(
                 .when(result.message.attachments.len() > 1, |column| {
                     column.child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(typography::font_px(12.))
                             .text_color(if selected {
                                 sidebar_selected_secondary()
                             } else {
@@ -449,7 +450,7 @@ pub(crate) fn search_result_row(
                     let count = result.message.thread_reply_count;
                     column.child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(typography::font_px(12.))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(rgb(if selected {
                                 sidebar_selected_fg()
@@ -553,8 +554,8 @@ pub(crate) fn snippet_text(
     div()
         .w_full()
         .min_w(px(0.))
-        .text_size(px(scale.snippet_size))
-        .line_height(px(scale.snippet_line_height))
+        .text_size(typography::font_px(scale.snippet_size))
+        .line_height(typography::font_px(scale.snippet_line_height))
         .text_color(if on_accent {
             rgb(sidebar_selected_fg())
         } else {
@@ -641,7 +642,7 @@ fn render_link_previews(
                                         preview.site.clone().unwrap_or_else(|| "media".to_string());
                                     move || {
                                         div()
-                                            .text_xs()
+                                            .text_size(typography::caption())
                                             .text_color(rgb(text_secondary()))
                                             .child(site.clone())
                                             .into_any_element()
@@ -667,7 +668,7 @@ fn render_link_previews(
                                     .bg(panel_alt_surface())
                                     .border_1()
                                     .border_color(rgb(border()))
-                                    .text_xs()
+                                    .text_size(typography::caption())
                                     .text_color(rgb(text_primary()))
                                     .child("video"),
                             )
@@ -704,15 +705,15 @@ fn render_link_previews(
                 .gap_0p5()
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(typography::caption())
                         .text_color(rgb(text_secondary()))
                         .child(site),
                 )
-                .child(div().text_sm().child(title))
+                .child(div().text_size(typography::body()).child(title))
                 .when(has_title && !is_giphy, |container| {
                     container.child(
                         div()
-                            .text_xs()
+                            .text_size(typography::caption())
                             .text_color(rgb(accent()))
                             .child(preview.url.clone()),
                     )
@@ -745,7 +746,7 @@ fn render_link_previews(
         .when(hidden > 0, |container| {
             container.child(
                 div()
-                    .text_xs()
+                    .text_size(typography::caption())
                     .text_color(rgb(text_secondary()))
                     .child(format!("+{} more links", hidden)),
             )

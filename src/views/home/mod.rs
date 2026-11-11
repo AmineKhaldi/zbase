@@ -1,3 +1,4 @@
+use crate::views::typography;
 use crate::{
     domain::{
         conversation::ConversationSummary,
@@ -75,7 +76,7 @@ impl WorkspaceHomeView {
                                     )
                                     .child(
                                         div()
-                                            .text_sm()
+                                            .text_size(typography::body())
                                             .text_color(rgb(text_secondary()))
                                             .child("Slack-like shell status and quick routes"),
                                     ),
@@ -205,7 +206,7 @@ impl WorkspaceHomeView {
                     )
                     .child(
                         div()
-                            .text_sm()
+                            .text_size(typography::body())
                             .text_color(rgb(text_secondary()))
                             .child(conversation.topic.clone()),
                     ),

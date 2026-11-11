@@ -1,3 +1,4 @@
+use crate::views::typography;
 use crate::{
     domain::{
         conversation::ConversationKind,
@@ -92,7 +93,7 @@ impl ConversationView {
             .flex()
             .items_center()
             .gap_2()
-            .text_xs()
+            .text_size(typography::caption())
             .text_color(rgb(text_primary()))
             .hover(|s| s.bg(glass_surface_dark().opacity(0.98)))
             .child(chevron_down_icon(text_primary()))
@@ -193,7 +194,7 @@ impl ConversationView {
             .justify_between()
             .child(
                 div()
-                    .text_sm()
+                    .text_size(typography::body())
                     .text_color(rgb(text_secondary()))
                     .child("You can read this channel, but need to join to send messages."),
             )
@@ -204,7 +205,7 @@ impl ConversationView {
                     .py_1()
                     .rounded_md()
                     .bg(rgb(accent()))
-                    .text_sm()
+                    .text_size(typography::body())
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(0xffffff))
                     .cursor_pointer()
@@ -259,7 +260,7 @@ impl ConversationView {
             )
             .child(
                 div()
-                    .text_xs()
+                    .text_size(typography::caption())
                     .text_color(rgb(text_secondary()))
                     .child(status),
             )
@@ -364,13 +365,13 @@ impl ConversationView {
                         div()
                             .min_w(px(0.))
                             .overflow_hidden()
-                            .text_xs()
+                            .text_size(typography::caption())
                             .text_color(rgb(text_secondary()))
                             .child(preview_text),
                     )
                     .when(!is_message_pin, |d| {
                         d.text_color(rgb(text_secondary()))
-                            .child(div().text_xs().child("Unavailable"))
+                            .child(div().text_size(typography::caption()).child("Unavailable"))
                     }),
             )
             .child(
@@ -457,8 +458,8 @@ impl ConversationHeader {
                     .max_w_full()
                     .child(
                         div()
-                            .text_size(px(17.))
-                            .line_height(px(22.))
+                            .text_size(typography::font_px(17.))
+                            .line_height(typography::font_px(22.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(rgb(text_primary()))
                             .min_w(px(0.))
@@ -475,8 +476,8 @@ impl ConversationHeader {
                         div()
                             .min_w(px(0.))
                             .max_w_full()
-                            .text_size(px(12.))
-                            .line_height(px(16.))
+                            .text_size(typography::font_px(12.))
+                            .line_height(typography::font_px(16.))
                             .text_color(rgb(text_secondary()))
                             .whitespace_normal()
                             .line_clamp(1)
@@ -583,7 +584,7 @@ impl ConversationHeader {
         }
 
         div()
-            .h(px(56.))
+            .min_h(typography::font_px(56.))
             .flex_shrink_0()
             .px_4()
             .flex()
@@ -713,7 +714,7 @@ impl ConversationHeader {
             .when_some(count, |button, count| {
                 button.child(
                     div()
-                        .text_size(px(12.))
+                        .text_size(typography::font_px(12.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(rgb(color))
                         .child(count.to_string()),
@@ -770,7 +771,7 @@ fn typing_indicator(label: String, reduced_motion: bool) -> AnyElement {
         .child(
             div()
                 .min_w(px(0.))
-                .text_xs()
+                .text_size(typography::caption())
                 .text_color(rgb(text_secondary()))
                 .truncate()
                 .child(label),
@@ -812,8 +813,8 @@ fn connection_banner(connectivity: &Connectivity) -> Option<AnyElement> {
             .bg(rgb(crate::views::warning_banner_bg()))
             .border_b_1()
             .border_color(shell_border())
-            .text_size(px(13.))
-            .line_height(px(18.))
+            .text_size(typography::label())
+            .line_height(typography::font_px(18.))
             .text_color(rgb(foreground))
             .child(icon_asset(icon, 14., foreground))
             .child(

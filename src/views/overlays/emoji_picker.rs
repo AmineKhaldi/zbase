@@ -1,3 +1,4 @@
+use crate::views::typography;
 use std::collections::{HashMap, HashSet};
 
 use crate::{
@@ -60,7 +61,8 @@ pub(crate) fn render_emoji_picker(
         .border_1()
         .border_color(shell_border_strong())
         .bg(rgb(panel_bg()))
-        .w(px(PANEL_WIDTH_PX))
+        .w(typography::font_px(PANEL_WIDTH_PX))
+        .max_w_full()
         .h(px(PANEL_HEIGHT_PX))
         .flex()
         .flex_col()
@@ -107,7 +109,7 @@ fn render_search_row(input: &Entity<TextField>, cx: &mut Context<AppWindow>) -> 
         .child(
             div()
                 .flex_1()
-                .text_sm()
+                .text_size(typography::body())
                 .text_color(rgb(text_primary()))
                 .id("emoji-picker-input")
                 .on_click(cx.listener(AppWindow::focus_emoji_picker_input))
@@ -208,7 +210,7 @@ fn render_bookmarks(
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_sm()
+                .text_size(px(14.))
                 .bg(if selected {
                     tint(accent_soft(), 0.92)
                 } else {
@@ -313,7 +315,7 @@ fn render_search_results(
                 .bg(rgb(panel_bg()))
                 .px_3()
                 .py_2()
-                .text_sm()
+                .text_size(typography::body())
                 .text_color(rgb(text_secondary()))
                 .child("No emoji matches"),
         );
@@ -410,7 +412,7 @@ fn render_emoji_item(item: &EmojiPickerItem, tone: Option<emojis::SkinTone>) -> 
                             let alias = alias.clone();
                             move || {
                                 div()
-                                    .text_xs()
+                                    .text_size(typography::caption())
                                     .text_color(rgb(text_secondary()))
                                     .child(format!(":{alias}:"))
                                     .into_any_element()
@@ -427,7 +429,7 @@ fn render_emoji_item(item: &EmojiPickerItem, tone: Option<emojis::SkinTone>) -> 
                     .into_any_element();
             }
             div()
-                .text_xs()
+                .text_size(typography::caption())
                 .text_color(rgb(text_secondary()))
                 .child(format!(":{alias}:"))
                 .into_any_element()
@@ -468,10 +470,15 @@ fn render_hover_footer(
                     .min_w(px(0.0))
                     .flex()
                     .flex_col()
-                    .child(div().text_sm().text_color(rgb(text_primary())).child(title))
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(typography::body())
+                            .text_color(rgb(text_primary()))
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(typography::caption())
                             .text_color(rgb(text_secondary()))
                             .child(subtitle),
                     ),
@@ -479,7 +486,7 @@ fn render_hover_footer(
     } else {
         footer = footer.child(
             div()
-                .text_xs()
+                .text_size(typography::caption())
                 .text_color(rgb(text_secondary()))
                 .child("Pick an emoji"),
         );
@@ -490,7 +497,7 @@ fn render_hover_footer(
 
 fn section_title(title: impl Into<String>) -> AnyElement {
     div()
-        .text_xs()
+        .text_size(typography::caption())
         .text_color(rgb(text_secondary()))
         .font_weight(gpui_kit::FontWeight::MEDIUM)
         .child(title.into())

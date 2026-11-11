@@ -2,6 +2,7 @@
 //! 24px items that fill with a soft grey on hover, an optional check-mark
 //! column, right-aligned shortcuts and separators. The owner keeps the open
 //! state, places the menu with `anchored` and closes it from `on_dismiss`.
+use crate::views::typography;
 use crate::views::{is_dark_theme, text_primary, text_secondary, tint};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
@@ -89,7 +90,7 @@ pub fn popup_menu(
         .border_1()
         .border_color(menu_border())
         .shadow(menu_shadow())
-        .text_size(px(13.))
+        .text_size(typography::label())
         .text_color(rgb(text_primary()))
         .on_mouse_down_out(on_dismiss)
         .children(entries.into_iter().enumerate().map(|(index, entry)| {
@@ -108,7 +109,7 @@ pub fn popup_menu(
                 } => {
                     div()
                         .id(SharedString::from(format!("{id}-item-{index}")))
-                        .h(px(ITEM_HEIGHT_PX))
+                        .min_h(typography::font_px(ITEM_HEIGHT_PX))
                         .pl(px(if has_checks { 4. } else { 10. }))
                         .pr(px(10.))
                         .flex()

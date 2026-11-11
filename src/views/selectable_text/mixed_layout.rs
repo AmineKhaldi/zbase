@@ -43,11 +43,12 @@ fn plan(
     text: &str,
     runs: &[TextRun],
     code_ranges: &[Range<usize>],
-    body_size: Pixels,
+    sizes: (Pixels, Pixels),
     line_height: Pixels,
     wrap_width: Pixels,
     mut advances: impl FnMut(Range<usize>, usize, Pixels) -> Vec<(usize, Pixels)>,
 ) -> Plan {
+    let (body_size, code_size) = sizes;
     let mut styled = Vec::new();
     let mut start = 0;
     for (index, run) in runs.iter().enumerate() {
@@ -56,7 +57,7 @@ fn plan(
             .iter()
             .any(|range| range.start <= start && range.end >= end)
         {
-            crate::views::inline_code_font_size().min(body_size)
+            code_size.min(body_size)
         } else {
             body_size
         };
@@ -285,7 +286,10 @@ impl MixedLayout {
             text,
             runs,
             code_ranges,
-            body_size,
+            (
+                body_size,
+                crate::views::inline_code_font_size().to_pixels(window.rem_size()),
+            ),
             line_height,
             wrap_width,
             |range, run, size| {
@@ -502,7 +506,7 @@ mod tests {
                 &text,
                 &runs(&[length]),
                 std::slice::from_ref(&(0..length)),
-                px(14.),
+                (px(14.), px(12.)),
                 px(22.),
                 px(30.),
                 |range, _, size| {
@@ -536,7 +540,7 @@ mod tests {
             text,
             &runs(&[text.len()]),
             std::slice::from_ref(&(0..text.len())),
-            px(14.),
+            (px(14.), px(12.)),
             px(22.),
             px(200.),
             |range, _, size| fixed_advances(text, range, size),
@@ -576,7 +580,7 @@ mod tests {
             text,
             &runs,
             std::slice::from_ref(&(start..end)),
-            px(14.),
+            (px(14.), px(12.)),
             px(22.),
             px(80.),
             |range, _, size| fixed_advances(text, range, size),
@@ -600,12 +604,32 @@ mod tests {
         assert!(result.line_starts.len() > 1);
     }
 
+    #[test]
+    fn enlarged_inline_code_scales_with_the_body() {
+        let text = "body code end";
+        let result = plan(
+            text,
+            &runs(&[5, 4, 4]),
+            std::slice::from_ref(&(5..9)),
+            (px(21.), px(18.)),
+            px(33.),
+            px(300.),
+            |range, _, size| fixed_advances(text, range, size),
+        );
+        for span in &result.spans {
+            assert_eq!(
+                span.font_size,
+                if span.run == 1 { px(18.) } else { px(21.) }
+            );
+        }
+    }
+
     fn lines(text: &str, width: f32) -> Vec<String> {
         let result = plan(
             text,
             &runs(&[text.len()]),
             &[],
-            px(14.),
+            (px(14.), px(12.)),
             px(22.),
             px(width),
             |range, _, size| fixed_advances(text, range, size),

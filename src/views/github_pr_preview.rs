@@ -3,6 +3,7 @@
 use crate::domain::github_pr::{
     GithubCheckCounts, GithubPrPreview, GithubPrState, GithubPrStatus, GithubReviewState,
 };
+use crate::views::typography;
 use crate::views::{
     accent, affinity_broken, affinity_positive, danger, danger_soft, icon_asset, is_dark_theme,
     link, mono_font_family, panel_alt_bg, success, success_soft, text_primary, text_secondary,
@@ -76,7 +77,7 @@ pub fn render_github_pr_preview(preview: &GithubPrPreview) -> Div {
         .flex()
         .items_center()
         .gap_1p5()
-        .text_xs()
+        .text_size(typography::caption())
         .text_color(rgb(text_secondary()))
         .child(icon_asset(icon, 12., icon_color))
         .child(format!(
@@ -89,7 +90,7 @@ pub fn render_github_pr_preview(preview: &GithubPrPreview) -> Div {
         });
 
     let title_row = div()
-        .text_sm()
+        .text_size(typography::body())
         .text_color(rgb(text_primary()))
         .map(|row| match status {
             Some(status) => row.child(status.title.clone()),
@@ -107,7 +108,7 @@ pub fn render_github_pr_preview(preview: &GithubPrPreview) -> Div {
             Some(status) if status.details_loaded => status_chips(row, status, preview.refreshing),
             None if preview.needs_auth => row.child(
                 div()
-                    .text_xs()
+                    .text_size(typography::caption())
                     .text_color(rgb(link()))
                     .child("Run `gh auth login` to see checks and reviews"),
             ),
@@ -156,7 +157,7 @@ fn status_chips(row: Div, status: &GithubPrStatus, refreshing: bool) -> Div {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .text_xs()
+                    .text_size(typography::caption())
                     .text_color(rgb(text_secondary()))
                     .child(icon_asset(RUNNING_ICON, 11., text_secondary()))
                     .child("updating…"),
@@ -227,7 +228,7 @@ fn diff_stat(additions: u32, deletions: u32) -> Div {
         .flex()
         .gap_1()
         .ml_0p5()
-        .text_xs()
+        .text_size(typography::caption())
         .font_family(mono_font_family())
         .child(
             div()
@@ -251,7 +252,7 @@ fn chip(icon: &'static str, label: impl Into<gpui_kit::SharedString>, tone: Tone
         .py_0p5()
         .rounded(px(5.))
         .bg(rgb(bg))
-        .text_xs()
+        .text_size(typography::caption())
         .text_color(rgb(fg))
         .child(icon_asset(icon, 11., fg))
         .child(label.into())

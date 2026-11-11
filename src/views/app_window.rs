@@ -1,3 +1,4 @@
+use crate::views::typography;
 pub(crate) mod downloads;
 mod files;
 mod update_notes;
@@ -434,6 +435,7 @@ struct SidebarViewState {
     conversation_avatars: HashMap<String, SidebarAvatar>,
     current_route: Route,
     theme: crate::app::theme::ThemeVariant,
+    text_size: crate::models::settings_model::TextSize,
     window_active: bool,
     can_go_back: bool,
     can_go_forward: bool,
@@ -562,7 +564,8 @@ impl CachedSidebarView {
 }
 
 impl Render for CachedSidebarView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        window.set_rem_size(px(16. * self.state.text_size.scale()));
         let chrome = SidebarChrome {
             update_available: self.state.update_available,
             reduced_motion: self.state.reduced_motion,
@@ -571,20 +574,22 @@ impl Render for CachedSidebarView {
             search_open: matches!(self.state.current_route, Route::Search { .. }),
             menu: self.menu,
         };
-        with_theme(self.state.theme, || {
-            with_window_active(self.state.window_active, || {
-                Sidebar.render(
-                    &self.state.sidebar,
-                    &self.state.connectivity,
-                    &self.state.current_user_display_name,
-                    self.state.current_user_avatar_asset.as_deref(),
-                    &self.state.conversation_avatars,
-                    &self.state.current_route,
-                    self.hovered_row.as_deref(),
-                    &self.handles,
-                    chrome,
-                    cx,
-                )
+        typography::with_sidebar_size(self.state.text_size, || {
+            with_theme(self.state.theme, || {
+                with_window_active(self.state.window_active, || {
+                    Sidebar.render(
+                        &self.state.sidebar,
+                        &self.state.connectivity,
+                        &self.state.current_user_display_name,
+                        self.state.current_user_avatar_asset.as_deref(),
+                        &self.state.conversation_avatars,
+                        &self.state.current_route,
+                        self.hovered_row.as_deref(),
+                        &self.handles,
+                        chrome,
+                        cx,
+                    )
+                })
             })
         })
     }
@@ -3320,6 +3325,7 @@ impl AppWindow {
             conversation_avatars: self.sidebar_conversation_avatars.clone(),
             current_route: self.models.navigation.current.clone(),
             theme: self.resolved_theme,
+            text_size: self.models.settings.text_size,
             window_active: self.window_is_focused,
             can_go_back: !self.models.navigation.back_stack.is_empty(),
             can_go_forward: !self.models.navigation.forward_stack.is_empty(),
@@ -6612,6 +6618,31 @@ impl AppWindow {
         }
     }
 
+    pub(crate) fn set_text_size(
+        &mut self,
+        size: crate::models::settings_model::TextSize,
+        cx: &mut Context<Self>,
+    ) {
+        if self.models.settings.text_size == size {
+            return;
+        }
+        let at_bottom = self.timeline_is_near_bottom();
+        let mut anchor = self.timeline_list_state.logical_scroll_top();
+        anchor.offset_in_item *= size.scale() / self.models.settings.text_size.scale();
+        self.models.settings.text_size = size;
+        self.timeline_list_state
+            .reset(self.timeline_list_state.item_count());
+        if at_bottom {
+            scroll_list_to_bottom(&self.timeline_list_state);
+        } else {
+            self.timeline_list_state.scroll_to(anchor);
+        }
+        self.persist_settings();
+        self.refresh(cx);
+        // Invalidate retained text/layout in all panes, including the inputs.
+        cx.refresh_windows();
+    }
+
     pub(crate) fn set_density(
         &mut self,
         density: crate::models::settings_model::Density,
@@ -8706,17 +8737,18 @@ impl AppWindow {
                                     .flex_col()
                                     .child(
                                         div()
-                                            .text_sm()
+                                            .text_size(typography::body())
                                             .text_color(rgb(text_primary()))
                                             .child("Keybase Event Inspector"),
                                     )
                                     .child(
-                                        div().text_xs().text_color(rgb(text_secondary())).child(
-                                            format!(
+                                        div()
+                                            .text_size(typography::caption())
+                                            .text_color(rgb(text_secondary()))
+                                            .child(format!(
                                                 "{} methods tracked",
                                                 self.keybase_inspector.entries.len()
-                                            ),
-                                        ),
+                                            )),
                                     ),
                             )
                             .child(
@@ -8789,7 +8821,7 @@ impl AppWindow {
                             .gap_4()
                             .border_b_1()
                             .border_color(shell_border_strong())
-                            .text_xs()
+                            .text_size(typography::caption())
                             .text_color(rgb(text_secondary()))
                             .child(div().w(px(380.)).child("Method"))
                             .child(div().w(px(80.)).child("Count"))
@@ -8815,7 +8847,7 @@ impl AppWindow {
                                     .hover(|s| s.bg(subtle_surface()))
                                     .flex()
                                     .gap_4()
-                                    .text_xs()
+                                    .text_size(typography::caption())
                                     .child(
                                         div()
                                             .w(px(380.))
@@ -9793,6 +9825,7 @@ pub(super) fn window_exit_observer(
 impl Render for AppWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let render_t0 = Instant::now();
+        window.set_rem_size(px(16. * self.models.settings.text_size.scale()));
         self.restore_update_session(window, cx);
         self.remember_update_focus(window, cx);
         self.fit_window_to_sidebar(window, cx);
@@ -10279,7 +10312,7 @@ fn render_sidebar_hover_tooltip(
         .border_color(shell_border_strong())
         .px_2()
         .py_1()
-        .text_xs()
+        .text_size(typography::caption())
         .text_color(rgb(text_primary()))
         .child(tooltip.text.clone())
         .into_any_element()
@@ -10301,8 +10334,8 @@ fn render_reaction_hover_tooltip(
     let glyph = match &content.glyph {
         ReactionGlyph::Unicode(unicode) => Some(
             div()
-                .text_size(px(GLYPH_PX))
-                .line_height(px(34.))
+                .text_size(typography::font_px(GLYPH_PX))
+                .line_height(typography::font_px(34.))
                 .child(unicode.clone())
                 .into_any_element(),
         ),
@@ -10338,8 +10371,8 @@ fn render_reaction_hover_tooltip(
                 .child(
                     div()
                         .text_center()
-                        .text_size(px(12.))
-                        .line_height(px(16.))
+                        .text_size(typography::font_px(12.))
+                        .line_height(typography::font_px(16.))
                         .text_color(rgb(text_secondary()))
                         .child(content.names.clone()),
                 ),
@@ -10348,7 +10381,7 @@ fn render_reaction_hover_tooltip(
 }
 
 fn estimate_tooltip_width_px(text: &str, min_width_px: f32, max_width_px: f32) -> f32 {
-    // Simple heuristic for `.text_xs()` to keep tooltips "hugging" content without
+    // Simple heuristic for `.text_size(typography::caption())` to keep tooltips "hugging" content without
     // needing font metric measurement.
     let chars = text.chars().count().clamp(10, 96) as f32;
     let estimated = chars * 7.1 + 18.0; // glyphs + padding/border

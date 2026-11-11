@@ -46,6 +46,13 @@ fn load_settings() -> SettingsModel {
         if let Some(theme_mode) = crate::app::demo::theme_override() {
             settings.theme_mode = theme_mode;
         }
+        if let Some(size) = std::env::var("ZBASE_DEMO_TEXT_SIZE")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .and_then(crate::models::settings_model::TextSize::from_percent)
+        {
+            settings.text_size = size;
+        }
         if let Some(style) = crate::app::demo::sidebar_style_override() {
             settings.sidebar_style = style;
         }

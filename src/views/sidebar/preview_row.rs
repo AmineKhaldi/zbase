@@ -4,6 +4,7 @@
 //! hover and unread use the compact rows' `RowColors` and `RowActivity`, so
 //! both styles read alike.
 use super::{RowActivity, RowColors, SidebarHost};
+use crate::views::typography;
 use crate::{
     domain::route::Route,
     models::{sidebar_model::SidebarRow, sidebar_preview::PreviewLive},
@@ -72,7 +73,7 @@ impl PreviewRow<'_> {
         let route: Route = row.route.clone();
         div()
             .id(SharedString::from(id))
-            .h(px(PREVIEW_ROW_HEIGHT_PX))
+            .h(px(typography::sidebar_px(PREVIEW_ROW_HEIGHT_PX)))
             .w_full()
             .flex_shrink_0()
             .px(px(8.))
@@ -107,7 +108,7 @@ impl PreviewRow<'_> {
                     .gap(px(1.))
                     .child(
                         div()
-                            .h(px(TITLE_LINE_PX))
+                            .h(px(typography::sidebar_px(TITLE_LINE_PX)))
                             .flex()
                             .items_center()
                             // Tight, so the time gives way before the name does.
@@ -116,16 +117,16 @@ impl PreviewRow<'_> {
                                 div()
                                     .flex_1()
                                     .min_w(px(0.))
-                                    .text_size(px(TITLE_TEXT_PX))
-                                    .line_height(px(TITLE_LINE_PX))
+                                    .text_size(typography::font_px(TITLE_TEXT_PX))
+                                    .line_height(typography::font_px(TITLE_LINE_PX))
                                     .child(TruncatedLine::new(title)),
                             )
                             .when_some(time, |line, time| {
                                 line.child(
                                     div()
                                         .flex_shrink_0()
-                                        .text_size(px(TIME_TEXT_PX))
-                                        .line_height(px(TITLE_LINE_PX))
+                                        .text_size(typography::font_px(TIME_TEXT_PX))
+                                        .line_height(typography::font_px(TITLE_LINE_PX))
                                         .text_color(colors.secondary)
                                         .child(time),
                                 )
@@ -133,7 +134,7 @@ impl PreviewRow<'_> {
                     )
                     .child(
                         div()
-                            .h(px(PREVIEW_LINE_PX))
+                            .h(px(typography::sidebar_px(PREVIEW_LINE_PX)))
                             .flex()
                             .items_center()
                             .gap(px(8.))
@@ -144,8 +145,8 @@ impl PreviewRow<'_> {
                                     .flex()
                                     .items_center()
                                     .gap(px(3.))
-                                    .text_size(px(PREVIEW_TEXT_PX))
-                                    .line_height(px(PREVIEW_LINE_PX))
+                                    .text_size(typography::font_px(PREVIEW_TEXT_PX))
+                                    .line_height(typography::font_px(PREVIEW_LINE_PX))
                                     .when(italic, |line| line.italic())
                                     .when(matches!(live, Some(PreviewLive::NotSent)), |line| {
                                         line.child(

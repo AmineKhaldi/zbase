@@ -3,6 +3,7 @@ use super::{
     preview_row::{PREVIEW_AVATAR_PX, PreviewRow, title_segments},
     team_asset,
 };
+use crate::views::typography;
 use crate::{
     domain::route::Route,
     models::{
@@ -31,6 +32,7 @@ pub(super) fn render<H: SidebarHost>(
     let rows = sidebar.visible_recent_rows().cloned().collect::<Vec<_>>();
     let ambiguous = ambiguous_channel_labels(&rows);
     let theme = crate::views::current_theme();
+    let text_size = typography::sidebar_text_size();
     let window_active = crate::views::window_is_active();
     let avatars = avatars.clone();
     let current = current.clone();
@@ -44,7 +46,7 @@ pub(super) fn render<H: SidebarHost>(
             .flex_1()
             .px_2()
             .py_2()
-            .text_xs()
+            .text_size(typography::caption())
             .text_color(rgb(text_secondary()))
             .child(if filter.is_empty() {
                 "No conversations yet"
@@ -56,26 +58,28 @@ pub(super) fn render<H: SidebarHost>(
     let list = uniform_list("sidebar-recent-list", rows.len(), move |range, _, app| {
         owner
             .update(app, |_, cx| {
-                crate::views::with_theme(theme, || {
-                    crate::views::with_window_active(window_active, || {
-                        rows[range]
-                            .iter()
-                            .map(|recent| {
-                                render_row(
-                                    recent,
-                                    &ambiguous,
-                                    &avatars,
-                                    RowState {
-                                        look,
-                                        current: &current,
-                                        hovered: hovered.as_deref(),
-                                        highlighted: highlighted.as_ref(),
-                                        live: &live,
-                                    },
-                                    cx,
-                                )
-                            })
-                            .collect::<Vec<_>>()
+                typography::with_sidebar_size(text_size, || {
+                    crate::views::with_theme(theme, || {
+                        crate::views::with_window_active(window_active, || {
+                            rows[range]
+                                .iter()
+                                .map(|recent| {
+                                    render_row(
+                                        recent,
+                                        &ambiguous,
+                                        &avatars,
+                                        RowState {
+                                            look,
+                                            current: &current,
+                                            hovered: hovered.as_deref(),
+                                            highlighted: highlighted.as_ref(),
+                                            live: &live,
+                                        },
+                                        cx,
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                        })
                     })
                 })
             })

@@ -1,4 +1,5 @@
 //! Plain-text hover tooltip shared by sidebar rows, toolbar buttons and badges.
+use crate::views::typography;
 use crate::views::{panel_bg, shell_border_strong, text_primary, text_secondary};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
@@ -65,7 +66,7 @@ impl Render for TextTooltip {
                 .bg(rgb(panel_bg()))
                 .border_1()
                 .border_color(shell_border_strong())
-                .text_xs()
+                .text_size(typography::caption())
                 .text_color(rgb(text_primary()))
                 .flex()
                 .items_center()

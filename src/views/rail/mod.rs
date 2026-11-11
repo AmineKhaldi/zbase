@@ -1,3 +1,4 @@
+use crate::views::typography;
 use crate::domain::{ids::DmId, route::Route};
 use crate::{
     models::app_model::AppModel,
@@ -65,7 +66,7 @@ fn nav_item(
         .child(nav_glyph(active, icon))
         .child(
             div()
-                .text_xs()
+                .text_size(typography::caption())
                 .text_color(rgb(if active { text_primary() } else { text_secondary() }))
                 .child(label),
         )
@@ -88,7 +89,7 @@ fn nav_item(
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_xs()
+                    .text_size(typography::caption())
                     .text_color(rgb(text_secondary()))
                     .child(format!("{count}")),
             )

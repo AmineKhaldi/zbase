@@ -28,6 +28,7 @@ pub mod splash;
 pub mod timeline;
 pub mod tooltip;
 pub mod truncated_line;
+pub mod typography;
 
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
@@ -287,8 +288,8 @@ pub fn mono_font_family() -> &'static str {
     }
 }
 
-pub fn mono_font_size() -> gpui_kit::Pixels {
-    px(12.5)
+pub fn mono_font_size() -> gpui_kit::Rems {
+    typography::code()
 }
 
 pub fn text_secondary() -> u32 {
@@ -490,8 +491,8 @@ pub fn syntax_colors() -> SyntaxColors {
     }
 }
 
-pub fn inline_code_font_size() -> gpui_kit::Pixels {
-    px(12.)
+pub fn inline_code_font_size() -> gpui_kit::Rems {
+    typography::inline_code()
 }
 
 pub fn inline_code_foreground() -> u32 {
@@ -755,7 +756,7 @@ pub fn badge(label: impl Into<SharedString>, background: u32, foreground: u32) -
         .rounded_full()
         .bg(rgb(background))
         .text_color(rgb(foreground))
-        .text_xs()
+        .text_size(typography::caption())
         .font_weight(FontWeight::MEDIUM)
         .child(label.into())
         .into_any_element()
@@ -1302,7 +1303,7 @@ pub fn attachment_header_row(attachment: &AttachmentSummary) -> AnyElement {
             div()
                 .min_w(px(0.))
                 .truncate()
-                .text_xs()
+                .text_size(typography::caption())
                 .text_color(rgb(text_primary()))
                 .child(name),
         )
@@ -1310,7 +1311,7 @@ pub fn attachment_header_row(attachment: &AttachmentSummary) -> AnyElement {
             row.child(
                 div()
                     .flex_shrink_0()
-                    .text_xs()
+                    .text_size(typography::caption())
                     .text_color(rgb(text_secondary()))
                     .child(size_label),
             )
@@ -1357,7 +1358,7 @@ pub fn scroll_edge_fade_bottom(surface: Hsla) -> AnyElement {
 pub fn attachment_file_row(attachment: &AttachmentSummary) -> AnyElement {
     let size = attachment_size_text(attachment.size_bytes);
     div()
-        .h(px(32.))
+        .min_h(typography::font_px(32.))
         .max_w(px(360.))
         .pl(px(8.))
         .pr(px(10.))
@@ -1372,7 +1373,7 @@ pub fn attachment_file_row(attachment: &AttachmentSummary) -> AnyElement {
         .child(
             div()
                 .min_w(px(0.))
-                .text_size(px(13.))
+                .text_size(typography::label())
                 .font_weight(gpui_kit::FontWeight::MEDIUM)
                 .text_color(rgb(text_primary()))
                 .truncate()
@@ -1382,7 +1383,7 @@ pub fn attachment_file_row(attachment: &AttachmentSummary) -> AnyElement {
             row.child(
                 div()
                     .flex_shrink_0()
-                    .text_xs()
+                    .text_size(typography::caption())
                     .text_color(rgb(text_secondary()))
                     .child(size_label),
             )
@@ -1424,7 +1425,7 @@ pub fn attachment_upload_row(
             div()
                 .flex_1()
                 .min_w(px(0.))
-                .text_size(px(13.))
+                .text_size(typography::label())
                 .font_weight(gpui_kit::FontWeight::MEDIUM)
                 .text_color(rgb(text_primary()))
                 .truncate()
@@ -1433,7 +1434,7 @@ pub fn attachment_upload_row(
         .child(
             div()
                 .flex_shrink_0()
-                .text_size(px(12.))
+                .text_size(typography::font_px(12.))
                 .text_color(rgb(text_secondary()))
                 .child(status),
         )
@@ -1513,8 +1514,8 @@ pub fn page_header(
                 .when_some(leading, |row, leading| row.child(leading))
                 .child(
                     div()
-                        .text_size(px(17.))
-                        .line_height(px(22.))
+                        .text_size(typography::font_px(17.))
+                        .line_height(typography::font_px(22.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(rgb(text_primary()))
                         .child(title.to_string()),
@@ -1552,8 +1553,8 @@ pub fn back_button(id: impl Into<gpui_kit::ElementId>) -> gpui_kit::Stateful<gpu
 /// 12px semibold secondary style as the sidebar's "Recent".
 pub fn section_label(text: impl Into<SharedString>) -> gpui_kit::Div {
     div()
-        .text_size(px(12.))
-        .line_height(px(16.))
+        .text_size(typography::font_px(12.))
+        .line_height(typography::font_px(16.))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(rgb(text_secondary()))
         .child(text.into())
@@ -1562,7 +1563,7 @@ pub fn section_label(text: impl Into<SharedString>) -> gpui_kit::Div {
 /// A key drawn as a keycap, for keyboard hints: `↵`, `esc`, `⌘K`.
 pub fn keycap(label: impl Into<SharedString>) -> AnyElement {
     div()
-        .h(px(18.))
+        .min_h(typography::font_px(18.))
         .min_w(px(18.))
         .px(px(4.))
         .flex()
@@ -1573,8 +1574,8 @@ pub fn keycap(label: impl Into<SharedString>) -> AnyElement {
         .border_1()
         .border_color(rgb(field_border()))
         .bg(rgb(field_bg()))
-        .text_size(px(11.))
-        .line_height(px(14.))
+        .text_size(typography::font_px(11.))
+        .line_height(typography::font_px(14.))
         .font_weight(FontWeight::MEDIUM)
         .text_color(rgb(text_secondary()))
         .child(label.into())
@@ -1614,8 +1615,8 @@ pub fn empty_state(
         )
         .child(
             div()
-                .text_size(px(14.))
-                .line_height(px(20.))
+                .text_size(typography::font_px(14.))
+                .line_height(typography::font_px(20.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(text_primary()))
                 .text_center()
@@ -1625,8 +1626,8 @@ pub fn empty_state(
             state.child(
                 div()
                     .max_w(px(300.))
-                    .text_size(px(13.))
-                    .line_height(px(18.))
+                    .text_size(typography::label())
+                    .line_height(typography::font_px(18.))
                     .text_color(rgb(text_secondary()))
                     .text_center()
                     .child(body),
@@ -1645,7 +1646,7 @@ pub fn search_field_shell(
     use gpui_kit::InteractiveElement;
     div()
         .id(id)
-        .h(px(height))
+        .min_h(typography::font_px(height))
         .w_full()
         .pl(px(10.))
         .pr(px(8.))
@@ -1658,8 +1659,8 @@ pub fn search_field_shell(
         .when(focused, |field| field.shadow(vec![focus_ring()]))
         .bg(rgb(field_bg()))
         .cursor(gpui_kit::CursorStyle::IBeam)
-        .text_size(px(13.))
-        .line_height(px(18.))
+        .text_size(typography::label())
+        .line_height(typography::font_px(18.))
         .text_color(rgb(text_primary()))
         .child(icon_asset("assets/icons/search.svg", 14., text_secondary()))
         .child(div().flex_1().min_w(px(0.)).child(input))
@@ -1673,7 +1674,7 @@ pub fn primary_button(
     use gpui_kit::InteractiveElement;
     div()
         .id(id)
-        .h(px(28.))
+        .min_h(typography::font_px(28.))
         .px(px(12.))
         .flex()
         .items_center()
@@ -1682,7 +1683,7 @@ pub fn primary_button(
         .bg(rgb(accent_strong()))
         .hover(|style| style.bg(rgb(accent())))
         .cursor(gpui_kit::CursorStyle::PointingHand)
-        .text_size(px(13.))
+        .text_size(typography::label())
         .font_weight(FontWeight::MEDIUM)
         .text_color(rgb(0xffffff))
         .child(label.into())
@@ -1696,7 +1697,7 @@ pub fn secondary_button(
     use gpui_kit::InteractiveElement;
     div()
         .id(id)
-        .h(px(28.))
+        .min_h(typography::font_px(28.))
         .px(px(12.))
         .flex()
         .items_center()
@@ -1707,7 +1708,7 @@ pub fn secondary_button(
         .bg(rgb(field_bg()))
         .hover(|style| style.bg(tint(text_primary(), 0.07)))
         .cursor(gpui_kit::CursorStyle::PointingHand)
-        .text_size(px(13.))
+        .text_size(typography::label())
         .font_weight(FontWeight::MEDIUM)
         .text_color(rgb(text_primary()))
         .child(label.into())
@@ -1716,7 +1717,7 @@ pub fn secondary_button(
 pub fn composer_tool(icon: AnyElement, color: u32) -> AnyElement {
     div()
         .w(px(28.))
-        .h(px(28.))
+        .min_h(typography::font_px(28.))
         .rounded_md()
         .bg(subtle_surface())
         .border_1()
