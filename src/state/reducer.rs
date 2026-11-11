@@ -1,4 +1,5 @@
 mod channel_membership;
+mod team_details;
 
 use crate::domain::{
     affinity::Affinity,
@@ -51,6 +52,8 @@ pub fn reduce(state: &mut UiState, event: AppEvent) -> ReducerOutput {
 
 fn reduce_ui_action(state: &mut UiState, action: UiAction) -> ReducerOutput {
     match action {
+        UiAction::LoadTeamDetails { team } => team_details::load(state, team),
+        UiAction::JoinChannel { conversation } => team_details::join(state, *conversation),
         UiAction::LeaveChannel { conversation_id } => {
             channel_membership::request_leave(state, conversation_id)
         }
@@ -1677,6 +1680,13 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
             super::new_chat_search::merge_results(&mut state.new_chat.search_results, results);
             state.new_chat.is_searching = false;
         }
+        BackendEvent::TeamChannelsLoaded {
+            request_id,
+            channels,
+            conversation_bindings,
+        } => {
+            team_details::loaded(state, request_id, channels, conversation_bindings);
+        }
         BackendEvent::ChannelResolved {
             conversation_binding,
             ..
@@ -1696,6 +1706,7 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
         BackendEvent::ChannelJoined {
             conversation_id, ..
         } => {
+            team_details::joined(state, &conversation_id);
             // A confirmed join supersedes any in-flight leave completion.
             state
                 .workspace
@@ -1709,6 +1720,10 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
                 .workspace
                 .left_conversation_ids
                 .remove(&conversation_id);
+            if let Some(summary) = state.workspace.joining_channels.remove(&conversation_id) {
+                merge_workspace_conversations(state, vec![summary], Vec::new());
+                refresh_sidebar(state);
+            }
         }
         BackendEvent::ConversationCreated {
             op_id: _,
@@ -1831,6 +1846,29 @@ fn reduce_command_failure(
     }
     let mut effects = Vec::new();
     match command {
+        BackendCommand::LoadTeamChannels { request_id, .. } => {
+            if state.team_details.request_id != request_id {
+                return ReducerOutput::default();
+            }
+            state.team_details.loading = false;
+            state.team_details.error = Some(error.clone());
+        }
+        BackendCommand::JoinChannel {
+            conversation_id, ..
+        } => {
+            if state
+                .workspace
+                .joining_channels
+                .remove(&conversation_id)
+                .is_none()
+            {
+                return ReducerOutput::default();
+            }
+            state
+                .workspace
+                .join_channel_errors
+                .insert(conversation_id, error.clone());
+        }
         BackendCommand::LeaveChannel {
             conversation_id, ..
         } => {

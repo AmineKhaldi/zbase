@@ -14,11 +14,15 @@ use crate::{
     util::formatting::now_unix_ms,
 };
 
-pub struct DemoBackend;
+pub struct DemoBackend {
+    joined_channels: std::collections::HashSet<ConversationId>,
+}
 
 impl DemoBackend {
     pub fn new() -> Self {
-        Self
+        Self {
+            joined_channels: Default::default(),
+        }
     }
 
     pub fn conversation_events(conversation_id: ConversationId) -> Vec<BackendEvent> {
@@ -123,6 +127,45 @@ impl ChatBackend for DemoBackend {
 
     fn execute(&mut self, cmd: RoutedBackendCommand) -> Result<Vec<BackendEvent>, BackendError> {
         let events = match cmd {
+            RoutedBackendCommand::LoadTeamChannels {
+                account_id,
+                team_name,
+                request_id,
+                ..
+            } => {
+                let mut channels = demo::demo_team_channels(&team_name);
+                for channel in &mut channels {
+                    channel.joined |= self.joined_channels.contains(&channel.conversation.id);
+                }
+                let conversation_bindings = channels
+                    .iter()
+                    .map(|channel| crate::state::ConversationBinding {
+                        conversation_id: channel.conversation.id.clone(),
+                        backend_id: self.backend_id(),
+                        account_id: account_id.clone(),
+                        provider_conversation_ref:
+                            crate::domain::backend::ProviderConversationRef::new(
+                                channel.conversation.id.0.clone(),
+                            ),
+                    })
+                    .collect();
+                vec![BackendEvent::TeamChannelsLoaded {
+                    request_id,
+                    channels,
+                    conversation_bindings,
+                }]
+            }
+            RoutedBackendCommand::JoinChannel {
+                workspace_id,
+                summary,
+                ..
+            } => {
+                self.joined_channels.insert(summary.id.clone());
+                vec![BackendEvent::ChannelJoined {
+                    workspace_id,
+                    conversation_id: summary.id,
+                }]
+            }
             RoutedBackendCommand::LoadConversation { conversation, .. } => {
                 Self::conversation_events(ConversationId::new(conversation.0))
             }
@@ -198,5 +241,61 @@ impl ChatBackend for DemoBackend {
             _ => Vec::new(),
         };
         Ok(events)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::backend::ProviderConversationRef;
+
+    #[test]
+    fn team_directory_join_is_bound_and_survives_reload() {
+        let mut backend = DemoBackend::new();
+        let load = || RoutedBackendCommand::LoadTeamChannels {
+            account_id: AccountId::new("demo"),
+            workspace_id: WorkspaceId::new(demo::DEMO_WORKSPACE_ID),
+            team_name: demo::DEMO_TEAM_ID.into(),
+            request_id: 1,
+        };
+        let mut events = backend.execute(load()).unwrap();
+        let BackendEvent::TeamChannelsLoaded {
+            channels,
+            conversation_bindings,
+            ..
+        } = events.remove(0)
+        else {
+            panic!("expected directory");
+        };
+        let channel = channels
+            .into_iter()
+            .find(|c| !c.joined)
+            .expect("an unjoined channel");
+        assert!(
+            !demo::demo_channels()
+                .iter()
+                .any(|c| c.id == channel.conversation.id)
+        );
+        assert!(
+            conversation_bindings
+                .iter()
+                .any(|b| b.conversation_id == channel.conversation.id)
+        );
+        let id = channel.conversation.id.clone();
+        let events = backend
+            .execute(RoutedBackendCommand::JoinChannel {
+                account_id: AccountId::new("demo"),
+                workspace_id: WorkspaceId::new(demo::DEMO_WORKSPACE_ID),
+                conversation: ProviderConversationRef::new(id.0.clone()),
+                summary: Box::new(channel.conversation),
+            })
+            .unwrap();
+        assert!(
+            matches!(&events[0], BackendEvent::ChannelJoined { conversation_id, .. } if *conversation_id == id)
+        );
+        let events = backend.execute(load()).unwrap();
+        assert!(
+            matches!(&events[0], BackendEvent::TeamChannelsLoaded { channels, .. } if channels.iter().any(|c| c.conversation.id == id && c.joined))
+        );
     }
 }

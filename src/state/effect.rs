@@ -156,9 +156,15 @@ pub enum BackendCommand {
         workspace_id: WorkspaceId,
         conversation_id: ConversationId,
     },
+    LoadTeamChannels {
+        workspace_id: WorkspaceId,
+        team_name: String,
+        request_id: u64,
+    },
     JoinChannel {
         workspace_id: WorkspaceId,
         conversation_id: ConversationId,
+        summary: Box<crate::domain::conversation::ConversationSummary>,
     },
     LeaveChannel {
         workspace_id: WorkspaceId,

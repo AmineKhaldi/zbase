@@ -549,13 +549,15 @@ mod tests {
     fn wait_for_index(index: &SearchIndex, mut condition: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            index.flush().unwrap();
-            if condition() {
+            // Windows can briefly deny access while Tantivy replaces index files.
+            // Require a successful flush, but allow the writer's next retry to settle.
+            let flushed = index.flush();
+            if flushed.is_ok() && condition() {
                 break;
             }
             assert!(
                 Instant::now() < deadline,
-                "search did not synchronize in time"
+                "search did not synchronize in time; last flush result: {flushed:?}"
             );
             thread::sleep(Duration::from_millis(10));
         }

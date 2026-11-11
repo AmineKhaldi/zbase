@@ -5,6 +5,13 @@ use crate::domain::{
     pins::PinnedItem,
 };
 
+/// A discovered channel is not necessarily a joined sidebar conversation.
+#[derive(Clone, Debug)]
+pub struct TeamChannel {
+    pub conversation: crate::domain::conversation::ConversationSummary,
+    pub joined: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NotificationLevel {
     #[default]

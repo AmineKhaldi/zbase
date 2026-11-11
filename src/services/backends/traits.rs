@@ -200,10 +200,17 @@ pub enum RoutedBackendCommand {
         conversation: ProviderConversationRef,
         workspace_id: WorkspaceId,
     },
+    LoadTeamChannels {
+        account_id: AccountId,
+        workspace_id: WorkspaceId,
+        team_name: String,
+        request_id: u64,
+    },
     JoinChannel {
         account_id: AccountId,
         conversation: ProviderConversationRef,
         workspace_id: WorkspaceId,
+        summary: Box<crate::domain::conversation::ConversationSummary>,
     },
     LeaveChannel {
         account_id: AccountId,

@@ -632,9 +632,30 @@ impl BackendRouter {
                     workspace_id,
                 })
             }
+            BackendCommand::LoadTeamChannels {
+                workspace_id,
+                team_name,
+                request_id,
+            } => {
+                let (account_id, backend_id) =
+                    if let Some(binding) = self.workspace_bindings.get(&workspace_id) {
+                        (binding.account_id.clone(), binding.backend_id.clone())
+                    } else {
+                        self.default_account_backend()?
+                    };
+                self.backend_for_binding(&backend_id)?.execute(
+                    RoutedBackendCommand::LoadTeamChannels {
+                        account_id,
+                        workspace_id,
+                        team_name,
+                        request_id,
+                    },
+                )
+            }
             BackendCommand::JoinChannel {
                 workspace_id,
                 conversation_id,
+                summary,
             } => {
                 let binding = self
                     .conversation_bindings
@@ -648,6 +669,7 @@ impl BackendRouter {
                     account_id: binding.account_id,
                     conversation: binding.provider_conversation_ref,
                     workspace_id,
+                    summary,
                 })
             }
             BackendCommand::LeaveChannel {

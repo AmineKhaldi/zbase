@@ -69,6 +69,8 @@ pub struct DraftState {
 
 #[derive(Clone, Debug, Default)]
 pub struct UiWorkspaceState {
+    pub joining_channels: HashMap<ConversationId, ConversationSummary>,
+    pub join_channel_errors: HashMap<ConversationId, String>,
     pub left_conversation_ids: HashSet<ConversationId>,
     pub leaving_conversation_ids: HashSet<ConversationId>,
     pub leave_channel_errors: HashMap<ConversationId, String>,
@@ -283,8 +285,20 @@ pub struct MessageReactionState {
     pub updated_ms: i64,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct TeamDetailsState {
+    /// Notifications received after this directory request started win over its snapshot.
+    pub membership_changes: HashMap<ConversationId, bool>,
+    pub team: Option<crate::domain::conversation::ConversationGroup>,
+    pub channels: Vec<crate::domain::channel_details::TeamChannel>,
+    pub request_id: u64,
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct UiState {
+    pub team_details: TeamDetailsState,
     pub app: AppState,
     pub navigation: NavigationState,
     pub drafts: HashMap<DraftKey, DraftState>,
@@ -322,6 +336,7 @@ impl Default for UiState {
             drafts: HashMap::new(),
             backend: BackendRuntimeState::default(),
             workspace: UiWorkspaceState::default(),
+            team_details: TeamDetailsState::default(),
             sidebar: UiSidebarState::default(),
             timeline: UiTimelineState::default(),
             thread: UiThreadState::default(),

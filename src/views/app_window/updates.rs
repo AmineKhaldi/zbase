@@ -222,6 +222,7 @@ impl AppWindow {
             RightPaneMode::Thread => "thread".into(),
             RightPaneMode::Members => "members".into(),
             RightPaneMode::Details => "details".into(),
+            RightPaneMode::TeamDetails => "hidden".into(),
             RightPaneMode::Files => "files".into(),
             RightPaneMode::Profile(id) => format!("profile:{}", id.0),
             RightPaneMode::Search => "hidden".into(),

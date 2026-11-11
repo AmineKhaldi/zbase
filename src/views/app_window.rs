@@ -1,6 +1,7 @@
 use crate::views::typography;
 pub(crate) mod downloads;
 mod files;
+mod team_details;
 mod update_notes;
 mod updates;
 use super::pane_window::{PaneWindowSizing, left_shift_for_width};
@@ -605,6 +606,22 @@ impl Render for CachedSidebarView {
 }
 
 impl SidebarHost for CachedSidebarView {
+    fn sidebar_open_conversation_team(&mut self, route: Route, cx: &mut Context<Self>) {
+        let owner = self.owner.clone();
+        cx.defer(move |cx| {
+            let _ = owner.update(cx, |this, cx| this.open_conversation_team(&route, cx));
+        });
+    }
+    fn sidebar_open_team_details(
+        &mut self,
+        team: crate::domain::conversation::ConversationGroup,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = self.owner.clone();
+        cx.defer(move |cx| {
+            let _ = owner.update(cx, |this, cx| this.open_team_details(team, cx));
+        });
+    }
     fn sidebar_show_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let owner = self.owner.clone();
         window.defer(cx, move |_, cx| {
@@ -779,6 +796,16 @@ impl SidebarHost for CachedSidebarView {
 }
 
 impl SidebarHost for AppWindow {
+    fn sidebar_open_conversation_team(&mut self, route: Route, cx: &mut Context<Self>) {
+        self.open_conversation_team(&route, cx);
+    }
+    fn sidebar_open_team_details(
+        &mut self,
+        team: crate::domain::conversation::ConversationGroup,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_team_details(team, cx);
+    }
     fn sidebar_show_updates(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.update_ui.open = true;
         cx.notify();
@@ -1528,6 +1555,12 @@ impl AppWindow {
         let mut deferred_events_applied = false;
         for event in events {
             self.confirm_update_resume_account(&event);
+            if let BackendEvent::ChannelJoined {
+                conversation_id, ..
+            } = &event
+            {
+                self.preview_summaries.remove(conversation_id);
+            }
             if let BackendEvent::BenchmarkPulse(sent_at) = &event {
                 self.perf_harness
                     .record_duration(PerfTimer::BackendDeliveryDelay, sent_at.elapsed());
@@ -1553,7 +1586,11 @@ impl AppWindow {
                                 .register_message_binding(binding.clone());
                         }
                     }
-                    crate::state::event::BackendEvent::WorkspaceConversationsExtended {
+                    crate::state::event::BackendEvent::TeamChannelsLoaded {
+                        conversation_bindings,
+                        ..
+                    }
+                    | crate::state::event::BackendEvent::WorkspaceConversationsExtended {
                         conversation_bindings,
                         ..
                     } => {
@@ -1700,7 +1737,11 @@ impl AppWindow {
                     needs_model_sync = true;
                     needs_refresh = true;
                 }
-                crate::state::event::BackendEvent::WorkspaceConversationsExtended {
+                crate::state::event::BackendEvent::TeamChannelsLoaded {
+                    conversation_bindings,
+                    ..
+                }
+                | crate::state::event::BackendEvent::WorkspaceConversationsExtended {
                     conversation_bindings,
                     ..
                 } => {
@@ -1848,6 +1889,7 @@ impl AppWindow {
 
                 pending_effects.clear();
                 for event in events {
+                    self.register_bindings_from_backend_event(&event);
                     pending_effects.extend(self.app_store.dispatch_backend(event));
                 }
             }
@@ -3111,6 +3153,12 @@ impl AppWindow {
                     sidebar.update(cx, |sidebar, cx| sidebar.open_menu(Some(menu), cx));
                 }
             }
+            DemoScene::TeamDetails => {
+                self.set_sidebar_mode(crate::models::settings_model::SidebarMode::Grouped, cx);
+                if let Some(team) = self.models.conversation.summary.group.clone() {
+                    self.open_team_details(team, cx);
+                }
+            }
             DemoScene::ChatGrouped | DemoScene::ChatPreviewsGrouped => {
                 self.set_sidebar_mode(crate::models::settings_model::SidebarMode::Grouped, cx);
             }
@@ -3788,6 +3836,7 @@ impl AppWindow {
                     }
                 }
                 let reduce_started_at = profile_open_thread.then(Instant::now);
+                self.register_bindings_from_backend_event(&event);
                 pending_effects.extend(self.app_store.dispatch_backend(event));
                 if let Some(reduce_started_at) = reduce_started_at {
                     backend_reduce_elapsed += reduce_started_at.elapsed();
@@ -5194,64 +5243,11 @@ impl AppWindow {
         self.refresh(cx);
     }
 
-    pub(crate) fn join_current_channel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(conversation_id) =
-            conversation_id_from_navigated_route(&self.models.navigation.current)
-        else {
-            tracing::warn!("join_current_channel: no conversation_id from route");
-            return;
-        };
-        tracing::info!("join_current_channel: joining {}", conversation_id.0);
-        let workspace_id = self.models.app.active_workspace_id.clone();
-        let Ok(events) = self
-            .backend_router
-            .route_command(BackendCommand::JoinChannel {
-                workspace_id: workspace_id.clone(),
-                conversation_id: conversation_id.clone(),
-            })
-        else {
-            tracing::warn!(
-                "join_current_channel: route_command failed for {}",
-                conversation_id.0
-            );
-            self.models.push_toast("Failed to join channel", None);
-            cx.notify();
-            return;
-        };
-        let joined = events
-            .iter()
-            .any(|event| matches!(event, BackendEvent::ChannelJoined { .. }));
-        if !joined {
-            tracing::warn!(
-                "join_current_channel: no ChannelJoined event for {}",
-                conversation_id.0
-            );
-            self.models.push_toast("Failed to join channel", None);
-            cx.notify();
-            return;
-        }
-        tracing::info!(
-            "join_current_channel: successfully joined {}",
-            conversation_id.0
-        );
-        self.apply_backend_events_inline(events);
-        self.apply_backend_events_inline(vec![BackendEvent::WorkspaceConversationsExtended {
-            workspace_id: workspace_id.clone(),
-            channels: vec![self.models.conversation.summary.clone()],
-            direct_messages: Vec::new(),
-            conversation_bindings: Vec::new(),
-        }]);
-        self.preview_summaries.remove(&conversation_id);
-
-        if let Ok(workspace_events) = self
-            .backend_router
-            .route_command(BackendCommand::LoadWorkspace { workspace_id })
-        {
-            self.apply_backend_events_inline(workspace_events);
-        }
-        self.models.conversation.can_post = true;
-        self.sync_inputs_from_models(cx);
-        self.restore_chat_focus(window, cx);
+    pub(crate) fn join_current_channel(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let conversation = self.models.conversation.summary.clone();
+        self.dispatch_ui_action(UiAction::JoinChannel {
+            conversation: Box::new(conversation),
+        });
         self.refresh(cx);
     }
 
@@ -5429,7 +5425,11 @@ impl AppWindow {
                         .register_message_binding(binding.clone());
                 }
             }
-            BackendEvent::WorkspaceConversationsExtended {
+            BackendEvent::TeamChannelsLoaded {
+                conversation_bindings,
+                ..
+            }
+            | BackendEvent::WorkspaceConversationsExtended {
                 conversation_bindings,
                 ..
             } => {
@@ -9935,7 +9935,10 @@ impl AppWindow {
             && !is_editing
             && matches!(
                 self.models.navigation.right_pane,
-                RightPaneMode::Thread | RightPaneMode::Profile(_) | RightPaneMode::Details
+                RightPaneMode::Thread
+                    | RightPaneMode::Profile(_)
+                    | RightPaneMode::Details
+                    | RightPaneMode::TeamDetails
             );
         if !had_overlay && is_editing {
             self.cancel_edit(cx);
@@ -10080,8 +10083,21 @@ impl Render for AppWindow {
                             &self.models.profile_panel,
                         ),
                     };
+                    let team_details = &self.app_store.snapshot().team_details;
+                    let team_avatar = team_details.team.as_ref().and_then(|team| {
+                        match self
+                            .sidebar_conversation_avatars
+                            .get(&team_avatar_key(&team.id))
+                        {
+                            Some(SidebarAvatar::Team(asset)) => Some(asset.as_str()),
+                            _ => None,
+                        }
+                    });
                     let pane = RightPaneHost.render(
                         navigation,
+                        team_details,
+                        &self.app_store.snapshot().workspace,
+                        team_avatar,
                         thread,
                         conversation,
                         profile,

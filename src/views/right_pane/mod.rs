@@ -2,6 +2,7 @@ use crate::views::typography;
 mod details;
 pub(crate) mod files;
 mod members;
+mod team;
 use details::render_details_panel;
 use members::render_members_panel;
 
@@ -87,6 +88,9 @@ impl RightPaneHost {
     pub fn render(
         &self,
         navigation: &NavigationModel,
+        team_details: &crate::state::state::TeamDetailsState,
+        workspace: &crate::state::state::UiWorkspaceState,
+        team_avatar: Option<&str>,
         thread: &ThreadPaneModel,
         conversation: &ConversationModel,
         profile_panel: &ProfilePanelModel,
@@ -124,6 +128,9 @@ impl RightPaneHost {
                 unseen_reply_count,
                 cx,
             ),
+            RightPaneMode::TeamDetails => {
+                team::render_team_panel(team_details, workspace, team_avatar, cx)
+            }
             RightPaneMode::Details => render_details_panel(
                 conversation,
                 timeline,

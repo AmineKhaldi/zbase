@@ -461,6 +461,41 @@ fn with_last_message(mut summaries: Vec<ConversationSummary>) -> Vec<Conversatio
     summaries
 }
 
+/// Fictional directory includes channels absent from the joined sidebar list.
+pub(crate) fn demo_team_channels(
+    team_name: &str,
+) -> Vec<crate::domain::channel_details::TeamChannel> {
+    use crate::domain::channel_details::TeamChannel;
+    let mut channels = demo_channels()
+        .into_iter()
+        .filter(|c| c.group.as_ref().is_some_and(|g| g.id == team_name))
+        .map(|conversation| TeamChannel {
+            conversation,
+            joined: true,
+        })
+        .collect::<Vec<_>>();
+    if team_name == DEMO_TEAM_ID {
+        for (name, topic) in [
+            ("engineering", "Engineering discussions"),
+            ("support", "Customer questions and help"),
+        ] {
+            channels.push(TeamChannel {
+                conversation: channel(
+                    &format!("{DEMO_TEAM_ID}.{name}"),
+                    name,
+                    topic,
+                    lighthouse_group(),
+                    0,
+                    0,
+                    demo_time(1, 9, 0),
+                ),
+                joined: false,
+            });
+        }
+    }
+    channels
+}
+
 pub(crate) fn demo_channels() -> Vec<ConversationSummary> {
     with_last_message(vec![
         channel(
