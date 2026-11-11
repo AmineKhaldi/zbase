@@ -40,45 +40,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_ID: ${{ github.event.release.id }}
-          PRERELEASE: ${{ github.event.release.prerelease }}
-        run: |
-          if [[ "$EVENT_NAME" == release ]]; then
-            {
-              echo "ref=$GITHUB_SHA"
-              echo "release-id=$RELEASE_ID"
-              echo "stable=$([[ "$PRERELEASE" == false ]] && echo true || echo false)"
-            } >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [[ -z "$RELEASE_VERSION" ]]; then
-            echo "ref=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
-            echo 'Run releases from main; leave version blank for branch build tests.' >&2
-            exit 1
-          fi
-          python3 scripts/prepare_release.py "$RELEASE_VERSION"
-          tag="v$RELEASE_VERSION"
-          if git show-ref --verify --quiet "refs/tags/$tag"; then
-            echo "Tag $tag already exists. Retry failed jobs in the original run or choose a new version." >&2
-            exit 1
-          fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Cargo.toml Cargo.lock
-          git commit -m "Release $tag"
-          git tag -a "$tag" -m "zBase $tag"
-          # Atomic push prevents a tag being published if main rejects the bump.
-          git push --atomic origin HEAD:refs/heads/main "refs/tags/$tag"
-          gh release create "$tag" --verify-tag --title "zBase $tag" --generate-notes
-          release_id="$(gh api "repos/$GH_REPO/releases/tags/$tag" --jq .id)"
-          {
-            echo "ref=$(git rev-parse HEAD)"
-            echo "release-id=$release_id"
-            echo 'stable=true'
-          } >> "$GITHUB_OUTPUT"
-          printf 'Released [%s](https://github.com/%s/releases/tag/%s). Assets will appear as builds finish.\n' "$tag" "$GH_REPO" "$tag" >> "$GITHUB_STEP_SUMMARY"
+        run: bash scripts/prepare_release_workflow.sh
 
   build:
     needs: prepare
