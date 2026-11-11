@@ -5851,6 +5851,13 @@ impl AppWindow {
         cx: &mut App,
         flush: tokio::sync::oneshot::Receiver<()>,
     ) {
+        // On macOS the window owns the Keybase connection and the Dock badge, so
+        // closing hides the app instead: unread counts keep updating and the Dock
+        // icon brings the window back without reloading conversations.
+        if cfg!(target_os = "macos") {
+            cx.hide();
+            return;
+        }
         window
             .spawn(cx, move |cx: &mut gpui_kit::AsyncWindowContext| {
                 let mut cx = cx.clone();
