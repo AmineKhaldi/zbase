@@ -33,15 +33,7 @@ fn drag_scroll_step(position: Point<Pixels>, bounds: Bounds<Pixels>) -> Pixels {
     }
 }
 
-fn edit_previous_allowed(requested: bool, text: &str) -> bool {
-    requested && text.is_empty()
-}
-
 impl TextField {
-    pub(crate) fn take_edit_previous_request(&mut self) -> bool {
-        edit_previous_allowed(std::mem::take(&mut self.up_at_top_triggered), &self.content)
-    }
-
     pub(super) fn stop_selection_drag(&mut self) {
         self.is_selecting = false;
         self.selection_pointer = None;
@@ -203,14 +195,5 @@ mod tests {
             px(-36.)
         );
         assert_eq!(drag_scroll_step(point(px(50.), px(1000.)), bounds), px(36.));
-    }
-
-    #[test]
-    fn previous_message_edit_is_rejected_for_nonempty_or_newly_pasted_drafts() {
-        assert!(edit_previous_allowed(true, ""));
-        for draft in [" ", "\n\n", "{\n  \"ok\": true\n}", "newly pasted"] {
-            assert!(!edit_previous_allowed(true, draft));
-        }
-        assert!(!edit_previous_allowed(false, ""));
     }
 }

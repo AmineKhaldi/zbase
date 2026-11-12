@@ -173,6 +173,8 @@ pub(crate) const DEMO_MEMBERS_EMPTY_FILTER: &str = "quinn";
 /// Composer draft for the `composer-format` scene, and the words selected in it.
 pub(crate) const DEMO_FORMAT_DRAFT: &str = "Ship rc1 once the smoke test passes";
 pub(crate) const DEMO_FORMAT_SELECTION: &str = "smoke test";
+/// Composer draft for the `composer-autocomplete` scene; it ends in a bare `@`.
+pub(crate) const DEMO_AUTOCOMPLETE_DRAFT: &str = "Release notes are up for review\nThanks @";
 pub(crate) const DEMO_NEW_CHAT_PICK: &str = "samr";
 
 pub(crate) fn demo_user_summary(user_id: &UserId) -> UserSummary {

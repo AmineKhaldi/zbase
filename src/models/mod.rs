@@ -126,7 +126,6 @@ pub(crate) struct QuickSwitcherLocalSearchOutput {
 struct ComposerDraftSnapshot {
     text: String,
     attachments: Vec<AttachmentSummary>,
-    autocomplete: Option<AutocompleteState>,
     mode: ComposerMode,
 }
 
@@ -134,7 +133,6 @@ struct ComposerDraftSnapshot {
 struct ThreadReplyDraftSnapshot {
     text: String,
     attachments: Vec<AttachmentSummary>,
-    autocomplete: Option<AutocompleteState>,
 }
 
 #[derive(Clone, Debug)]
@@ -437,7 +435,7 @@ impl AppModels {
         if let Some(saved) = self.thread_reply_drafts.get(&root_id).cloned() {
             self.thread_pane.reply_draft = saved.text;
             self.thread_pane.reply_attachments = saved.attachments;
-            self.thread_pane.reply_autocomplete = saved.autocomplete;
+            self.thread_pane.reply_autocomplete = None;
         } else {
             self.thread_pane.reply_draft.clear();
             self.thread_pane.reply_attachments.clear();
@@ -1157,7 +1155,6 @@ impl AppModels {
             ComposerDraftSnapshot {
                 text: text.to_string(),
                 attachments: Vec::new(),
-                autocomplete: None,
                 mode: ComposerMode::Compose,
             },
         );
@@ -1294,7 +1291,6 @@ impl AppModels {
 
     pub fn set_composer_autocomplete(&mut self, autocomplete: Option<AutocompleteState>) {
         self.composer.autocomplete = autocomplete;
-        self.store_current_composer_draft();
     }
 
     pub fn remove_thread_attachment(&mut self, index: usize) {
@@ -1306,7 +1302,6 @@ impl AppModels {
 
     pub fn set_thread_autocomplete(&mut self, autocomplete: Option<AutocompleteState>) {
         self.thread_pane.reply_autocomplete = autocomplete;
-        self.store_current_thread_draft();
     }
 
     pub fn mention_autocomplete_candidates(
@@ -1372,14 +1367,16 @@ impl AppModels {
                 .then_with(|| right.1.cmp(&left.1))
                 .then_with(|| left.2.cmp(&right.2))
         });
+        // Truncate members before appending @here/@channel/@everyone, so a
+        // large channel can't push them out of the list.
         let mut candidates = scored
             .into_iter()
             .map(|(_, _, _, candidate)| candidate)
+            .take(max_results.max(1))
             .collect::<Vec<_>>();
         if show_broadcast {
             candidates.extend(mention_broadcast_candidates(query, max_results));
         }
-        candidates.truncate(max_results.max(1));
         candidates
     }
 
@@ -2118,7 +2115,8 @@ impl AppModels {
                 .as_ref()
                 .map(|snapshot| snapshot.attachments.clone())
                 .unwrap_or_default(),
-            autocomplete: saved.and_then(|snapshot| snapshot.autocomplete),
+            // Derived from the restored text and caret once the editor shows it.
+            autocomplete: None,
         }
     }
 
@@ -2133,7 +2131,6 @@ impl AppModels {
             ComposerDraftSnapshot {
                 text: self.composer.draft_text.clone(),
                 attachments: self.composer.attachments.clone(),
-                autocomplete: self.composer.autocomplete.clone(),
                 mode: self.composer.mode.clone(),
             },
         );
@@ -2149,7 +2146,6 @@ impl AppModels {
             ThreadReplyDraftSnapshot {
                 text: self.thread_pane.reply_draft.clone(),
                 attachments: self.thread_pane.reply_attachments.clone(),
-                autocomplete: self.thread_pane.reply_autocomplete.clone(),
             },
         );
     }
@@ -3667,6 +3663,61 @@ mod tests {
             )),
             "Channel mention autocomplete should include broadcast mentions even before details load"
         );
+    }
+
+    #[test]
+    fn mention_autocomplete_keeps_broadcast_in_a_channel_with_many_members() {
+        use crate::domain::channel_details::{
+            ChannelDetails, ChannelMemberPreview, ConversationNotificationSettings,
+        };
+
+        let mut models = AppModels::empty_with_settings(SettingsModel::default());
+        models.conversation.summary.kind = ConversationKind::Channel;
+        let members = (0..20)
+            .map(|index| ChannelMemberPreview {
+                user_id: UserId::new(format!("member{index:02}")),
+                display_name: format!("Member {index:02}"),
+                avatar_asset: None,
+                affinity: Affinity::None,
+                is_team_admin_or_owner: false,
+                is_team_owner: false,
+                availability: None,
+            })
+            .collect::<Vec<_>>();
+        models.conversation.details = Some(ChannelDetails {
+            conversation_id: models.conversation.summary.id.clone(),
+            title: "general".to_string(),
+            topic: String::new(),
+            kind: ConversationKind::Channel,
+            group: None,
+            member_count: 20,
+            members: members.clone(),
+            member_preview: members,
+            notifications: ConversationNotificationSettings::default(),
+            pinned_items: Vec::new(),
+            can_edit_topic: false,
+            can_manage_members: false,
+            can_archive: false,
+            is_leaving: false,
+            leave_error: None,
+            can_leave: true,
+            can_post: true,
+            created_at: None,
+            description: None,
+            is_archived: false,
+        });
+
+        let results = models.mention_autocomplete_candidates("", 8);
+        let users = results
+            .iter()
+            .filter(|candidate| matches!(candidate, AutocompleteCandidate::MentionUser { .. }))
+            .count();
+        let broadcasts = results
+            .iter()
+            .filter(|candidate| matches!(candidate, AutocompleteCandidate::MentionBroadcast { .. }))
+            .count();
+        assert_eq!(users, 8);
+        assert_eq!(broadcasts, 3);
     }
 
     #[test]

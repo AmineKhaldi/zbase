@@ -7,7 +7,7 @@
 # identity-menu order-menu chat-states
 # thread thread-empty profile preferences
 # quick-switcher quick-switcher-search search search-empty dm members
-# members-filter-empty new-chat offline inactive composer-format
+# members-filter-empty new-chat offline inactive composer-format composer-autocomplete
 # reaction-tooltip reaction-tooltip-long (default: all).
 # Themes: light and dark (default: both). Output: <out>/<scene>-<theme>.png,
 # default out dir target/ui_preview/shots. Each run uses a fresh ZBASE_DATA_DIR, so
@@ -22,7 +22,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ALL_SCENES=(team-details files-media files-documents files-empty chat chat-grouped chat-previews chat-previews-grouped chat-grouped-collapsed chat-previews-live identity-menu
   order-menu chat-states details details-dropdown thread thread-empty profile preferences quick-switcher
   quick-switcher-search search search-empty dm members members-filter-empty new-chat offline
-  inactive composer-format reaction-tooltip reaction-tooltip-long)
+  inactive composer-format composer-autocomplete reaction-tooltip reaction-tooltip-long)
 THEMES=(light dark)
 OUT="$ROOT/target/ui_preview/shots"
 BUILD=1
