@@ -16,7 +16,6 @@ pub(super) fn cached_reply_context(
     message: &MessageRecord,
     timeline: &TimelineModel,
 ) -> Option<ReplyContext> {
-    use unicode_segmentation::UnicodeSegmentation;
     let reply_to = message.reply_to.as_ref()?;
     let parent_id = message
         .thread_root_id
@@ -45,27 +44,28 @@ pub(super) fn cached_reply_context(
     ) {
         return None;
     }
-    let text = TimelineList::message_caption_text(&parent.message)
-        .or_else(|| {
-            parent
-                .message
-                .attachments
-                .first()
-                .map(attachment_display_label)
-        })
+    Some(ReplyContext {
+        author: parent.author.shown_name().to_string(),
+        excerpt: message_excerpt(&parent.message, 100),
+    })
+}
+
+/// The message's text (or first attachment's label) on one line, cut to
+/// `max_graphemes` with an ellipsis.
+pub(crate) fn message_excerpt(message: &MessageRecord, max_graphemes: usize) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    let text = TimelineList::message_caption_text(message)
+        .or_else(|| message.attachments.first().map(attachment_display_label))
         .unwrap_or_default()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
     let mut graphemes = text.graphemes(true);
-    let mut preview = graphemes.by_ref().take(100).collect::<String>();
+    let mut excerpt = graphemes.by_ref().take(max_graphemes).collect::<String>();
     if graphemes.next().is_some() {
-        preview.push('…');
+        excerpt.push('…');
     }
-    Some(ReplyContext {
-        author: parent.author.shown_name().to_string(),
-        excerpt: preview,
-    })
+    excerpt
 }
 
 #[cfg(test)]

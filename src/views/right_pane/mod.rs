@@ -888,6 +888,19 @@ fn render_link_previews(
                 lower.contains("giphy.com") || lower.contains("gph.is")
             };
 
+            if let Some(quote) = preview.chat_message.as_ref() {
+                let group = SharedString::from(format!("thread-chat-quote-{message_key}-{index}"));
+                return crate::views::chat_message_preview::render_chat_message_preview(
+                    quote, group,
+                )
+                .id(element_id)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_url_or_deep_link(&url, window, cx);
+                }))
+                .cursor(CursorStyle::PointingHand)
+                .into_any_element();
+            }
+
             if let Some(pr_preview) = preview.github_pr.as_ref() {
                 return crate::views::github_pr_preview::render_github_pr_preview(pr_preview)
                     .id(element_id)

@@ -1780,7 +1780,8 @@ fn reduce_backend_event(state: &mut UiState, event: BackendEvent) -> ReducerOutp
         }
         BackendEvent::KeybaseNotifyStub { .. }
         | BackendEvent::BenchmarkPulse(_)
-        | BackendEvent::DesktopNotification(_) => {}
+        | BackendEvent::DesktopNotification(_)
+        | BackendEvent::LinkedMessageLoaded { .. } => {}
     }
 
     ReducerOutput::default()
