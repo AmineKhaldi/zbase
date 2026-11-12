@@ -20,12 +20,17 @@ pub enum StatusItemEvent {
 
 static EVENTS: OnceLock<UnboundedSender<StatusItemEvent>> = OnceLock::new();
 
-/// Adds the icon once and returns its events, or `None` on platforms without
-/// a menu bar.
+/// Prepares the icon once and returns its events, or `None` on platforms
+/// without a menu bar. It appears once `set_visible(true)` asks for it.
 pub fn start() -> Option<UnboundedReceiver<StatusItemEvent>> {
     let (sender, receiver) = unbounded_channel();
     EVENTS.set(sender).ok()?;
     platform::start().then_some(receiver)
+}
+
+/// Adds the icon to the menu bar or removes it.
+pub fn set_visible(visible: bool) {
+    platform::set_visible(visible);
 }
 
 /// Shows `count`, the Dock badge's number, on the icon; 0 shows the icon alone.
@@ -67,6 +72,7 @@ mod platform {
             icon_png: *const u8,
             icon_len: usize,
         );
+        fn zbase_status_item_set_visible(visible: bool);
         fn zbase_status_item_set_unread(count: u32);
         fn zbase_status_item_watch_outside_clicks(watch: bool);
     }
@@ -96,8 +102,13 @@ mod platform {
         true
     }
 
-    pub fn set_unread(count: u32) {
+    pub fn set_visible(visible: bool) {
         // SAFETY: a no-op before `start`.
+        unsafe { zbase_status_item_set_visible(visible) }
+    }
+
+    pub fn set_unread(count: u32) {
+        // SAFETY: stores the count; draws it once the icon exists.
         unsafe { zbase_status_item_set_unread(count) }
     }
 
@@ -112,6 +123,8 @@ mod platform {
     pub fn start() -> bool {
         false
     }
+
+    pub fn set_visible(_: bool) {}
 
     pub fn set_unread(_: u32) {}
 

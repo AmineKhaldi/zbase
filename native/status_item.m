@@ -13,6 +13,7 @@ typedef void (*ZBaseStatusItemOutsideClick)(void);
 
 static NSStatusItem *item;
 static ZBaseStatusItemTarget *target;
+static uint32_t unreadCount;
 static ZBaseStatusItemOutsideClick onOutsideClick;
 static id globalMonitor;
 static id localMonitor;
@@ -78,9 +79,10 @@ static NSImage *icon_image(uint32_t count) {
 }
 
 // `icon_png` is zBase's icon; the bundle's icon stands in if it can't be read.
+// The icon appears once `zbase_status_item_set_visible` asks for it.
 void zbase_status_item_start(ZBaseStatusItemClick on_click, ZBaseStatusItemOutsideClick on_outside_click,
                              const uint8_t *icon_png, size_t icon_len) {
-    if (item) {
+    if (target) {
         return;
     }
     appIcon = [[NSImage alloc] initWithData:[NSData dataWithBytes:icon_png length:icon_len]]
@@ -88,15 +90,38 @@ void zbase_status_item_start(ZBaseStatusItemClick on_click, ZBaseStatusItemOutsi
     target = [ZBaseStatusItemTarget new];
     target.onClick = on_click;
     onOutsideClick = on_outside_click;
+}
+
+void zbase_status_item_watch_outside_clicks(bool watch);
+
+// Adds the icon to the menu bar or removes it. Removing, rather than hiding,
+// leaves no visibility for macOS to remember between launches.
+void zbase_status_item_set_visible(bool visible) {
+    if (!target) {
+        return;
+    }
+    if (!visible) {
+        zbase_status_item_watch_outside_clicks(false);
+        if (item) {
+            [NSStatusBar.systemStatusBar removeStatusItem:item];
+            item = nil;
+        }
+        return;
+    }
+    if (item) {
+        return;
+    }
     item = [NSStatusBar.systemStatusBar statusItemWithLength:NSVariableStatusItemLength];
-    item.button.image = icon_image(0);
+    item.button.image = icon_image(unreadCount);
     item.button.toolTip = @"zBase";
     item.button.target = target;
     item.button.action = @selector(clicked:);
 }
 
 // Shows `count`, the Dock badge's number, on the icon; 0 shows the icon alone.
+// Kept while the icon is off, so it is current when the icon appears.
 void zbase_status_item_set_unread(uint32_t count) {
+    unreadCount = count;
     if (!item) {
         return;
     }

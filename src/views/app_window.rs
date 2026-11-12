@@ -1070,6 +1070,7 @@ impl AppWindow {
     }
 
     pub fn init(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        crate::services::status_item::set_visible(self.models.settings.show_menu_bar_icon);
         if self.perf_harness.config().autostart {
             cx.activate(true);
             window.activate_window();
@@ -6788,6 +6789,22 @@ impl AppWindow {
             self.persist_settings();
             self.refresh(cx);
         }
+    }
+
+    /// Settings › Menu bar icon: adds or removes the icon at once.
+    pub(crate) fn set_show_menu_bar_icon(&mut self, show: bool, cx: &mut Context<Self>) {
+        if self.models.settings.show_menu_bar_icon == show {
+            return;
+        }
+        self.models.settings.show_menu_bar_icon = show;
+        self.persist_settings();
+        crate::services::status_item::set_visible(show);
+        if !show {
+            cx.defer(|cx| {
+                crate::views::menubar_panel::close(cx);
+            });
+        }
+        self.refresh(cx);
     }
 
     pub(crate) fn set_reduced_motion(&mut self, reduced: bool, cx: &mut Context<Self>) {
