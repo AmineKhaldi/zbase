@@ -210,13 +210,10 @@ pub struct TextField {
     last_platform_selection: Option<Range<usize>>,
     is_selecting: bool,
     field_kind: TextFieldKind,
-    autocomplete_navigation_enabled: bool,
     scroll_y: Pixels,
     scroll_to_cursor: bool,
     selection_pointer: Option<Point<Pixels>>,
     selection_scroll_task: Option<gpui_kit::Task<()>>,
-    /// Raised only by Up in an empty editor; revalidated when consumed.
-    pub up_at_top_triggered: bool,
     pub pasted_image: Option<Vec<u8>>,
     last_content_height: Pixels,
     undo_stack: VecDeque<UndoEntry>,
@@ -308,12 +305,10 @@ impl TextField {
             last_platform_selection: None,
             is_selecting: false,
             field_kind,
-            autocomplete_navigation_enabled: false,
             scroll_y: px(0.),
             scroll_to_cursor: true,
             selection_pointer: None,
             selection_scroll_task: None,
-            up_at_top_triggered: false,
             pasted_image: None,
             last_content_height: px(0.),
             undo_stack: VecDeque::new(),
@@ -350,14 +345,6 @@ impl TextField {
 
     pub fn is_multiline(&self) -> bool {
         self.field_kind.is_multiline()
-    }
-
-    pub fn set_autocomplete_navigation_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        if self.autocomplete_navigation_enabled == enabled {
-            return;
-        }
-        self.autocomplete_navigation_enabled = enabled;
-        cx.notify();
     }
 
     pub fn set_text(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
@@ -570,24 +557,11 @@ impl TextField {
         }
     }
 
-    fn up(&mut self, _: &Up, window: &mut Window, cx: &mut Context<Self>) {
-        if self.autocomplete_navigation_enabled {
-            window.dispatch_action(Box::new(crate::app::commands::SelectPrevious), cx);
-            return;
-        }
-        self.up_at_top_triggered = self.content.is_empty();
-        if self.up_at_top_triggered {
-            cx.notify();
-            return;
-        }
+    fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
         self.move_vertical(-1.0, cx);
     }
 
-    fn down(&mut self, _: &Down, window: &mut Window, cx: &mut Context<Self>) {
-        if self.autocomplete_navigation_enabled {
-            window.dispatch_action(Box::new(crate::app::commands::SelectNext), cx);
-            return;
-        }
+    fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
         self.move_vertical(1.0, cx);
     }
 

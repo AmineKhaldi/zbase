@@ -20,8 +20,8 @@ use crate::{
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     Anchor, AnyElement, ClickEvent, Context, CursorStyle, Entity, FontWeight, Hsla,
-    InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled, anchored,
-    deferred, div, point, px, rgb,
+    InteractiveElement, IntoElement, ParentElement, ScrollHandle, StatefulInteractiveElement,
+    Styled, anchored, deferred, div, point, px, rgb,
 };
 
 #[derive(Default)]
@@ -35,12 +35,13 @@ pub(crate) enum ComposerTarget {
 }
 
 /// Visible state of a composer field.
-#[derive(Clone, Copy)]
 pub(crate) struct ComposerFieldState {
     pub can_send: bool,
     /// While Keybase can't be reached: what the send tooltip says.
     pub send_notice: Option<SendNotice>,
     pub format_menu_open: bool,
+    /// The open @mention or :emoji: list, from [`render_autocomplete_popup`].
+    pub autocomplete: Option<AnyElement>,
 }
 
 /// Bordered message field shared by the conversation and thread composers: an
@@ -122,6 +123,7 @@ pub(crate) fn composer_field(
 
     div()
         .id(surface_id)
+        .relative()
         .w_full()
         .min_h(px(40.))
         .rounded(px(8.))
@@ -193,6 +195,19 @@ pub(crate) fn composer_field(
                 )
                 .child(send),
         )
+        // Sits on the field's top edge at the field's width, however tall the
+        // draft has grown; deferred so it paints over the timeline.
+        .when_some(state.autocomplete, |field, popup| {
+            field.child(deferred(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_full()
+                    .pb(px(6.))
+                    .child(popup),
+            ))
+        })
         .into_any_element()
 }
 
@@ -368,26 +383,32 @@ impl ComposerPanel {
     }
 }
 
+/// The inline @mention / :emoji: list. It scrolls, and the caller keeps the
+/// highlighted row in view through `scroll`.
 pub(crate) fn render_autocomplete_popup(
     autocomplete: &AutocompleteState,
-    composer_target: bool,
+    target: ComposerTarget,
+    scroll: &ScrollHandle,
     cx: &mut Context<AppWindow>,
 ) -> AnyElement {
+    let (list_id, row_id) = match target {
+        ComposerTarget::Conversation => (
+            "inline-autocomplete-composer-list",
+            "inline-autocomplete-composer",
+        ),
+        ComposerTarget::Thread => (
+            "inline-autocomplete-thread-list",
+            "inline-autocomplete-thread",
+        ),
+    };
     let rows = autocomplete
         .candidates
         .iter()
         .enumerate()
         .map(|(index, candidate)| {
             let selected = index == autocomplete.selected_index;
-            let base = div()
-                .id((
-                    if composer_target {
-                        "inline-autocomplete-composer"
-                    } else {
-                        "inline-autocomplete-thread"
-                    },
-                    index,
-                ))
+            div()
+                .id((row_id, index))
                 .w_full()
                 .px_2()
                 .py_1()
@@ -403,17 +424,11 @@ pub(crate) fn render_autocomplete_popup(
                         accent_soft(),
                         if is_dark_theme() { 0.32 } else { 0.65 },
                     ))
-                });
-            let clickable = if composer_target {
-                base.on_click(cx.listener(move |this, _, _, cx| {
-                    this.select_composer_autocomplete_index(index, cx);
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.select_autocomplete_index(target, index, window, cx);
                 }))
-            } else {
-                base.on_click(cx.listener(move |this, _, _, cx| {
-                    this.select_thread_autocomplete_index(index, cx);
-                }))
-            };
-            clickable.child(render_candidate_row(candidate))
+                .child(render_candidate_row(candidate))
         })
         .collect::<Vec<_>>();
 
@@ -424,14 +439,22 @@ pub(crate) fn render_autocomplete_popup(
         .border_color(shell_border_strong())
         .bg(modal_surface())
         .shadow(card_shadow())
-        .px_1()
-        .py_1()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .max_h(px(220.))
-        .overflow_hidden()
-        .children(rows)
+        .p_1()
+        // Clicks and wheel scrolls stay in the list instead of reaching the
+        // timeline painted underneath.
+        .occlude()
+        .child(
+            div()
+                .id(list_id)
+                .flex()
+                .flex_col()
+                .gap_1()
+                // About seven rows; the rest scroll.
+                .max_h(typography::font_px(232.))
+                .overflow_y_scroll()
+                .track_scroll(scroll)
+                .children(rows),
+        )
         .into_any_element()
 }
 

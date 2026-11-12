@@ -59,7 +59,9 @@ use crate::{
         event::{BackendEvent, TeamRoleKind},
     },
     util::{
-        autocomplete_detect::{AutocompleteTriggerKind, TriggerMatch, detect_autocomplete_trigger},
+        autocomplete_detect::{
+            AutocompleteTriggerKind, TriggerMatch, completion_edit, detect_autocomplete_trigger,
+        },
         formatting::now_unix_ms,
         interactive_qos::mark_quick_switcher_input_activity,
         perf_harness::{PerfHarness, PerfTimer},
@@ -123,8 +125,9 @@ const MARK_READ_THROTTLE: Duration = Duration::from_millis(1200);
 const MAX_VIDEO_RENDER_CACHE_ENTRIES: usize = 8;
 const MAX_BACKEND_EVENTS_PER_DRAIN: usize = 48;
 const NON_TEXT_PLACEHOLDER_BODY: &str = "<non-text message>";
-const INLINE_AUTOCOMPLETE_MAX_RESULTS: usize = 8;
-const AUTOCOMPLETE_NAV_DEBOUNCE: Duration = Duration::from_millis(35);
+/// Members or emoji in the inline autocomplete list; it scrolls past the
+/// first few rows.
+const INLINE_AUTOCOMPLETE_MAX_RESULTS: usize = 50;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InputAutocompleteTarget {
@@ -378,7 +381,9 @@ pub struct AppWindow {
     last_text_input_activity: Option<Instant>,
     dismissed_composer_autocomplete: Option<AutocompleteDismissSignature>,
     dismissed_thread_autocomplete: Option<AutocompleteDismissSignature>,
-    last_autocomplete_nav: Option<(InputAutocompleteTarget, isize, Instant)>,
+    /// Keep the highlighted row of each inline autocomplete list in view.
+    composer_autocomplete_scroll: ScrollHandle,
+    thread_autocomplete_scroll: ScrollHandle,
     /// The composer whose format menu is open, if any.
     composer_format_menu: Option<crate::views::composer::ComposerTarget>,
     resolved_theme: crate::app::theme::ThemeVariant,
@@ -1054,7 +1059,8 @@ impl AppWindow {
             last_text_input_activity: None,
             dismissed_composer_autocomplete: None,
             dismissed_thread_autocomplete: None,
-            last_autocomplete_nav: None,
+            composer_autocomplete_scroll: ScrollHandle::new(),
+            thread_autocomplete_scroll: ScrollHandle::new(),
             composer_format_menu: None,
             resolved_theme: crate::app::theme::ThemeVariant::Light,
             splash_open: true,
@@ -1120,6 +1126,9 @@ impl AppWindow {
                     this.composer_has_text = has_text;
                     cx.notify();
                 }
+                // On every edit and caret move, so the list never lags the
+                // text that Return or Tab is about to complete.
+                this.sync_autocomplete_for_target(InputAutocompleteTarget::Composer, cx);
             }),
             cx.observe(&self.thread_input, |this, input, cx| {
                 let has_text = !input.read(cx).is_blank();
@@ -1127,6 +1136,7 @@ impl AppWindow {
                     this.thread_has_text = has_text;
                     cx.notify();
                 }
+                this.sync_autocomplete_for_target(InputAutocompleteTarget::Thread, cx);
             }),
             cx.observe(&self.quick_switcher_input, |this, input, cx| {
                 let observer_started_at = Instant::now();
@@ -2483,15 +2493,6 @@ impl AppWindow {
             self.handle_pasted_image(bytes, UploadTarget::Thread, cx);
         }
 
-        if self.composer_input.read(cx).up_at_top_triggered {
-            let edit_previous = self
-                .composer_input
-                .update(cx, |input, _| input.take_edit_previous_request());
-            if edit_previous {
-                self.edit_last_own_message(cx);
-            }
-        }
-
         let composer_text = self
             .composer_input
             .read(cx)
@@ -2536,44 +2537,60 @@ impl AppWindow {
         self.sync_autocomplete_for_target(InputAutocompleteTarget::Thread, cx);
     }
 
-    fn set_autocomplete_navigation_enabled_for_target(
-        &mut self,
-        target: InputAutocompleteTarget,
-        enabled: bool,
-        cx: &mut Context<Self>,
-    ) {
+    fn autocomplete_state(&self, target: InputAutocompleteTarget) -> Option<&AutocompleteState> {
         match target {
-            InputAutocompleteTarget::Composer => {
-                self.composer_input.update(cx, |field, cx| {
-                    field.set_autocomplete_navigation_enabled(enabled, cx);
-                });
-            }
-            InputAutocompleteTarget::Thread => {
-                self.thread_input.update(cx, |field, cx| {
-                    field.set_autocomplete_navigation_enabled(enabled, cx);
-                });
-            }
+            InputAutocompleteTarget::Composer => self.models.composer.autocomplete.as_ref(),
+            InputAutocompleteTarget::Thread => self.models.thread_pane.reply_autocomplete.as_ref(),
         }
     }
 
+    fn set_autocomplete_state(
+        &mut self,
+        target: InputAutocompleteTarget,
+        state: Option<AutocompleteState>,
+    ) {
+        if let Some(state) = &state {
+            let scroll = self.autocomplete_scroll(target);
+            // A fresh list starts at the top. Set the offset directly: a
+            // scroll-to-item is dropped while the list has not painted yet.
+            if state.selected_index == 0 {
+                scroll.set_offset(gpui_kit::point(px(0.), px(0.)));
+            } else {
+                scroll.scroll_to_item(state.selected_index);
+            }
+        }
+        match target {
+            InputAutocompleteTarget::Composer => self.models.set_composer_autocomplete(state),
+            InputAutocompleteTarget::Thread => self.models.set_thread_autocomplete(state),
+        }
+    }
+
+    fn autocomplete_scroll(&self, target: InputAutocompleteTarget) -> &ScrollHandle {
+        match target {
+            InputAutocompleteTarget::Composer => &self.composer_autocomplete_scroll,
+            InputAutocompleteTarget::Thread => &self.thread_autocomplete_scroll,
+        }
+    }
+
+    fn autocomplete_editor(&self, target: InputAutocompleteTarget) -> &Entity<TextField> {
+        match target {
+            InputAutocompleteTarget::Composer => &self.composer_input,
+            InputAutocompleteTarget::Thread => &self.thread_input,
+        }
+    }
+
+    /// Derives the open list from the editor's text and caret. The model's
+    /// state is the only record of whether the list is open: key handling
+    /// reads it, and nothing else mirrors it.
     fn sync_autocomplete_for_target(
         &mut self,
         target: InputAutocompleteTarget,
         cx: &mut Context<Self>,
     ) {
-        let (text, cursor, current_state) = match target {
-            InputAutocompleteTarget::Composer => (
-                self.composer_input.read(cx).text(),
-                self.composer_input.read(cx).cursor_offset(),
-                self.models.composer.autocomplete.clone(),
-            ),
-            InputAutocompleteTarget::Thread => (
-                self.thread_input.read(cx).text(),
-                self.thread_input.read(cx).cursor_offset(),
-                self.models.thread_pane.reply_autocomplete.clone(),
-            ),
+        let (text, cursor) = {
+            let editor = self.autocomplete_editor(target).read(cx);
+            (editor.text(), editor.cursor_offset())
         };
-
         let detected = detect_autocomplete_trigger(&text, cursor);
         let detected_signature = detected
             .as_ref()
@@ -2587,71 +2604,41 @@ impl AppWindow {
                 query: matched.query.clone(),
             });
 
-        // If the user dismissed autocomplete (Escape), keep it closed until the input context
-        // (trigger/query/cursor) changes.
+        // After Escape, stay closed until the trigger, query or caret changes.
         let dismissed = match target {
-            InputAutocompleteTarget::Composer => self.dismissed_composer_autocomplete.clone(),
-            InputAutocompleteTarget::Thread => self.dismissed_thread_autocomplete.clone(),
+            InputAutocompleteTarget::Composer => &mut self.dismissed_composer_autocomplete,
+            InputAutocompleteTarget::Thread => &mut self.dismissed_thread_autocomplete,
         };
-        if let Some(dismissed) = dismissed {
-            if detected_signature.as_ref() == Some(&dismissed) {
-                if current_state.is_some() {
-                    match target {
-                        InputAutocompleteTarget::Composer => {
-                            self.models.set_composer_autocomplete(None)
-                        }
-                        InputAutocompleteTarget::Thread => {
-                            self.models.set_thread_autocomplete(None)
-                        }
-                    }
-                }
-                self.set_autocomplete_navigation_enabled_for_target(target, false, cx);
-                return;
-            }
-            // Context changed; allow autocomplete to show again.
-            match target {
-                InputAutocompleteTarget::Composer => self.dismissed_composer_autocomplete = None,
-                InputAutocompleteTarget::Thread => self.dismissed_thread_autocomplete = None,
-            }
+        let still_dismissed = dismissed.is_some() && *dismissed == detected_signature;
+        if !still_dismissed {
+            *dismissed = None;
         }
+        let next_state = if still_dismissed {
+            None
+        } else {
+            detected.and_then(|matched| self.build_autocomplete_state(matched))
+        };
 
-        let mut next_state = detected
-            .and_then(|matched| self.build_autocomplete_state(matched))
-            .filter(|state| !state.candidates.is_empty());
-        if let (Some(next), Some(current)) = (next_state.as_mut(), current_state.as_ref()) {
-            // Preserve selection when only the highlighted row changed (e.g. Up/Down navigation).
-            // The input observer can re-run this sync even without text edits.
-            if next.trigger == current.trigger
+        let current = self.autocomplete_state(target);
+        let next_state = next_state.map(|mut next| {
+            // Same word, refreshed candidates (say, the member list loaded):
+            // keep the highlight on the same entry.
+            if let Some(current) = current
+                && next.trigger == current.trigger
                 && next.trigger_offset == current.trigger_offset
                 && next.query == current.query
-                && next.candidates == current.candidates
+                && let Some(selected) = current.candidates.get(current.selected_index)
+                && let Some(index) = next.candidates.iter().position(|c| c == selected)
             {
-                let max_ix = next.candidates.len().saturating_sub(1);
-                next.selected_index = current.selected_index.min(max_ix);
+                next.selected_index = index;
             }
-        }
-        if next_state == current_state {
+            next
+        });
+        if next_state.as_ref() == current {
             return;
         }
-        match target {
-            InputAutocompleteTarget::Composer => self.models.set_composer_autocomplete(next_state),
-            InputAutocompleteTarget::Thread => self.models.set_thread_autocomplete(next_state),
-        }
-        let enabled = match target {
-            InputAutocompleteTarget::Composer => self
-                .models
-                .composer
-                .autocomplete
-                .as_ref()
-                .is_some_and(|state| !state.candidates.is_empty()),
-            InputAutocompleteTarget::Thread => self
-                .models
-                .thread_pane
-                .reply_autocomplete
-                .as_ref()
-                .is_some_and(|state| !state.candidates.is_empty()),
-        };
-        self.set_autocomplete_navigation_enabled_for_target(target, enabled, cx);
+        self.set_autocomplete_state(target, next_state);
+        cx.notify();
     }
 
     fn current_autocomplete_dismiss_signature(
@@ -3376,6 +3363,28 @@ impl AppWindow {
                 self.composer_format_menu =
                     Some(crate::views::composer::ComposerTarget::Conversation);
                 self.refresh(cx);
+            }
+            DemoScene::ComposerAutocomplete => {
+                self.composer_input.update(cx, |input, cx| {
+                    input.set_text(demo::DEMO_AUTOCOMPLETE_DRAFT.to_string(), cx);
+                });
+                window.focus(&self.composer_input.focus_handle(cx), cx);
+                self.sync_autocomplete_for_target(InputAutocompleteTarget::Composer, cx);
+                self.refresh(cx);
+                // Once the list is on screen, as when a person presses Up.
+                cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                    let mut cx = cx.clone();
+                    async move {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(500))
+                            .await;
+                        let _ = this.update(&mut cx, |this, cx| {
+                            this.move_autocomplete_selection(InputAutocompleteTarget::Composer, -1);
+                            this.refresh(cx);
+                        });
+                    }
+                })
+                .detach();
             }
             DemoScene::ThreadEmpty => {
                 self.open_thread(MessageId::new(demo::DEMO_UNTHREADED_MESSAGE_ID), window, cx);
@@ -6735,21 +6744,13 @@ impl AppWindow {
         None
     }
 
+    /// Moves the highlight one row, wrapping at either end. Returns whether a
+    /// list was open, so the caller knows the key belonged to it.
     fn move_autocomplete_selection(
         &mut self,
         target: InputAutocompleteTarget,
         direction: isize,
     ) -> bool {
-        let now = Instant::now();
-        if let Some((last_target, last_direction, last_at)) = self.last_autocomplete_nav
-            && last_target == target
-            && last_direction == direction
-            && now.duration_since(last_at) < AUTOCOMPLETE_NAV_DEBOUNCE
-        {
-            return false;
-        }
-        self.last_autocomplete_nav = Some((target, direction, now));
-
         let autocomplete = match target {
             InputAutocompleteTarget::Composer => &mut self.models.composer.autocomplete,
             InputAutocompleteTarget::Thread => &mut self.models.thread_pane.reply_autocomplete,
@@ -6761,12 +6762,10 @@ impl AppWindow {
         if len == 0 {
             return false;
         }
-        let current = state.selected_index.min(len.saturating_sub(1));
-        let next = (current as isize + direction).rem_euclid(len as isize) as usize;
-        if next == state.selected_index {
-            return false;
-        }
-        state.selected_index = next;
+        let current = state.selected_index.min(len - 1);
+        state.selected_index = (current as isize + direction).rem_euclid(len as isize) as usize;
+        let selected = state.selected_index;
+        self.autocomplete_scroll(target).scroll_to_item(selected);
         true
     }
 
@@ -6775,22 +6774,11 @@ impl AppWindow {
         target: InputAutocompleteTarget,
         _cx: &mut Context<Self>,
     ) -> bool {
-        match target {
-            InputAutocompleteTarget::Composer => {
-                if self.models.composer.autocomplete.is_none() {
-                    return false;
-                }
-                self.models.set_composer_autocomplete(None);
-                true
-            }
-            InputAutocompleteTarget::Thread => {
-                if self.models.thread_pane.reply_autocomplete.is_none() {
-                    return false;
-                }
-                self.models.set_thread_autocomplete(None);
-                true
-            }
+        if self.autocomplete_state(target).is_none() {
+            return false;
         }
+        self.set_autocomplete_state(target, None);
+        true
     }
 
     fn accept_autocomplete_selection(
@@ -6799,68 +6787,90 @@ impl AppWindow {
         selected_index_override: Option<usize>,
         cx: &mut Context<Self>,
     ) -> bool {
-        let state = match target {
-            InputAutocompleteTarget::Composer => self.models.composer.autocomplete.clone(),
-            InputAutocompleteTarget::Thread => self.models.thread_pane.reply_autocomplete.clone(),
-        };
-        let Some(state) = state else {
+        let Some(state) = self.autocomplete_state(target) else {
             return false;
         };
-        if state.candidates.is_empty() {
-            return false;
-        }
-        let selected_index = selected_index_override
-            .unwrap_or(state.selected_index)
-            .min(state.candidates.len().saturating_sub(1));
+        let selected_index = selected_index_override.unwrap_or(state.selected_index);
         let Some(selected) = state.candidates.get(selected_index) else {
             return false;
         };
         let completion = selected.completion_text();
+        let trigger_offset = state.trigger_offset;
+        let editor = self.autocomplete_editor(target).clone();
+        let (text, cursor) = {
+            let editor = editor.read(cx);
+            (editor.text(), editor.cursor_offset())
+        };
+        if trigger_offset > cursor {
+            return false;
+        }
+        let (range, replacement) = completion_edit(&text, trigger_offset, cursor, &completion);
+        self.set_autocomplete_state(target, None);
+        editor.update(cx, |input, cx| {
+            input.replace_range(range, &replacement, cx);
+        });
+        let text = editor.read(cx).text();
         match target {
-            InputAutocompleteTarget::Composer => {
-                let cursor = self.composer_input.read(cx).cursor_offset();
-                if state.trigger_offset > cursor {
-                    return false;
-                }
-                self.composer_input.update(cx, |input, cx| {
-                    input.replace_range(state.trigger_offset..cursor, &completion, cx);
-                });
-                self.models.set_composer_autocomplete(None);
-                self.models
-                    .update_composer_draft_text(self.composer_input.read(cx).text());
-            }
-            InputAutocompleteTarget::Thread => {
-                let cursor = self.thread_input.read(cx).cursor_offset();
-                if state.trigger_offset > cursor {
-                    return false;
-                }
-                self.thread_input.update(cx, |input, cx| {
-                    input.replace_range(state.trigger_offset..cursor, &completion, cx);
-                });
-                self.models.set_thread_autocomplete(None);
-                self.models
-                    .update_thread_reply_draft(self.thread_input.read(cx).text());
-            }
+            InputAutocompleteTarget::Composer => self.models.update_composer_draft_text(text),
+            InputAutocompleteTarget::Thread => self.models.update_thread_reply_draft(text),
         }
         true
     }
 
-    pub(crate) fn select_composer_autocomplete_index(
+    pub(crate) fn select_autocomplete_index(
         &mut self,
+        target: crate::views::composer::ComposerTarget,
         index: usize,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.accept_autocomplete_selection(InputAutocompleteTarget::Composer, Some(index), cx) {
+        let target = match target {
+            crate::views::composer::ComposerTarget::Conversation => {
+                InputAutocompleteTarget::Composer
+            }
+            crate::views::composer::ComposerTarget::Thread => InputAutocompleteTarget::Thread,
+        };
+        if self.accept_autocomplete_selection(target, Some(index), cx) {
+            // The click landed outside the field; keep typing where it left off.
+            window.focus(&self.autocomplete_editor(target).focus_handle(cx), cx);
             self.refresh(cx);
         }
     }
 
-    pub(crate) fn select_thread_autocomplete_index(
+    /// Up and Down in the conversation or thread composer, ahead of the
+    /// editor: they move through an open autocomplete list, and Up in an
+    /// empty conversation composer edits your last message. Otherwise the
+    /// editor moves the caret.
+    fn capture_composer_up(
         &mut self,
-        index: usize,
+        _: &crate::views::input::Up,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.accept_autocomplete_selection(InputAutocompleteTarget::Thread, Some(index), cx) {
+        let Some(target) = self.autocomplete_target_for_focused_input(window, cx) else {
+            return;
+        };
+        if self.move_autocomplete_selection(target, -1) {
+            cx.stop_propagation();
+            self.refresh(cx);
+        } else if target == InputAutocompleteTarget::Composer
+            && self.composer_input.read(cx).text().is_empty()
+        {
+            cx.stop_propagation();
+            self.edit_last_own_message(cx);
+        }
+    }
+
+    fn capture_composer_down(
+        &mut self,
+        _: &crate::views::input::Down,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(target) = self.autocomplete_target_for_focused_input(window, cx)
+            && self.move_autocomplete_selection(target, 1)
+        {
+            cx.stop_propagation();
             self.refresh(cx);
         }
     }
@@ -9191,71 +9201,27 @@ impl AppWindow {
             .into_any_element()
     }
 
-    fn render_inline_autocomplete_overlay(
+    fn render_autocomplete_popup_for(
         &self,
-        shell_layout: &ShellLayout,
-        window: &Window,
+        target: InputAutocompleteTarget,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let viewport_width = f32::from(window.viewport_size().width);
-        let sidebar_total_width = self.models.sidebar.width_px;
-        let right_pane_width = if shell_layout.show_right_pane
-            && !matches!(self.models.navigation.right_pane, RightPaneMode::Hidden)
-        {
-            self.models.thread_pane.width_px
-        } else {
-            0.0
+    ) -> Option<AnyElement> {
+        let state = self.autocomplete_state(target)?;
+        if state.candidates.is_empty() {
+            return None;
+        }
+        let composer_target = match target {
+            InputAutocompleteTarget::Composer => {
+                crate::views::composer::ComposerTarget::Conversation
+            }
+            InputAutocompleteTarget::Thread => crate::views::composer::ComposerTarget::Thread,
         };
-        let main_panel_width =
-            (viewport_width - sidebar_total_width - right_pane_width).max(MAIN_PANEL_MIN_WIDTH_PX);
-        let composer_popup_width = (main_panel_width - 32.0).clamp(240.0, 520.0);
-        let composer_popup_left = (sidebar_total_width + 16.0).max(8.0);
-
-        let thread_popup_width = (self.models.thread_pane.width_px - 32.0).clamp(220.0, 460.0);
-        let thread_popup_left = (viewport_width - self.models.thread_pane.width_px + 16.0).max(8.0);
-
-        div()
-            .absolute()
-            .inset_0()
-            .when_some(
-                self.models.composer.autocomplete.as_ref(),
-                |container, autocomplete| {
-                    container.when(!autocomplete.candidates.is_empty(), |container| {
-                        container.child(
-                            div()
-                                .id("inline-autocomplete-overlay-composer")
-                                .absolute()
-                                .left(px(composer_popup_left))
-                                .bottom(px(54.0))
-                                .w(px(composer_popup_width))
-                                .child(render_autocomplete_popup(autocomplete, true, cx)),
-                        )
-                    })
-                },
-            )
-            .when(
-                shell_layout.show_right_pane
-                    && matches!(self.models.navigation.right_pane, RightPaneMode::Thread),
-                |container| {
-                    container.when_some(
-                        self.models.thread_pane.reply_autocomplete.as_ref(),
-                        |container, autocomplete| {
-                            container.when(!autocomplete.candidates.is_empty(), |container| {
-                                container.child(
-                                    div()
-                                        .id("inline-autocomplete-overlay-thread")
-                                        .absolute()
-                                        .left(px(thread_popup_left))
-                                        .bottom(px(76.0))
-                                        .w(px(thread_popup_width))
-                                        .child(render_autocomplete_popup(autocomplete, false, cx)),
-                                )
-                            })
-                        },
-                    )
-                },
-            )
-            .into_any_element()
+        Some(render_autocomplete_popup(
+            state,
+            composer_target,
+            self.autocomplete_scroll(target),
+            cx,
+        ))
     }
 
     pub(crate) fn quick_switch_to(
@@ -9789,15 +9755,9 @@ impl AppWindow {
     fn select_previous_action(
         &mut self,
         _: &commands::SelectPrevious,
-        window: &mut Window,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(target) = self.autocomplete_target_for_focused_input(window, cx)
-            && self.move_autocomplete_selection(target, -1)
-        {
-            self.refresh(cx);
-            return;
-        }
         if self.models.overlay.quick_switcher_open {
             self.models.move_quick_switcher_selection(-1);
             self.refresh(cx);
@@ -9822,15 +9782,9 @@ impl AppWindow {
     fn select_next_action(
         &mut self,
         _: &commands::SelectNext,
-        window: &mut Window,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(target) = self.autocomplete_target_for_focused_input(window, cx)
-            && self.move_autocomplete_selection(target, 1)
-        {
-            self.refresh(cx);
-            return;
-        }
         if self.models.overlay.quick_switcher_open {
             self.models.move_quick_switcher_selection(1);
             self.refresh(cx);
@@ -10252,6 +10206,8 @@ impl Render for AppWindow {
                             _ => None,
                         }
                     });
+                    let thread_autocomplete =
+                        self.render_autocomplete_popup_for(InputAutocompleteTarget::Thread, cx);
                     let pane = RightPaneHost.render(
                         navigation,
                         team_details,
@@ -10272,6 +10228,7 @@ impl Render for AppWindow {
                             send_notice: self.models.app.connectivity.send_notice(),
                             format_menu_open: self.composer_format_menu
                                 == Some(crate::views::composer::ComposerTarget::Thread),
+                            autocomplete: thread_autocomplete,
                         },
                         &self.members_filter_input,
                         members_filter_focused,
@@ -10338,6 +10295,8 @@ impl Render for AppWindow {
                     .on_action(cx.listener(Self::open_files_pane_action))
                     .on_action(cx.listener(Self::open_search_pane_action))
                     .on_action(cx.listener(Self::open_search_action))
+                    .capture_action(cx.listener(Self::capture_composer_up))
+                    .capture_action(cx.listener(Self::capture_composer_down))
                     .on_action(cx.listener(Self::accept_autocomplete_action))
                     .on_action(cx.listener(Self::confirm_primary_action))
                     .on_action(cx.listener(Self::select_previous_action))
@@ -10501,6 +10460,10 @@ impl Render for AppWindow {
                                 send_notice: self.models.app.connectivity.send_notice(),
                                 format_menu_open: self.composer_format_menu
                                     == Some(crate::views::composer::ComposerTarget::Conversation),
+                                autocomplete: self.render_autocomplete_popup_for(
+                                    InputAutocompleteTarget::Composer,
+                                    cx,
+                                ),
                             },
                             &self.timeline_list_state,
                             self.timeline_unseen_count,
@@ -10576,7 +10539,6 @@ impl Render for AppWindow {
                         }
                         overlay
                     })
-                    .child(self.render_inline_autocomplete_overlay(&shell_layout, window, cx))
                     .when_some(
                         self.models.overlay.sidebar_hover_tooltip.as_ref(),
                         |div, tooltip| div.child(render_sidebar_hover_tooltip(tooltip, window)),

@@ -64,12 +64,15 @@ pub enum DemoScene {
     Inactive,
     /// The composer's format menu open over a draft with a word selected.
     ComposerFormat,
+    /// The @mention list over a two-line draft, highlight wrapped to its last
+    /// row so the list has scrolled.
+    ComposerAutocomplete,
     ReactionTooltip,
     ReactionTooltipLong,
 }
 
 impl DemoScene {
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 33] = [
         Self::Chat,
         Self::ChatGrouped,
         Self::TeamDetails,
@@ -100,6 +103,7 @@ impl DemoScene {
         Self::Offline,
         Self::Inactive,
         Self::ComposerFormat,
+        Self::ComposerAutocomplete,
         Self::ReactionTooltip,
         Self::ReactionTooltipLong,
     ];
@@ -136,6 +140,7 @@ impl DemoScene {
             Self::Offline => "offline",
             Self::Inactive => "inactive",
             Self::ComposerFormat => "composer-format",
+            Self::ComposerAutocomplete => "composer-autocomplete",
             Self::ReactionTooltip => "reaction-tooltip",
             Self::ReactionTooltipLong => "reaction-tooltip-long",
         }

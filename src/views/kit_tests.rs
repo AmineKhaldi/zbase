@@ -429,3 +429,85 @@ mod window_exit {
         .unwrap();
     }
 }
+
+/// The composer's Up and Down reach the window first: an open autocomplete
+/// list takes them, and only then does the editor move its caret. Real
+/// keystrokes through the app's key bindings, not direct action calls.
+mod composer_keys {
+    use super::*;
+    use crate::app::commands::ConfirmPrimary;
+    use crate::views::input::{Down, Up};
+    use gpui_kit::InteractiveElement;
+
+    struct ComposerHost {
+        editor: Entity<TextField>,
+        list_open: bool,
+        list_keys: Vec<&'static str>,
+        confirmed: usize,
+    }
+
+    impl Render for ComposerHost {
+        fn render(&mut self, _: &mut gpui_kit::Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .key_context("Workspace")
+                .w(px(400.))
+                .h(px(200.))
+                .capture_action(cx.listener(|this, _: &Up, _, cx| {
+                    if this.list_open {
+                        this.list_keys.push("up");
+                        cx.stop_propagation();
+                    }
+                }))
+                .capture_action(cx.listener(|this, _: &Down, _, cx| {
+                    if this.list_open {
+                        this.list_keys.push("down");
+                        cx.stop_propagation();
+                    }
+                }))
+                .on_action(cx.listener(|this, _: &ConfirmPrimary, _, _| this.confirmed += 1))
+                .child(self.editor.clone())
+        }
+    }
+
+    #[gpui_kit::test]
+    fn an_open_list_takes_up_and_down_before_the_editor(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::app::key_bindings::install(cx);
+        });
+        let (host, cx) = cx.add_window_view(|_, cx| {
+            let editor = cx.new(|cx| {
+                TextField::new_auto_grow(cx.focus_handle(), "", "one\ntwo".to_string(), 8)
+            });
+            ComposerHost {
+                editor,
+                list_open: true,
+                list_keys: Vec::new(),
+                confirmed: 0,
+            }
+        });
+        cx.update(|window, cx| {
+            host.read(cx).editor.focus_handle(cx).focus(window, cx);
+            window.draw(cx).clear(cx);
+        });
+        let end = "one\ntwo".len();
+
+        cx.simulate_keystrokes("up down down");
+        cx.update(|_, cx| {
+            assert_eq!(host.read(cx).list_keys, ["up", "down", "down"]);
+            assert_eq!(host.read(cx).editor.read(cx).cursor_offset(), end);
+        });
+
+        cx.update(|_, cx| host.update(cx, |host, _| host.list_open = false));
+        cx.simulate_keystrokes("up");
+        cx.update(|_, cx| {
+            assert_eq!(host.read(cx).list_keys.len(), 3);
+            assert!(host.read(cx).editor.read(cx).cursor_offset() <= "one".len());
+        });
+
+        // Return is not the editor's: it reaches the window, which accepts a
+        // completion or sends.
+        cx.simulate_keystrokes("enter");
+        cx.update(|_, cx| assert_eq!(host.read(cx).confirmed, 1));
+    }
+}

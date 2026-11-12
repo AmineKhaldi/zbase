@@ -52,6 +52,29 @@ pub fn detect_autocomplete_trigger(text: &str, cursor: usize) -> Option<TriggerM
     None
 }
 
+/// The edit that accepts a completion: the byte range to replace and its
+/// replacement. The range runs from the trigger through the rest of the word
+/// under the caret, so completing `@al|ice` leaves no `ice` behind.
+/// `completion` ends in a space; it is dropped when whitespace already
+/// follows the word.
+pub fn completion_edit(
+    text: &str,
+    trigger_offset: usize,
+    cursor: usize,
+    completion: &str,
+) -> (std::ops::Range<usize>, String) {
+    let cursor = cursor.min(text.len());
+    let start = trigger_offset.min(cursor);
+    let after = &text[cursor..];
+    let end = cursor + after.find(char::is_whitespace).unwrap_or(after.len());
+    let replacement = if text[end..].starts_with(char::is_whitespace) {
+        completion.trim_end()
+    } else {
+        completion
+    };
+    (start..end, replacement.to_string())
+}
+
 pub fn cursor_is_in_code(text: &str, cursor: usize) -> bool {
     let cursor = cursor.min(text.len());
     let before_cursor = &text[..cursor];
@@ -126,6 +149,30 @@ mod tests {
                 query: "sm".to_string()
             })
         );
+    }
+
+    fn complete(text_with_caret: &str, completion: &str) -> String {
+        let cursor = text_with_caret.find('|').unwrap();
+        let text = text_with_caret.replace('|', "");
+        let trigger = detect_autocomplete_trigger(&text, cursor).unwrap();
+        let (range, replacement) =
+            completion_edit(&text, trigger.trigger_offset, cursor, completion);
+        let mut out = text.clone();
+        out.replace_range(range, &replacement);
+        out
+    }
+
+    #[test]
+    fn completion_replaces_the_whole_word_under_the_caret() {
+        assert_eq!(complete("hi @al|", "@alice "), "hi @alice ");
+        assert_eq!(complete("hi @al|ice", "@alice "), "hi @alice ");
+        assert_eq!(complete("@al|ix!", "@alice "), "@alice ");
+    }
+
+    #[test]
+    fn completion_does_not_double_an_existing_space() {
+        assert_eq!(complete("@al| said hi", "@alice "), "@alice said hi");
+        assert_eq!(complete("ok :smi|\nnext", "😄 "), "ok 😄\nnext");
     }
 
     #[test]
