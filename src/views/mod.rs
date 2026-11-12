@@ -1,6 +1,7 @@
 pub mod app_window;
 pub mod avatar;
 pub mod calls;
+pub mod chat_message_preview;
 pub mod code_highlight;
 pub mod composer;
 pub mod conversation;

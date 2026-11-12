@@ -846,6 +846,16 @@ impl AppModels {
     }
 
     pub fn resolve_deep_link(&self, deep_link: &str) -> Option<(Route, MessageId)> {
+        let (summary, message_id) = self.resolve_deep_link_conversation(deep_link)?;
+        let route = quick_switcher_route_for_summary(summary, &self.app.active_workspace_id);
+        Some((route, message_id))
+    }
+
+    /// The inbox conversation and message a `keybase://chat/...` link points to.
+    pub fn resolve_deep_link_conversation(
+        &self,
+        deep_link: &str,
+    ) -> Option<(&ConversationSummary, MessageId)> {
         let parsed = parse_keybase_chat_link(deep_link)?;
         let summary = match &parsed.channel {
             Some(channel) => self.workspace.channels.iter().find(|summary| {
@@ -862,8 +872,7 @@ impl AppModels {
                 normalize_tlf_name(&summary.topic) == normalize_tlf_name(&parsed.team)
             }),
         }?;
-        let route = quick_switcher_route_for_summary(summary, &self.app.active_workspace_id);
-        Some((route, MessageId::new(parsed.message_id)))
+        Some((summary, MessageId::new(parsed.message_id)))
     }
 
     pub fn resolve_channel_mention(&self, channel_name: &str) -> Option<Route> {

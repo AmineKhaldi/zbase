@@ -82,6 +82,11 @@ pub enum RoutedBackendCommand {
         conversation: ProviderConversationRef,
         message_id: String,
     },
+    LoadLinkedMessage {
+        account_id: AccountId,
+        conversation: ProviderConversationRef,
+        message_id: String,
+    },
     SendMessage {
         op_id: OpId,
         account_id: AccountId,

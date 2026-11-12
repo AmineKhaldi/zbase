@@ -250,6 +250,24 @@ impl BackendRouter {
                     message_id: message_id.0,
                 })
             }
+            BackendCommand::LoadLinkedMessage {
+                conversation_id,
+                message_id,
+            } => {
+                let binding = self
+                    .conversation_bindings
+                    .get(&conversation_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        BackendError::MissingConversationBinding(conversation_id.0.clone())
+                    })?;
+                let backend = self.backend_for_binding(&binding.backend_id)?;
+                backend.execute(RoutedBackendCommand::LoadLinkedMessage {
+                    account_id: binding.account_id,
+                    conversation: binding.provider_conversation_ref,
+                    message_id: message_id.0,
+                })
+            }
             BackendCommand::SendMessage {
                 op_id,
                 draft_key: _,

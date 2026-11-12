@@ -847,6 +847,48 @@ impl ChatBackend for KeybaseBackend {
                 });
                 Ok(events)
             }
+            RoutedBackendCommand::LoadLinkedMessage {
+                conversation,
+                message_id,
+                ..
+            } => {
+                let conversation_id = canonical_conversation_id_from_provider_ref(&conversation);
+                let message_id = MessageId::new(message_id);
+                if let Ok(Some(message)) = self
+                    .local_store
+                    .get_message_with_reactions(&conversation_id, &message_id)
+                    && !is_placeholder_message(&message)
+                {
+                    return Ok(vec![BackendEvent::LinkedMessageLoaded {
+                        conversation_id,
+                        message_id,
+                        message: linked_message_unless_deleted(message),
+                    }]);
+                }
+                self.ensure_listener_started();
+                let (Some(sender), Some(raw_conversation_id), Some(path)) = (
+                    self.inbound_sender.clone(),
+                    provider_ref_to_conversation_id_bytes(&conversation),
+                    socket_path(),
+                ) else {
+                    return Ok(vec![BackendEvent::LinkedMessageLoaded {
+                        conversation_id,
+                        message_id,
+                        message: None,
+                    }]);
+                };
+                let dedupe_key = format!("linked_message:{}:{}", conversation_id.0, message_id.0);
+                let _ = task_runtime::spawn_task(TaskPriority::High, Some(dedupe_key), move || {
+                    run_load_linked_message(
+                        sender,
+                        conversation_id,
+                        message_id,
+                        raw_conversation_id,
+                        path,
+                    );
+                });
+                Ok(Vec::new())
+            }
             RoutedBackendCommand::JumpToMessage {
                 account_id: _,
                 conversation,
@@ -6036,6 +6078,57 @@ fn maybe_schedule_reply_ancestor_backfill(
     if let Some(sender) = sender_for_stats.as_ref() {
         emit_task_runtime_stats(sender, "reply_ancestor_backfill.schedule");
     }
+}
+
+/// Fetches exactly one message for a link preview, without touching the
+/// local store, so a lone message never looks like cached history.
+fn run_load_linked_message(
+    sender: Sender<BackendEvent>,
+    conversation_id: ConversationId,
+    message_id: MessageId,
+    raw_conversation_id: Vec<u8>,
+    path: PathBuf,
+) {
+    let message = message_id
+        .0
+        .parse::<u64>()
+        .ok()
+        .and_then(|id| {
+            // The query returns messages strictly older than the pivot.
+            let pivot = MessageId::new((id + 1).to_string());
+            let runtime = Builder::new_current_thread().enable_all().build().ok()?;
+            let conversation_id = conversation_id.clone();
+            runtime
+                .block_on(async move {
+                    let transport = FramedMsgpackTransport::connect(&path).await?;
+                    let mut client = KeybaseRpcClient::new(transport);
+                    fetch_thread_messages_before_anchor_impl(
+                        &mut client,
+                        &conversation_id,
+                        &raw_conversation_id,
+                        &pivot,
+                        1,
+                        false,
+                    )
+                    .await
+                })
+                .ok()
+        })
+        .and_then(|page| {
+            page.messages
+                .into_iter()
+                .find(|message| message.id == message_id)
+        })
+        .and_then(linked_message_unless_deleted);
+    let _ = sender.send(BackendEvent::LinkedMessageLoaded {
+        conversation_id,
+        message_id,
+        message,
+    });
+}
+
+fn linked_message_unless_deleted(message: MessageRecord) -> Option<MessageRecord> {
+    (!matches!(message.event, Some(ChatEvent::MessageDeleted { .. }))).then_some(message)
 }
 
 fn run_reply_ancestor_backfill(
@@ -15757,6 +15850,7 @@ fn extract_link_preview_from_result(result: &Value) -> Option<LinkPreview> {
         media_height,
         is_video,
         github_pr: None,
+        chat_message: None,
     })
 }
 

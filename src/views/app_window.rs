@@ -24,7 +24,10 @@ use crate::{
         conversation::{ConversationKind, ConversationSummary},
         github_pr::GithubPrRef,
         ids::{ConversationId, MessageId, SidebarSectionId, UserId, WorkspaceId},
-        message::{ChatEvent, LinkPreview, MessageFragment, MessageRecord, MessageSendState},
+        message::{
+            ChatEvent, ChatMessagePreview, LinkPreview, MessageFragment, MessageRecord,
+            MessageSendState,
+        },
         profile::SocialGraphListType,
         route::Route,
         search::SearchFilter,
@@ -356,6 +359,7 @@ pub struct AppWindow {
     github_pr_result_receiver: Receiver<GithubPrFetchResult>,
     github_pr_last_poll: Option<Instant>,
     github_pr_attention_key: Option<(ConversationId, bool)>,
+    linked_messages: HashMap<(ConversationId, MessageId), LinkedMessage>,
     last_mark_read_attempt: HashMap<String, (String, Instant)>,
     window_is_focused: bool,
     settings_window: Option<gpui_kit::AnyWindowHandle>,
@@ -1031,6 +1035,7 @@ impl AppWindow {
             github_pr_result_receiver,
             github_pr_last_poll: None,
             github_pr_attention_key: None,
+            linked_messages: HashMap::new(),
             last_mark_read_attempt: HashMap::new(),
             window_is_focused: false,
             settings_window: None,
@@ -1570,6 +1575,11 @@ impl AppWindow {
                 self.show_desktop_notification(notification);
                 continue;
             }
+            if matches!(event, BackendEvent::LinkedMessageLoaded { .. }) {
+                self.store_linked_message(event);
+                needs_refresh |= self.refresh_linked_message_rows();
+                continue;
+            }
             if defer_model_sync {
                 match &event {
                     crate::state::event::BackendEvent::BootstrapLoaded { payload, .. } => {
@@ -1994,6 +2004,152 @@ impl AppWindow {
             self.models.thread_pane.replies.iter_mut().collect(),
         );
         self.apply_github_pr_previews();
+        self.apply_linked_message_previews();
+    }
+
+    /// Quotes the messages that `keybase://chat/...` links point to, loading
+    /// any not seen yet. Returns whether any preview changed.
+    fn apply_linked_message_previews(&mut self) -> bool {
+        let timeline = self
+            .models
+            .timeline
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                crate::models::timeline_model::TimelineRow::Message(row) => Some(&row.message),
+                _ => None,
+            });
+        let urls = timeline
+            .chain(self.models.thread_pane.replies.iter())
+            .flat_map(|message| keybase_chat_links(&message.fragments))
+            .collect::<HashSet<_>>();
+        if urls.is_empty() {
+            return false;
+        }
+        let targets = urls
+            .into_iter()
+            .filter_map(|url| {
+                let (summary, message_id) = self.models.resolve_deep_link_conversation(&url)?;
+                Some((url, (summary.id.clone(), message_id)))
+            })
+            .collect::<HashMap<_, _>>();
+        let missing = targets
+            .values()
+            .filter(|key| !self.linked_messages.contains_key(*key))
+            .cloned()
+            .collect::<HashSet<_>>();
+        for key in missing {
+            self.request_linked_message(key);
+        }
+        let previews = targets
+            .into_iter()
+            .map(|(url, key)| {
+                let preview = match self.linked_messages.get(&key) {
+                    Some(LinkedMessage::Loaded(message)) => {
+                        Some(self.chat_message_preview(message))
+                    }
+                    _ => None,
+                };
+                (url, (key, preview))
+            })
+            .collect::<HashMap<_, _>>();
+
+        let mut changed = false;
+        let timeline = self
+            .models
+            .timeline
+            .rows
+            .iter_mut()
+            .filter_map(|row| match row {
+                crate::models::timeline_model::TimelineRow::Message(row) => Some(&mut row.message),
+                _ => None,
+            });
+        for message in timeline.chain(self.models.thread_pane.replies.iter_mut()) {
+            for url in keybase_chat_links(&message.fragments) {
+                let Some((key, preview)) = previews.get(&url) else {
+                    continue;
+                };
+                // A message linking to itself gains nothing from a quote of itself.
+                let preview = preview
+                    .clone()
+                    .filter(|_| (&key.0, &key.1) != (&message.conversation_id, &message.id));
+                changed |= set_chat_message_preview(message, &url, preview);
+            }
+        }
+        changed
+    }
+
+    fn request_linked_message(&mut self, key: (ConversationId, MessageId)) {
+        self.linked_messages
+            .insert(key.clone(), LinkedMessage::Loading);
+        let (conversation_id, message_id) = key.clone();
+        match self
+            .backend_router
+            .route_command(BackendCommand::LoadLinkedMessage {
+                conversation_id,
+                message_id,
+            }) {
+            Ok(events) => {
+                for event in events {
+                    self.store_linked_message(event);
+                }
+            }
+            // Bindings arrive with the inbox; try again on a later pass.
+            Err(_) => {
+                self.linked_messages.remove(&key);
+            }
+        }
+    }
+
+    /// Records a `LinkedMessageLoaded` answer; returns whether `event` was one.
+    fn store_linked_message(&mut self, event: BackendEvent) -> bool {
+        let BackendEvent::LinkedMessageLoaded {
+            conversation_id,
+            message_id,
+            message,
+        } = event
+        else {
+            return false;
+        };
+        self.linked_messages.insert(
+            (conversation_id, message_id),
+            match message {
+                Some(message) => LinkedMessage::Loaded(Box::new(message)),
+                None => LinkedMessage::Missing,
+            },
+        );
+        true
+    }
+
+    fn chat_message_preview(&self, message: &MessageRecord) -> ChatMessagePreview {
+        let profiles = &self.app_store.snapshot().backend.user_profiles;
+        let profile = profiles
+            .get(&message.author_id)
+            .or_else(|| profiles.get(&UserId::new(message.author_id.0.to_ascii_lowercase())));
+        ChatMessagePreview {
+            author: crate::domain::user::shown_name(
+                &message.author_id.0,
+                profile.map_or("", |profile| profile.display_name.as_str()),
+            )
+            .to_string(),
+            author_avatar: profile.and_then(|profile| profile.avatar_asset.clone()),
+            location: self
+                .models
+                .conversation_location_label(&message.conversation_id)
+                .unwrap_or_default(),
+            excerpt: crate::views::timeline::message_excerpt(message, 280),
+            timestamp_ms: message.timestamp_ms,
+        }
+    }
+
+    /// Like `refresh_github_pr_rows`, for linked message quotes.
+    fn refresh_linked_message_rows(&mut self) -> bool {
+        if !self.apply_linked_message_previews() {
+            return false;
+        }
+        self.anchor_timeline_before_layout();
+        self.timeline_row_render_cache.invalidate();
+        true
     }
 
     /// Returns whether any PR preview changed.
@@ -2161,7 +2317,7 @@ impl AppWindow {
         for message in messages {
             let urls = extract_link_urls_from_fragments(&message.fragments);
             for url in &urls {
-                if self.github_pr_service.handles_url(url, now) {
+                if self.github_pr_service.handles_url(url, now) || url.starts_with("keybase://") {
                     continue;
                 }
                 self.og_service.schedule_fetch(url, &self.og_result_sender);
@@ -4847,6 +5003,8 @@ impl AppWindow {
         self.schedule_video_preview_decodes_for_search_results();
         self.schedule_og_fetches_for_messages(&timeline_messages);
         self.schedule_og_fetches_for_messages(&self.models.thread_pane.replies.clone());
+        // Thread replies were just replaced by store copies without quotes.
+        self.apply_linked_message_previews();
         self.apply_pending_timeline_scroll_target();
         if (timeline_reactions_changed || timeline_rows_changed || timeline_link_previews_changed)
             && was_near_bottom_before_sync
@@ -4910,6 +5068,7 @@ impl AppWindow {
             &self.github_pr_service,
             &mut self.models.thread_pane.replies,
         );
+        self.apply_linked_message_previews();
     }
 
     fn save_conversations_share(&mut self, share: Option<f32>) {
@@ -12001,6 +12160,66 @@ fn apply_github_pr_previews_to_messages(
     changed
 }
 
+/// The `keybase://chat/...` links in a message. Web-link extraction skips them.
+fn keybase_chat_links(fragments: &[MessageFragment]) -> Vec<String> {
+    fragments
+        .iter()
+        .filter_map(|fragment| match fragment {
+            MessageFragment::Link { url, .. } if url.starts_with("keybase://chat/") => {
+                Some(url.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A message a `keybase://chat/...` link points to.
+enum LinkedMessage {
+    Loading,
+    Loaded(Box<MessageRecord>),
+    Missing,
+}
+
+/// Puts `preview` on the link preview for `url`; returns whether it changed.
+fn set_chat_message_preview(
+    message: &mut MessageRecord,
+    url: &str,
+    preview: Option<ChatMessagePreview>,
+) -> bool {
+    let existing = message
+        .link_previews
+        .iter()
+        .position(|link_preview| link_preview.url == url);
+    match (existing, preview) {
+        (Some(index), preview) => {
+            let link_preview = &mut message.link_previews[index];
+            if link_preview.chat_message == preview {
+                return false;
+            }
+            let only_quote = link_preview.title.is_none()
+                && link_preview.description.is_none()
+                && link_preview.thumbnail_asset.is_none()
+                && !link_preview.is_media
+                && link_preview.github_pr.is_none();
+            if preview.is_none() && only_quote {
+                message.link_previews.remove(index);
+            } else {
+                link_preview.chat_message = preview;
+            }
+            true
+        }
+        (None, Some(preview)) => {
+            message.link_previews.push(LinkPreview {
+                url: url.to_string(),
+                chat_message: Some(preview),
+                ..LinkPreview::default()
+            });
+            true
+        }
+        (None, None) => false,
+    }
+}
+
 pub(crate) fn urls_match(a: &str, b: &str) -> bool {
     let normalize = |url: &str| {
         let trimmed = url.trim();
@@ -12603,5 +12822,57 @@ mod tests {
             &inspector_overlay,
             true
         ));
+    }
+
+    #[test]
+    fn linked_message_quote_attaches_updates_and_detaches() {
+        use crate::domain::message::{ChatMessagePreview, LinkPreview};
+        let url = "keybase://chat/team#general/7";
+        let quote = |excerpt: &str| ChatMessagePreview {
+            author: "alice".into(),
+            excerpt: excerpt.into(),
+            ..ChatMessagePreview::default()
+        };
+        let mut message = test_message("1", None);
+
+        assert!(!super::set_chat_message_preview(&mut message, url, None));
+        assert!(super::set_chat_message_preview(
+            &mut message,
+            url,
+            Some(quote("hi"))
+        ));
+        assert_eq!(message.link_previews.len(), 1);
+        assert!(!super::set_chat_message_preview(
+            &mut message,
+            url,
+            Some(quote("hi"))
+        ));
+        assert!(super::set_chat_message_preview(
+            &mut message,
+            url,
+            Some(quote("edited"))
+        ));
+        assert_eq!(
+            message.link_previews[0]
+                .chat_message
+                .as_ref()
+                .map(|q| q.excerpt.as_str()),
+            Some("edited")
+        );
+
+        // A preview that held only the quote goes away with it.
+        assert!(super::set_chat_message_preview(&mut message, url, None));
+        assert!(message.link_previews.is_empty());
+
+        // A preview with its own content keeps that content.
+        message.link_previews.push(LinkPreview {
+            url: url.into(),
+            title: Some("Title".into()),
+            chat_message: Some(quote("hi")),
+            ..LinkPreview::default()
+        });
+        assert!(super::set_chat_message_preview(&mut message, url, None));
+        assert_eq!(message.link_previews.len(), 1);
+        assert_eq!(message.link_previews[0].chat_message, None);
     }
 }

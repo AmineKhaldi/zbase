@@ -59,6 +59,12 @@ pub enum BackendCommand {
         conversation_id: ConversationId,
         message_id: MessageId,
     },
+    /// Fetch one message for a `keybase://chat/...` link preview; answered by
+    /// `BackendEvent::LinkedMessageLoaded`.
+    LoadLinkedMessage {
+        conversation_id: ConversationId,
+        message_id: MessageId,
+    },
     SendMessage {
         op_id: OpId,
         draft_key: DraftKey,

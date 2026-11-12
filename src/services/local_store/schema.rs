@@ -216,6 +216,7 @@ impl CachedLinkPreview {
             media_height: self.media_height,
             is_video: self.is_video,
             github_pr: None,
+            chat_message: None,
         }
     }
 }

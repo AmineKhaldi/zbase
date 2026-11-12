@@ -50,6 +50,7 @@ use gpui_kit::{
     StatefulInteractiveElement, Styled, StyledImage, Window, canvas, deferred, div, img, list, px,
     relative, rgb,
 };
+pub(crate) use reply_context::message_excerpt;
 use reply_context::{ReplyContext, cached_reply_context};
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
@@ -1995,6 +1996,28 @@ impl TimelineList {
                             let lower = preview.url.to_ascii_lowercase();
                             lower.contains("giphy.com") || lower.contains("gph.is")
                         };
+
+                        if let Some(quote) = preview.chat_message.as_ref() {
+                            let group = SharedString::from(format!(
+                                "timeline-chat-quote-{message_key}-{index}"
+                            ));
+                            return crate::views::chat_message_preview::render_chat_message_preview(
+                                quote, group,
+                            )
+                            .id(element_id)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_url_or_deep_link(&url, window, cx);
+                            }))
+                            .on_mouse_move(cx.listener(
+                                move |this, _: &gpui_kit::MouseMoveEvent, _, cx| {
+                                    this.clear_reaction_hover_tooltip(cx);
+                                    this.set_hovered_message(message_id.clone(), is_thread, cx);
+                                    cx.stop_propagation();
+                                },
+                            ))
+                            .cursor(gpui_kit::CursorStyle::PointingHand)
+                            .into_any_element();
+                        }
 
                         if let Some(pr_preview) = preview.github_pr.as_ref() {
                             return render_github_pr_preview(pr_preview)

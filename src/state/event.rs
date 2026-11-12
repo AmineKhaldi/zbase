@@ -161,6 +161,13 @@ pub enum BackendEvent {
         newer_cursor: Option<String>,
     },
     MessageUpserted(MessageRecord),
+    /// Answer to `BackendCommand::LoadLinkedMessage`; `None` when the message
+    /// is gone or could not be fetched. Not part of any timeline.
+    LinkedMessageLoaded {
+        conversation_id: ConversationId,
+        message_id: MessageId,
+        message: Option<MessageRecord>,
+    },
     /// Keybase asked for a desktop banner for this message.
     DesktopNotification(crate::domain::desktop_notification::DesktopNotification),
     MessageAttachmentsUpdated {

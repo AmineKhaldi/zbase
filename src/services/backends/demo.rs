@@ -172,6 +172,22 @@ impl ChatBackend for DemoBackend {
             RoutedBackendCommand::JumpToMessage { conversation, .. } => {
                 Self::conversation_events(ConversationId::new(conversation.0))
             }
+            RoutedBackendCommand::LoadLinkedMessage {
+                conversation,
+                message_id,
+                ..
+            } => {
+                let conversation_id = ConversationId::new(conversation.0);
+                let message_id = MessageId::new(message_id);
+                let message = demo::demo_conversation_messages(&conversation_id)
+                    .into_iter()
+                    .find(|message| message.id == message_id);
+                vec![BackendEvent::LinkedMessageLoaded {
+                    conversation_id,
+                    message_id,
+                    message,
+                }]
+            }
             RoutedBackendCommand::LoadConversationMembers { conversation, .. } => {
                 Self::member_events(ConversationId::new(conversation.0))
             }

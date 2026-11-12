@@ -19,6 +19,19 @@ pub struct LinkPreview {
     pub is_video: bool,
     /// Live PR status for GitHub pull request links. Never persisted.
     pub github_pr: Option<GithubPrPreview>,
+    /// The linked message for `keybase://chat/...` links. Never persisted.
+    pub chat_message: Option<ChatMessagePreview>,
+}
+
+/// A quote of the message a `keybase://chat/...` link points to.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChatMessagePreview {
+    pub author: String,
+    pub author_avatar: Option<String>,
+    /// Where the message lives, e.g. "#general · chia_network".
+    pub location: String,
+    pub excerpt: String,
+    pub timestamp_ms: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
