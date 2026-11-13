@@ -74,12 +74,11 @@ const FIRST_SECTION_GAP_PX: f32 = 8.;
 const SECTION_HEADER_PX: f32 = 24.;
 const HEADER_ICON_PX: f32 = 12.;
 const VIEW_OPTIONS_MIN_WIDTH_PX: f32 = 200.;
-/// Room at the list's right edge for its scrollbar, so the bar never covers a
-/// row's badges.
-const SCROLLBAR_GUTTER_PX: f32 = 14.;
-/// The thumb at rest, and while hovered or dragged: wide enough to grab.
-const SCROLLBAR_THUMB_PX: f32 = 8.;
-const SCROLLBAR_THUMB_ACTIVE_PX: f32 = 10.;
+const SCROLLBAR_GUTTER_PX: f32 = 8.;
+const SCROLLBAR_PX: f32 = 8.;
+/// The scrollbar sits this far in from the sidebar's right edge, straddling the
+/// sidebar's padding and the list's empty gutter.
+const SCROLLBAR_EDGE_INSET_PX: f32 = 4.;
 
 /// A menu that pops up from the sidebar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -521,7 +520,7 @@ struct GroupedSplit {
 }
 
 /// Keep toolbar/footer chrome outside the elastic viewport in both sidebar modes,
-/// with a scrollbar in the list's gutter that shows on hover and can be dragged.
+/// with a scrollbar near the sidebar's right edge that shows on hover and can be dragged.
 pub(super) fn scroll_viewport<H: gpui_kit::base::ScrollbarHandle + Clone>(
     id: impl Into<SharedString>,
     handle: &H,
@@ -529,12 +528,11 @@ pub(super) fn scroll_viewport<H: gpui_kit::base::ScrollbarHandle + Clone>(
     reduced_motion: bool,
 ) -> AnyElement {
     let id = id.into();
-    let thumb = |thumb: gpui_kit::base::ScrollbarThumbStyle, width: f32| {
-        let inset = (SCROLLBAR_GUTTER_PX - width) / 2.;
+    let thumb = |thumb: gpui_kit::base::ScrollbarThumbStyle| {
         thumb
-            .width(px(width))
-            .inset(px(inset))
-            .radius(px(width / 2.))
+            .width(px(SCROLLBAR_PX))
+            .inset(px(0.))
+            .radius(px(SCROLLBAR_PX / 2.))
     };
     div()
         .relative()
@@ -542,22 +540,29 @@ pub(super) fn scroll_viewport<H: gpui_kit::base::ScrollbarHandle + Clone>(
         .min_h(px(0.))
         .flex()
         .flex_col()
+        // Reach into the sidebar's right padding for the scrollbar, without
+        // widening the list.
+        .mr(px(SCROLLBAR_EDGE_INSET_PX - SIDEBAR_PADDING_PX))
+        .pr(px(SIDEBAR_PADDING_PX - SCROLLBAR_EDGE_INSET_PX))
         .overflow_hidden()
         .child(
             gpui_kit::base::ScrollBounce::new(id.clone(), handle, content)
                 .enabled(gpui_kit::base::ScrollBounce::enabled_by_default() && !reduced_motion),
         )
         .child(
-            gpui_kit::base::Scrollbar::vertical(handle)
-                .id(SharedString::from(format!("{id}-scrollbar")))
-                .mode(gpui_kit::base::ScrollbarMode::Hover)
-                .styles(|styles| {
-                    styles
-                        .track(|track| track.width(px(SCROLLBAR_GUTTER_PX)))
-                        .thumb(|style| thumb(style, SCROLLBAR_THUMB_PX))
-                        .thumb_hover(|style| thumb(style, SCROLLBAR_THUMB_ACTIVE_PX))
-                        .thumb_active(|style| thumb(style, SCROLLBAR_THUMB_ACTIVE_PX))
-                }),
+            div().absolute().inset_0().child(
+                gpui_kit::base::Scrollbar::vertical(handle)
+                    .id(SharedString::from(format!("{id}-scrollbar")))
+                    .mode(gpui_kit::base::ScrollbarMode::Hover)
+                    .viewport_from_layout()
+                    .styles(|styles| {
+                        styles
+                            .track(|track| track.width(px(SCROLLBAR_PX)))
+                            .thumb(thumb)
+                            .thumb_hover(thumb)
+                            .thumb_active(thumb)
+                    }),
+            ),
         )
         .into_any_element()
 }

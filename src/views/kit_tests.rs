@@ -269,9 +269,9 @@ mod sidebar_bounce {
             });
             app.update_window(window, |_, window, cx| {
                 window.render_frame(cx);
-                // The thumb starts at the top of the gutter on the right edge.
+                // The thumb starts at the top, centered on the list's right edge.
                 let viewport = handle.scroll().viewport_bounds();
-                let grab = point(viewport.right() - px(7.), viewport.top() + px(10.));
+                let grab = point(viewport.right(), viewport.top() + px(10.));
                 window.simulate_mouse_move(grab, cx);
                 window.render_frame(cx);
                 window.dispatch_event(
